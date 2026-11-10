@@ -39,6 +39,7 @@ import com.google.android.filament.VertexBuffer
 import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
+import com.google.android.filament.android.FilamentHelper
 import com.google.android.filament.filamat.MaterialBuilder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -106,7 +107,11 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var resumed = true
     private var disposed = false
     private var observersRegistered = false
+    private var cleaningRenderer = false
+    private var rendererFailurePending = false
     private var rendererFailure: String? = null
+    private var layoutVersion = 0L
+    private var gestureLayoutVersion = -1L
     private var yaw = .18
     private var pitch = .46
     private var zoom = 1.0
@@ -115,6 +120,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var lastScaleAt = 0L
     private var viewportWidth = 0
     private var viewportHeight = 0
+    private var displayPeriodNanos = 16_666_667L
     private var eye = Vec3(0.0, 6.0, 12.0)
     private var target = Vec3(0.0, .8, -.15)
     private val transform = FloatArray(16)
@@ -155,7 +161,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             return true
         }
         override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
-            if (SystemClock.uptimeMillis() - lastScaleAt < 300L) return false
+            if (!canRender() || gestureLayoutVersion != layoutVersion || SystemClock.uptimeMillis() - lastScaleAt < 300L) return false
             performClick()
             val ray = RoomLayout.screenRay(event.x, event.y, surfaceView.width, surfaceView.height, eye, target, FOV)
             val slot = RoomLayout.pick(ray, positions) ?: return true
@@ -171,7 +177,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         surfaceView.setOnTouchListener { _, event ->
             touching = event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> parent?.requestDisallowInterceptTouchEvent(true)
+                MotionEvent.ACTION_DOWN -> { gestureLayoutVersion = layoutVersion; parent?.requestDisallowInterceptTouchEvent(true) }
                 MotionEvent.ACTION_POINTER_DOWN -> lastScaleAt = SystemClock.uptimeMillis()
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> parent?.requestDisallowInterceptTouchEvent(false)
             }
@@ -220,6 +226,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         machines = next
         if (engine != null) runCatching {
             if (layoutChanged) {
+                layoutVersion++
                 bodyMeshes.toList().forEach(::destroyMesh); bodyMeshes.clear()
                 statusMeshes.values.toList().forEach(::destroyMesh); statusMeshes.clear()
                 garmentMeshes.values.toList().forEach(::destroyMesh); garmentMeshes.clear()
@@ -279,6 +286,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         callbackScheduled = false
         previousFrameNanos = 0L
         yawVelocity = 0.0
+        touching = false
+        cancelGesture()
         unregisterEnvironmentObservers()
         publishQuality()
     }
@@ -304,6 +313,9 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         callbackScheduled = false
         unregisterEnvironmentObservers()
         controller.setForeground(false)
+        touching = false
+        yawVelocity = 0.0
+        cancelGesture()
         super.onDetachedFromWindow()
     }
 
@@ -316,6 +328,9 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             controller.setForeground(false)
             choreographer.removeFrameCallback(this)
             callbackScheduled = false
+            touching = false
+            yawVelocity = 0.0
+            cancelGesture()
         }
     }
 
@@ -352,12 +367,15 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             val started = System.nanoTime()
             val accepted = renderer?.beginFrame(requireNotNull(swapChain), frameTimeNanos) == true
             if (accepted) {
-                renderer?.render(requireNotNull(view))
-                renderer?.endFrame()
+                try { renderer?.render(requireNotNull(view)) }
+                finally { renderer?.endFrame() }
                 renderedFrames++
             } else rejectedFrames++
             val cpu = System.nanoTime() - started
-            val late = if (urgent || nextFrameNanos == 0L) 0L else (frameTimeNanos - nextFrameNanos).coerceAtLeast(0L)
+            // 90 FPS on a 120 Hz display intentionally alternates VSync intervals. A frame
+            // landing on the next available VSync is pacing, not a dropped rendered frame.
+            val late = if (urgent || nextFrameNanos == 0L) 0L else
+                (frameTimeNanos - nextFrameNanos - displayPeriodNanos).coerceAtLeast(0L)
             controller.observeFrame(frameTimeNanos, readGpuDuration(), cpu, period, !accepted, late)
             dirty = !accepted
             urgent = false
@@ -397,23 +415,39 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         uiHelper = UiHelper(UiHelper.ContextErrorPolicy.DONT_CHECK).apply {
             renderCallback = object : UiHelper.RendererCallback {
                 override fun onNativeWindowChanged(surface: Surface) {
-                    swapChain?.let(e::destroySwapChain)
-                    swapChain = e.createSwapChain(surface)
-                    refreshEnvironment()
-                    requestFrame()
+                    if(disposed || cleaningRenderer || engine !== e) return
+                    runCatching {
+                        val old = swapChain
+                        swapChain = null
+                        old?.let(e::destroySwapChain)
+                        swapChain = e.createSwapChain(surface)
+                        lastAppliedFps = -1
+                        lastGpuFrame = -1
+                        previousFrameNanos = 0L
+                        nextFrameNanos = 0L
+                        refreshEnvironment()
+                        requestFrame(immediate = true)
+                    }.onFailure { error -> deferRendererFailure(error) }
                 }
                 override fun onDetachedFromSurface() {
                     choreographer.removeFrameCallback(this@LaundryRoomView)
                     callbackScheduled = false
-                    swapChain?.let(e::destroySwapChain)
+                    val old = swapChain
                     swapChain = null
-                    e.flushAndWait()
+                    if(engine !== e) return
+                    runCatching { old?.let(e::destroySwapChain); e.flushAndWait() }
+                        .onFailure { error -> deferRendererFailure(error) }
                 }
                 override fun onResized(width: Int, height: Int) {
-                    viewportWidth = width; viewportHeight = height
-                    view?.viewport = Viewport(0, 0, width, height)
-                    updateCamera()
-                    requestFrame()
+                    if(disposed || cleaningRenderer || engine !== e || width <= 0 || height <= 0) return
+                    runCatching {
+                        viewportWidth = width; viewportHeight = height
+                        view?.viewport = Viewport(0, 0, width, height)
+                        updateCamera()
+                        // The driver must finish work using the old buffer dimensions before resize.
+                        FilamentHelper.synchronizePendingFrames(e)
+                        requestFrame(immediate = true)
+                    }.onFailure { error -> deferRendererFailure(error) }
                 }
             }
             attachTo(surfaceView)
@@ -520,7 +554,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     private fun requestFrame(immediate: Boolean = false) { dirty = true; urgent = urgent || immediate; scheduleFrame() }
-    private fun canRender() = !disposed && resumed && isAttachedToWindow && windowVisibility == AndroidView.VISIBLE &&
+    private fun canRender() = !disposed && !rendererFailurePending && resumed && isAttachedToWindow && windowVisibility == AndroidView.VISIBLE &&
         engine != null && swapChain != null && uiHelper?.isReadyToRender == true && viewportWidth > 0 && viewportHeight > 0
 
     private fun scheduleFrame() {
@@ -546,6 +580,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         if (Build.VERSION.SDK_INT >= 29) controller.setThermalStatus(powerManager.currentThermalStatus)
         display?.let { display ->
             controller.setDisplayRefreshRate(display.refreshRate)
+            displayPeriodNanos = (1_000_000_000.0 / display.refreshRate.coerceAtLeast(1f)).toLong()
             renderer?.displayInfo = Renderer.DisplayInfo().apply {
                 refreshRate = display.refreshRate
                 presentationDeadlineNanos = display.presentationDeadlineNanos
@@ -581,23 +616,47 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     private fun cleanupRenderer() {
         val e = engine ?: return
-        uiHelper?.detach(); uiHelper = null
-        meshes.toList().forEach(::destroyMesh)
-        statusMeshes.clear(); garmentMeshes.clear(); environmentMeshes.clear(); bodyMeshes.clear()
-        if (lightEntity != 0) {
-            scene?.remove(lightEntity); e.destroyEntity(lightEntity); EntityManager.get().destroy(lightEntity); lightEntity = 0
+        if(cleaningRenderer) return
+        cleaningRenderer = true
+        val helper = uiHelper
+        uiHelper = null
+        try {
+            helper?.detach()
+            // A partial initialization can create a swap chain before UiHelper is retained.
+            swapChain?.let { remaining -> swapChain = null; e.destroySwapChain(remaining); e.flushAndWait() }
+            meshes.toList().forEach(::destroyMesh)
+            statusMeshes.clear(); garmentMeshes.clear(); environmentMeshes.clear(); bodyMeshes.clear()
+            if (lightEntity != 0) {
+                scene?.remove(lightEntity); e.destroyEntity(lightEntity); EntityManager.get().destroy(lightEntity); lightEntity = 0
+            }
+            instances.values.forEach(e::destroyMaterialInstance); instances.clear()
+            materials.forEach(e::destroyMaterial); materials.clear()
+            indirectLight?.let(e::destroyIndirectLight); indirectLight = null
+            skybox?.let(e::destroySkybox); skybox = null
+            view?.let(e::destroyView); view = null
+            scene?.let(e::destroyScene); scene = null
+            renderer?.let(e::destroyRenderer); renderer = null
+            if (cameraEntity != 0) {
+                e.destroyCameraComponent(cameraEntity); EntityManager.get().destroy(cameraEntity); cameraEntity = 0
+            }
+            e.destroy(); engine = null; camera = null
+        } finally { cleaningRenderer = false }
+    }
+
+    private fun cancelGesture() {
+        gestureLayoutVersion = -1L
+        val time = SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(time, time, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        try { gestures.onTouchEvent(cancel); scaling.onTouchEvent(cancel) } finally { cancel.recycle() }
+    }
+
+    private fun deferRendererFailure(error: Throwable) {
+        // UiHelper changes its own Surface state after returning from callbacks. Defer teardown
+        // until then so a driver failure cannot recursively detach the same native window.
+        if(!cleaningRenderer && rendererFailure == null && !disposed && !rendererFailurePending) {
+            rendererFailurePending = true
+            post { if(!disposed) failRenderer(error) }
         }
-        if (cameraEntity != 0) {
-            e.destroyCameraComponent(cameraEntity); EntityManager.get().destroy(cameraEntity); cameraEntity = 0
-        }
-        instances.values.forEach(e::destroyMaterialInstance); instances.clear()
-        materials.forEach(e::destroyMaterial); materials.clear()
-        indirectLight?.let(e::destroyIndirectLight); indirectLight = null
-        skybox?.let(e::destroySkybox); skybox = null
-        view?.let(e::destroyView); view = null
-        scene?.let(e::destroyScene); scene = null
-        renderer?.let(e::destroyRenderer); renderer = null
-        e.destroy(); engine = null; camera = null
     }
 
     private fun failRenderer(error: Throwable) {

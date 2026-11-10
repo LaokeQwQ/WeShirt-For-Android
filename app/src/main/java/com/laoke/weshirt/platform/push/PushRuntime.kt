@@ -130,6 +130,9 @@ object PushRuntime {
     }
 
     fun isSessionActive(context: Context): Boolean = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("session", false)
+    fun notificationsAllowed(context: Context): Boolean = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).let {
+        it.getBoolean("session", false) && it.getBoolean("consent", false)
+    }
 
     private fun initializeFirebase(context: Context, config: FirebasePushConfig) {
         if (FirebaseApp.getApps(context).none { it.name == FirebaseApp.DEFAULT_APP_NAME }) {
@@ -146,6 +149,7 @@ object PushRuntime {
         if (umengStarted) {
             PushAgent.getInstance(context).enable(settingCallback)
             PushAgent.getInstance(context).deviceToken?.takeIf { it.isNotBlank() }?.let { onToken(context, PushProvider.UMENG, it) }
+            configureVendors(context, config)
             return
         }
         UMConfigure.enableImeiCollection(false)
@@ -178,6 +182,10 @@ object PushRuntime {
             override fun onSuccess(token: String) { onToken(context, PushProvider.UMENG, token) }
             override fun onFailure(code: String?, message: String?) { registrationStatus = "UMENG_REGISTRATION_FAILED" }
         })
+        configureVendors(context, config)
+    }
+
+    private fun configureVendors(context: Context, config: UmengPushConfig) {
         if (config.xiaomiAppId.isNotBlank() && config.xiaomiAppKey.isNotBlank())
             MiPushRegistar.register(context, config.xiaomiAppId, config.xiaomiAppKey)
         if (config.huaweiConfigured) {
@@ -254,7 +262,7 @@ object PushRuntime {
     fun clearLocalSession(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("session", false).remove("token").commit()
         setComponents(context, fcmComponents + umengComponents + xiaomiComponents + huaweiComponents, false)
-        LaundryReminders.cancelAll(context)
+        LaundryReminders.cancelAll(context, clearConfirmed = true)
         LaundryWidgetStore.clear(context)
         LaundryNotifications(context).clear()
         DingTalkLoginBridge.clear(context)

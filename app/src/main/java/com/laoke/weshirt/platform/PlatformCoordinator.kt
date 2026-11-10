@@ -77,7 +77,7 @@ class PlatformCoordinator(
         if (session.read() == null || state.profile == null) { clearLocal(); return }
         if (!PushRuntime.isSessionActive(app)) PushRuntime.onSessionAvailable(app)
         val active = LinkedHashMap<String, TaskProgress>()
-        state.tasks.filter { !it.done && it.endAt != null }.forEach { task ->
+        state.tasks.filter { !it.done && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
             val finish = task.endAt ?: return@forEach
             active[task.id] = tracked(task.id, task.name, finish, task.startAt ?: 0L)
         }

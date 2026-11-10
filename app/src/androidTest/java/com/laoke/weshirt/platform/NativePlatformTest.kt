@@ -5,15 +5,18 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.WorkManager
+import androidx.lifecycle.ViewModelProvider
 import com.google.firebase.FirebaseApp
 import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.MainActivity
+import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.platform.login.DingTalkLoginBridge
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
@@ -77,6 +80,7 @@ class NativePlatformTest {
 
     @Test fun realNotificationDeliveryRejectsReplaysAndOlderRevisions() {
         grantNotifications()
+        PushRuntime.initialize(app, PushConfiguration(consent = true))
         PushRuntime.onSessionAvailable(app)
         val id = "instrumented:${UUID.randomUUID()}"
         val event = NativePushEvent(id, 3, PushEventKind.ANNOUNCEMENT, "修订 3", "设备测试通知")
@@ -92,6 +96,7 @@ class NativePlatformTest {
 
     @Test fun logoutCancelsScheduledWorkAndErasesPrivateWidgetAndLoginState() = runBlocking {
         grantNotifications()
+        PushRuntime.initialize(app, PushConfiguration(consent = true))
         PushRuntime.onSessionAvailable(app)
         val task = TaskProgress("instrumented-task", 1, "测试洗衣机", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)
         LaundryReminders.schedule(app, task)
@@ -128,12 +133,62 @@ class NativePlatformTest {
         }
     }
 
+    @Test fun nativeNotificationNavigationHandlesColdAndWarmStartsAndRejectsUrls() {
+        val intent = requireNotNull(app.packageManager.getLaunchIntentForPackage(app.packageName))
+            .putExtra(NativeNavigation.DESTINATION_EXTRA, "CHAT_MENTION")
+        ActivityScenario.launch<MainActivity>(intent).use { scenario ->
+            scenario.onActivity { activity ->
+                val vm = ViewModelProvider(activity)[AppViewModel::class.java]
+                assertEquals(2, vm.state.value.tab)
+                assertFalse(activity.intent.hasExtra(NativeNavigation.DESTINATION_EXTRA))
+            }
+            requireNotNull(NativeNavigation.pendingIntent(app, "MY_LAUNDRY", "warm-start-test")).send()
+            awaitActivity(scenario) { it.intent.action == "weshirt.open.warm-start-test" }
+            scenario.onActivity { activity ->
+                assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab)
+                assertFalse(activity.intent.hasExtra(NativeNavigation.DESTINATION_EXTRA))
+            }
+            app.startActivity(Intent(app, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .setAction("untrusted-start-test")
+                .putExtra(NativeNavigation.DESTINATION_EXTRA, "https://example.invalid/untrusted"))
+            awaitActivity(scenario) { it.intent.action == "untrusted-start-test" }
+            scenario.onActivity { activity -> assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab) }
+            scenario.recreate()
+            scenario.onActivity { activity -> assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab) }
+        }
+    }
+
+    @Test fun refreshingSameTaskPreservesPendingWorkInsteadOfPostponingIt() {
+        grantNotifications()
+        PushRuntime.initialize(app, PushConfiguration(consent = true))
+        PushRuntime.onSessionAvailable(app)
+        val task = TaskProgress("stable-reminder", 7, "测试机器", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)
+        LaundryReminders.schedule(app, task)
+        val manager = WorkManager.getInstance(app)
+        val before = manager.getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).filter { !it.state.isFinished }.map { it.id }.toSet()
+        assertEquals(2, before.size)
+        LaundryReminders.schedule(app, task)
+        val after = manager.getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).filter { !it.state.isFinished }.map { it.id }.toSet()
+        assertEquals(before, after)
+    }
+
     private fun grantNotifications() {
         if (Build.VERSION.SDK_INT >= 33) {
             instrumentation.uiAutomation.executeShellCommand("pm grant ${app.packageName} ${Manifest.permission.POST_NOTIFICATIONS}")
                 .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText() }
         }
         assertTrue("The emulator must allow notification permission", notices.capabilities().permissionGranted)
+    }
+
+    private fun awaitActivity(scenario: ActivityScenario<MainActivity>, condition: (MainActivity) -> Boolean) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        var matched = false
+        while (!matched && System.nanoTime() < deadline) {
+            scenario.onActivity { matched = condition(it) }
+            if (!matched) Thread.sleep(50)
+        }
+        assertTrue("The native activity must receive the launch intent", matched)
     }
 
     private fun assertMissingComponent(name: String) {

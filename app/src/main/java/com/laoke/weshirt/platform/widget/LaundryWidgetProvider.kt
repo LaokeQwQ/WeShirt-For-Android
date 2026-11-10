@@ -1,6 +1,5 @@
 package com.laoke.weshirt.platform.widget
 
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
@@ -9,6 +8,7 @@ import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import com.laoke.weshirt.R
+import com.laoke.weshirt.platform.NativeNavigation
 import com.laoke.weshirt.platform.push.PushRuntime
 import org.json.JSONObject
 import java.text.DateFormat
@@ -65,10 +65,14 @@ class LaundryWidgetProvider : AppWidgetProvider() {
             views.setTextViewText(R.id.widget_building, snapshot?.buildingName ?: "WeShirt")
             views.setTextViewText(R.id.widget_summary, snapshot?.let { "空闲 ${it.idle} · 使用 ${it.busy} · 未知 ${it.unknown}" }
                 ?: "登录并选择宿舍楼后显示洗衣状态")
-            val stale = snapshot == null || System.currentTimeMillis() - snapshot.updatedAtMillis > 10 * 60_000L
+            val now = System.currentTimeMillis()
+            val validTimestamp = snapshot != null && snapshot.updatedAtMillis > 0L && snapshot.updatedAtMillis <= now + 30_000L
+            val stale = !validTimestamp || now - (snapshot?.updatedAtMillis ?: 0L) > 10 * 60_000L
             views.setTextViewText(R.id.widget_updated, snapshot?.let {
-                val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it.updatedAtMillis))
-                if (stale) "$time 更新 · 请打开刷新" else "$time 更新"
+                if (!validTimestamp) "更新时间未知 · 请打开刷新" else {
+                    val time = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(it.updatedAtMillis))
+                    if (stale) "$time 更新 · 请打开刷新" else "$time 更新"
+                }
             } ?: "点按打开应用")
             val finish = snapshot?.taskEstimatedFinishAtMillis
             val countdown = finish != null && finish > System.currentTimeMillis() && !stale
@@ -81,11 +85,7 @@ class LaundryWidgetProvider : AppWidgetProvider() {
                 views.setChronometer(R.id.widget_countdown, SystemClock.elapsedRealtime() + finish!! - System.currentTimeMillis(), null, true)
                 views.setChronometerCountDown(R.id.widget_countdown, true)
             }
-            context.packageManager.getLaunchIntentForPackage(context.packageName)?.let { intent ->
-                intent.putExtra("weshirt.destination", "MY_LAUNDRY")
-                views.setOnClickPendingIntent(R.id.widget_root, PendingIntent.getActivity(context, id, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-            }
+            views.setOnClickPendingIntent(R.id.widget_root, NativeNavigation.pendingIntent(context, "MY_LAUNDRY", "widget:$id"))
             manager.updateAppWidget(id, views)
         }
     }

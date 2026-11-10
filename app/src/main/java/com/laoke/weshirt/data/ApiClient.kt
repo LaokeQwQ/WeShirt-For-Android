@@ -100,7 +100,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                 if(!r.isSuccessful) { val e = j.optJSONObject("error") ?: JSONObject(); throw ApiException(r.code, e.str("code", "http_error"), e.str("eventId", r.header("X-Event-ID") ?: requestId), e.str("message", "请求未完成")) }
                 j
             }
-        } catch(e: ApiException) { throw e } catch(_: IOException) { throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试") }
+        } catch(e: ApiException) { throw e } catch(e: IOException) { throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) } }
     }
     suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessToken(origin,version) }
     suspend fun upload(path: String, bytes: ByteArray, mime: String): JSONObject {

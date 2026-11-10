@@ -95,15 +95,55 @@ class NativeLaundryRoomTest {
         val machines = (0 until 14).map { index ->
             RoomMachine("floor-machine-$index", if(index % 2 == 0) "1" else "unmapped", "Machine $index", RoomMachineState.IDLE)
         }
+        val before = snapshot(room).renderedFrames
         onMain { room.setMachines(machines) }
         await("Generic room did not submit geometry") {
-            snapshot(room).let { it.machineCount == 14 && it.renderedFrames > 0 }
+            snapshot(room).let { it.machineCount == 14 && it.renderedFrames > before }
         }
         assertNull(snapshot(room).failureEvent)
         machines.forEach { machine ->
             assertNotNull("Generic layout dropped ${machine.id}", onMain { room.machineScreenPosition(machine.id) })
         }
         assertTrue(errors.get().isEmpty())
+    }
+
+    @Test fun pendingTapCannotOpenADifferentMachineAfterPauseOrLayoutChange() = withRoom { _, room, _ ->
+        await("Scene did not become ready") { snapshot(room).renderedFrames > 0 }
+        val selected = AtomicReference<String?>(null)
+        onMain {
+            room.onMachineSelected = selected::set
+            val center = requireNotNull(room.machineScreenPosition("native-machine-4"))
+            tap(room, center.x, center.y)
+            room.lifecyclePause()
+        }
+        SystemClock.sleep(400)
+        assertNull("A paused scene must cancel its delayed single-tap action", selected.get())
+        val paused = snapshot(room).renderedFrames
+        onMain { room.lifecycleResume() }
+        await("Scene did not resume") { snapshot(room).renderedFrames > paused }
+        onMain {
+            val center = requireNotNull(room.machineScreenPosition("native-machine-4"))
+            tap(room, center.x, center.y)
+            room.setMachines(originalMachines().map { it.copy(id = "replacement-${it.id}") })
+        }
+        SystemClock.sleep(400)
+        assertNull("A tap on the previous layout must not select its replacement", selected.get())
+    }
+
+    @Test fun aRecreatedNativeSurfaceKeepsTheEngineAndRendersAgain() = withRoom { _, room, errors ->
+        await("Scene did not become ready") { snapshot(room).renderedFrames > 0 }
+        val surface = onMain { room.getChildAt(0) as SurfaceView }
+        onMain { surface.visibility = android.view.View.GONE }
+        await("Hidden surface did not release its swap chain") { !snapshot(room).surfaceReady }
+        val hidden = snapshot(room).renderedFrames
+        SystemClock.sleep(150)
+        assertEquals(hidden, snapshot(room).renderedFrames)
+        assertTrue("Surface destruction must preserve the reusable engine", snapshot(room).engineReady)
+        onMain { surface.visibility = android.view.View.VISIBLE }
+        await("Recreated Surface did not submit a frame") { snapshot(room).let { it.surfaceReady && it.renderedFrames > hidden } }
+        assertNull(snapshot(room).failureEvent)
+        assertTrue(errors.get().isEmpty())
+        assertSurfaceContainsRenderedGeometry(room)
     }
 
     private fun withRoom(test: (ActivityScenario<MainActivity>, LaundryRoomView, AtomicReference<List<String>>) -> Unit) {
@@ -132,10 +172,9 @@ class NativeLaundryRoomTest {
                 room.lifecycleResume()
             }
             try { test(scenario, room, errors) }
-            finally {
-                scenario.moveToState(Lifecycle.State.RESUMED)
-                scenario.onActivity { activity -> activity.lifecycle.removeObserver(observer); room.dispose() }
-            }
+            // Cleanup must work even when an assertion leaves the Activity stopped. Resuming
+            // merely to clean up would hide zero-frame failures and can mask the first error.
+            finally { onMain { room.dispose() } }
         }
     }
 

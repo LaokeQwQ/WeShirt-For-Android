@@ -12,6 +12,7 @@ import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.login.*
+import com.laoke.weshirt.platform.NativeNavigation
 import com.laoke.weshirt.ui.WeShirtApp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -23,9 +24,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         consumeLogin(intent)
+        consumeNavigation(intent)
         setContent { WeShirtApp(vm, onLogin = ::login, onRequestNotifications = { if(Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.toggleNotify(true) }) }
     }
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); consumeLogin(intent) }
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); consumeLogin(intent); consumeNavigation(intent) }
+    private fun consumeNavigation(intent: Intent?) { NativeNavigation.consumeTab(intent)?.let(vm::tab) }
     private fun login() {
         vm.mutate(null) {
             val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)

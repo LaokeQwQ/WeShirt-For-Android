@@ -26,6 +26,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var refreshPending = false
     private val mutationMutex = Mutex()
     private var generation = 0
+    private data class CachedMetadata(val value: JSONObject, val generation: Int, val until: Long)
+    private val metadata = mutableMapOf<String, CachedMetadata>()
+    private suspend fun metadata(path: String, auth: Boolean = true): JSONObject {
+        val version = generation
+        val now = android.os.SystemClock.elapsedRealtime()
+        metadata[path]?.takeIf { it.generation == version && now < it.until }?.let { return it.value }
+        val value = api.call(path, auth = auth)
+        if(version == generation) metadata[path] = CachedMetadata(value, version, now + 300_000)
+        return value
+    }
     private val telemetryBuffer = ArrayDeque<JSONObject>()
     private var telemetrySentAt = 0L
     private val _state = MutableStateFlow(AppState(endpoint = prefs.getString("endpoint", BuildConfig.API_BASE_URL).orEmpty(), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false)))
@@ -49,7 +59,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         refresh()
     }
-    fun platformSessionChanged() { platform.sessionChanged(); refresh() }
+    fun platformSessionChanged() { generation++; metadata.clear(); platform.sessionChanged(); refresh() }
     fun notificationPermissionDenied() { platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
     fun message(text: String) { _state.update { it.copy(info = text) } }
     fun clearFeedback() { _state.update { it.copy(info = null, error = null) } }
@@ -84,22 +94,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (_state.value.profile == null) { generation++; prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) }; refresh() }
         else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation++; prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) } }
     }
-    fun refresh(): kotlinx.coroutines.Job = viewModelScope.launch {
+    fun refresh(forceMetadata: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
         if (api.baseUrl.isBlank()) return@launch
+        if(forceMetadata) metadata.clear()
         if (!refreshMutex.tryLock()) { refreshPending = true; return@launch }
         val version = generation
         _state.update { it.copy(loading = true) }
         try {
-            val site = api.call("/api/site", auth = false)
+            val site = metadata("/api/site", auth = false)
             if(version != generation) return@launch
             val buildings = site.optJSONArray("buildings")?.objects().orEmpty().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
             val signedIn = session.read() != null
-            val profile = if(signedIn) Profile.parse(api.call("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
+            val profile = if(signedIn) Profile.parse(metadata("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
             val building = profile?.building?.takeIf { b -> buildings.any { it.code == b } } ?: _state.value.building.takeIf { b -> buildings.any { it.code == b } }.orEmpty()
             val result = coroutineScope {
                 val board = async { if (building.isNotBlank()) api.call("/api/machines?dorm=${api.encoded(building)}", auth = false) else JSONObject() }
                 val tasks = async { if (signedIn) api.call("/api/tasks") else JSONObject() }
-                val favorites = async { if (signedIn) api.call("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }
+                val favorites = async { if (signedIn) metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }
                 Triple(board.await(), tasks.await(), favorites.await())
             }
             if(version != generation) return@launch
@@ -110,7 +121,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             val tasks = result.second.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse)
             val queues = if(signedIn && building.isNotBlank()) api.call("/api/queue?dorm=${api.encoded(building)}").optJSONArray("queue")?.objects().orEmpty() else emptyList()
-            val announcementPrefs = if(signedIn) api.call("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
+            val announcementPrefs = if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
             val favs = result.third.optJSONArray("favorites") ?: JSONArray()
             if(version != generation) return@launch
             _state.update { it.copy(buildings = buildings, building = building, profile = profile, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
@@ -118,7 +129,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if(_state.value.tab == 1 && signedIn) loadSocialNow(version)
             if (version == generation) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
-                val announcements = api.call("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
+                val announcements = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
                 if(version == generation) _state.update { it.copy(announcements = announcements) }
             }
         } catch (e: CancellationException) { throw e } catch (e: Exception) { if (version == generation) _state.update { it.copy(error = e.message ?: "加载失败") } }
@@ -136,7 +147,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun mutate(success: String? = "已保存", wait: Boolean = false, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
         if(wait) mutationMutex.lock() else if(!mutationMutex.tryLock()) return@launch
         _state.update { it.copy(busy = true) }
-        try { block(); if(success != null) message(success); refresh() }
+        try { block(); metadata.clear(); if(success != null) message(success); refresh() }
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }

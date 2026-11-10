@@ -30,12 +30,18 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         if (mode != value) {
             mode = value
             adaptiveLevel = 0
+            noticePending = false
+            lastChange = Long.MIN_VALUE / 2
             resetWindow()
         }
     }
 
-    fun setDisplayRefreshRate(value: Float) { refreshRate = validRefreshRate(value) }
+    fun setDisplayRefreshRate(value: Float) {
+        val next = validRefreshRate(value)
+        if(next != refreshRate) { refreshRate = next; resetWindow() }
+    }
     fun setActivity(interacting: Boolean, animated: Boolean) {
+        if ((this.interacting || this.animated) != (interacting || animated)) resetWindow()
         this.interacting = interacting
         this.animated = animated
     }
@@ -47,11 +53,14 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         }
     }
 
-    fun setPowerSaver(value: Boolean) { powerSaver = value }
+    fun setPowerSaver(value: Boolean) {
+        if(powerSaver != value) { powerSaver = value; resetWindow() }
+    }
 
     fun setThermalStatus(value: Int) {
         val previous = thermalStatus
         thermalStatus = value.coerceIn(0, 6)
+        if((previous >= 2) != (thermalStatus >= 2)) resetWindow()
         if (previous < 3 && thermalStatus >= 3) noticePending = true
     }
 

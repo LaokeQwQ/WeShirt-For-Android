@@ -13,6 +13,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import com.laoke.weshirt.R
+import com.laoke.weshirt.platform.NativeNavigation
 import com.laoke.weshirt.platform.push.EventRevisionLedger
 import com.laoke.weshirt.platform.push.NativePushEvent
 import com.laoke.weshirt.platform.push.PushEventKind
@@ -46,7 +47,7 @@ class LaundryNotifications(context: Context) {
     /** Returns true only when a valid, newer revision was actually posted. */
     @SuppressLint("MissingPermission") // Permission is checked by capabilities immediately before delivery.
     fun post(event: NativePushEvent): Boolean = synchronized(lock) {
-        if (!event.valid() || !PushRuntime.isSessionActive(app)) return false
+        if (!event.valid() || !PushRuntime.notificationsAllowed(app)) return false
         val capability = capabilities()
         if (!capability.permissionGranted || !capability.notificationsEnabled) return false
         val ledger = loadLedger()
@@ -62,7 +63,7 @@ class LaundryNotifications(context: Context) {
             .setPublicVersion(Notification.Builder(app, channel).setSmallIcon(R.drawable.notification_laundry)
                 .setContentTitle("WeShirt").setContentText("有一条新的洗衣提醒").build())
             .setAutoCancel(true).setOnlyAlertOnce(true)
-            .setContentIntent(openApp(event.kind.name, event.taskId, event.eventId)).build()
+            .setContentIntent(NativeNavigation.pendingIntent(app, event.kind.name, event.eventId)).build()
         try {
             manager.notify("event:${event.eventId}", 0, notification)
             ledger.record(event.eventId, event.revision)
@@ -75,8 +76,8 @@ class LaundryNotifications(context: Context) {
     @SuppressLint("MissingPermission")
     fun updateProgress(progress: TaskProgress): Boolean = synchronized(lock) {
         val tag = "progress:${progress.taskId}"
-        if (!progress.active) { manager.cancel(tag, 0); return true }
-        if (!PushRuntime.isSessionActive(app)) return false
+        if (!progress.active || LaundryReminders.isConfirmedFinished(app, progress.taskId)) { manager.cancel(tag, 0); return true }
+        if (!PushRuntime.notificationsAllowed(app)) return false
         if (progress.taskId.isBlank() || progress.revision < 0 || progress.estimatedFinishAtMillis <= 0 ||
             progress.startedAtMillis > 0 && (progress.estimatedFinishAtMillis <= progress.startedAtMillis ||
             progress.estimatedFinishAtMillis - progress.startedAtMillis > 24 * 60 * 60_000L)) return false
@@ -98,7 +99,7 @@ class LaundryNotifications(context: Context) {
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setProgress(if (progress.startedAtMillis > 0) 1000 else 0,
                 if (progress.startedAtMillis > 0) ((elapsed * 1000) / duration).toInt() else 0, progress.startedAtMillis <= 0)
-            .setContentIntent(openApp("MY_LAUNDRY", progress.taskId, progress.taskId))
+            .setContentIntent(NativeNavigation.pendingIntent(app, "MY_LAUNDRY", progress.taskId))
             .setDeleteIntent(PendingIntent.getBroadcast(app, progress.taskId.hashCode(),
                 Intent(app, NotificationDismissReceiver::class.java).setAction("dismiss:${progress.taskId}")
                     .putExtra("taskId", progress.taskId), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
@@ -124,15 +125,6 @@ class LaundryNotifications(context: Context) {
             NotificationChannel(PROGRESS_CHANNEL, "洗衣进度", NotificationManager.IMPORTANCE_LOW),
         ))
     }
-
-    private fun openApp(destination: String, taskId: String?, identity: String): PendingIntent? =
-        app.packageManager.getLaunchIntentForPackage(app.packageName)?.let { intent ->
-            intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            intent.action = "weshirt.open.$identity"
-            intent.putExtra("weshirt.destination", destination)
-            taskId?.let { intent.putExtra("weshirt.taskId", it.take(160)) }
-            PendingIntent.getActivity(app, identity.hashCode(), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        }
 
     private fun loadLedger(): EventRevisionLedger {
         val ledger = EventRevisionLedger()

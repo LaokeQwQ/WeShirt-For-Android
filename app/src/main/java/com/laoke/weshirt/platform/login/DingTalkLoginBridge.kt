@@ -100,7 +100,7 @@ object DingTalkLoginBridge {
         val state = intent.getStringExtra(DDAuthConstant.CALLBACK_EXTRA_STATE)
         val now = System.currentTimeMillis()
         if (!prefs.getBoolean("launched", false) || prefs.getBoolean("ready", false) ||
-            now >= prefs.getLong("expires", 0L) || !same(prefs.getString("state", null), state)) return false
+            now < prefs.getLong("created", 0L) || now >= prefs.getLong("expires", 0L) || !same(prefs.getString("state", null), state)) return false
         val callbackType = intent.getStringExtra(DDAuthConstant.CALLBACK_EXTRA_TYPE)
         if (callbackType == DDAuthConstant.AUTH_LOGIN_TYPE_WEB) return false
         val code = intent.getStringExtra(DDAuthConstant.CALLBACK_EXTRA_AUTH_CODE)?.takeIf { it.isNotBlank() && it.length <= 4096 }
@@ -129,7 +129,10 @@ object DingTalkLoginBridge {
         return reply
     }
 
-    fun clear(context: Context) { context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit() }
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+        context.getSharedPreferences("native_login_origin", Context.MODE_PRIVATE).edit().clear().commit()
+    }
 
     internal fun challengeFor(verifier: String): String = encode(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
     internal fun same(a: String?, b: String?): Boolean = a != null && b != null &&

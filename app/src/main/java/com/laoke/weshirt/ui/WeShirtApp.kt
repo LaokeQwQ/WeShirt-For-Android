@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
         Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
             TopAppBar(title = { Column { Text(if(state.tab == 0) "WeShirt" else listOf("洗衣房", "我的洗衣", "频道", "我的")[state.tab], style = MaterialTheme.typography.titleLarge); if(state.tab == 0) Text("把等衣的时间，留给生活", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
                 if(state.tab == 0) FilledTonalButton(onClick = { buildingPicker = true }, contentPadding = PaddingValues(horizontal = 12.dp)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(state.buildings.find { it.code == state.building }?.name ?: "选择楼栋") }
-                IconButton(onClick = { vm.refresh() }, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "刷新") }
+                IconButton(onClick = { vm.refresh(forceMetadata = true) }, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "刷新") }
             })
         }, bottomBar = {
             NavigationBar { listOf(Triple("洗衣房", Icons.Outlined.LocalLaundryService, 0), Triple("我的洗衣", Icons.Outlined.Schedule, 1), Triple("频道", Icons.Outlined.ChatBubbleOutline, 2), Triple("我的", Icons.Outlined.PersonOutline, 3)).forEach { (label, icon, index) ->

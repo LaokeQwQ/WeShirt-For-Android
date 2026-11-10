@@ -23,9 +23,10 @@ class NativeScreensTest {
         val machines = (1..7).map { machine("id-$it", "$it") } + listOf(machine("dry-1", "D1", "dryer"), machine("dry-2", "D2", "dryer"))
         var selection = ""
         var rendererFailure: String? = null
-        compose.setContent { WeShirtTheme("light","blue") { RoomScreen(AppState(building="test", machines=machines), { selection = it }, { rendererFailure = it }) } }
+        compose.setContent { WeShirtTheme("light","blue") { RoomScreen(AppState(building="test", machines=machines), { selection = it.id }, { rendererFailure = it }) } }
         compose.waitForIdle()
-        compose.onNodeWithText("测试机 D1", substring = true).performScrollTo().performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("测试机 D1", substring = true))
+        compose.onNodeWithText("测试机 D1", substring = true).performClick()
         compose.runOnIdle { assertEquals("dry-1", selection); check(rendererFailure == null) { rendererFailure.orEmpty() } }
         compose.onNodeWithText("机器列表").performClick()
         compose.onNodeWithText("最快可用").assertIsDisplayed()
@@ -42,7 +43,7 @@ class NativeScreensTest {
         compose.onNodeWithText("登记我的烘干").performClick()
         compose.onNodeWithText("40").assertExists()
         compose.onNodeWithText("下一步").performClick()
-        compose.onNodeWithText("确认登记", useUnmergedTree=true).assertExists()
+        compose.onNode(hasText("确认登记") and hasClickAction()).assertIsDisplayed()
         compose.onNodeWithText("备注、消毒液和自清洁信息将公开显示。").assertExists()
         compose.onNodeWithText("返回修改").performClick()
         compose.onNodeWithText("40").assertExists()

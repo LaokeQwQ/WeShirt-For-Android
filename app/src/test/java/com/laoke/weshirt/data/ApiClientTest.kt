@@ -21,16 +21,11 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], manifest = Config.NONE)
 class ApiClientTest {
     private class MemorySession : SessionStore {
         override val installationId = "native_test_installation"
@@ -47,7 +42,8 @@ class ApiClientTest {
     private val temporary = Files.createTempDirectory("weshirt-api-test").toFile()
 
     @Before fun prepare() {
-        val certificate = HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost").build()
+        val certificate = HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("localhost")
+            .addSubjectAlternativeName("127.0.0.1").addSubjectAlternativeName("::1").build()
         val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
         val trusted = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
         server = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start() }

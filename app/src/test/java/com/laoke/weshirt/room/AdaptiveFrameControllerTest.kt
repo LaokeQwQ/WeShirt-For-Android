@@ -98,6 +98,17 @@ class AdaptiveFrameControllerTest {
         assertTrue(controller.state().adaptiveLevel > 0)
     }
 
+    @Test fun separateShortInteractionsDoNotAccumulateIntoASustainedFailureWindow() {
+        val controller = activeController()
+        for (interaction in 0..20) {
+            controller.setActivity(interacting = true, animated = false)
+            val start = interaction * 10_000_000_000L
+            for(frame in 0..30) controller.observeFrame(start + frame * BUDGET, 25_000_000, 1_000_000, BUDGET)
+            controller.setActivity(interacting = false, animated = false)
+        }
+        assertEquals(0, controller.state().adaptiveLevel)
+    }
+
     private fun activeController(refreshRate: Float = 60f) = AdaptiveFrameController(refreshRate).apply {
         setActivity(interacting = true, animated = true)
     }
