@@ -26,6 +26,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var refreshPending = false
     private val mutationMutex = Mutex()
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+    private val notificationIntent = java.util.concurrent.atomic.AtomicLong(0)
+    private val announcementIntent = java.util.concurrent.atomic.AtomicLong(0)
     private data class CachedMetadata(val value: JSONObject, val generation: Int, val until: Long)
     private val metadata = mutableMapOf<String, CachedMetadata>()
     private suspend fun metadata(path: String, auth: Boolean = true): JSONObject {
@@ -38,7 +40,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     private val telemetryBuffer = ArrayDeque<JSONObject>()
     private var telemetrySentAt = 0L
-    private val _state = MutableStateFlow(AppState(endpoint = prefs.getString("endpoint", BuildConfig.API_BASE_URL).orEmpty(), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false)))
+    private val _state = MutableStateFlow(AppState(endpoint = prefs.getString("endpoint", BuildConfig.API_BASE_URL).orEmpty(), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false), announcementsOn = prefs.getBoolean("announcements", true)))
     val state = _state.asStateFlow()
     private val platform: PlatformCoordinator = PlatformCoordinator(app, session, api) { refresh() }
     init {
@@ -60,7 +62,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
     fun platformSessionChanged() { generation.incrementAndGet(); metadata.clear(); platform.sessionChanged(); refresh() }
-    fun notificationPermissionDenied() { platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
+    fun notificationPermissionDenied() { notificationIntent.incrementAndGet(); platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
     fun message(text: String) { _state.update { it.copy(info = text) } }
     fun clearFeedback() { _state.update { it.copy(info = null, error = null) } }
     fun tab(value: Int) { _state.update { it.copy(tab = value) }; if(_state.value.telemetryOn && telemetryBuffer.size < 20) telemetryBuffer.add(JSONObject().put("name","page_view").put("route",route())); refresh() }
@@ -85,7 +87,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 getApplication<Application>().getSharedPreferences("native_login_origin", 0).edit().clear().commit()
                 platform.beforeSessionCleared()
                 session.clear()
-                _state.update { AppState(endpoint = url, appearance = it.appearance, palette = it.palette, notificationsOn = false) }
+                _state.update { AppState(endpoint = url, appearance = it.appearance, palette = it.palette, notificationsOn = false, announcementsOn = prefs.getBoolean("announcements", true)) }
             }
             api.baseUrl = url; prefs.edit().putString("endpoint", url).apply()
         }
@@ -124,13 +126,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val announcementPrefs = if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
             val favs = result.third.optJSONArray("favorites") ?: JSONArray()
             if(version != generation.get()) return@launch
-            _state.update { it.copy(buildings = buildings, building = building, profile = profile, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
+            _state.update { it.copy(buildings = buildings, building = building, profile = profile, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
             if(_state.value.tab == 2) loadChannelsNow(version)
             if(_state.value.tab == 1 && signedIn) loadSocialNow(version)
             if (version == generation.get()) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
                 val announcements = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
-                if(version == generation.get()) _state.update { it.copy(announcements = announcements) }
+                if(version == generation.get()) _state.update { it.copy(announcements = if (it.announcementsOn && prefs.getBoolean("announcements", true)) announcements else emptyList()) }
             }
         } catch (e: CancellationException) { throw e } catch (e: Exception) { if (version == generation.get()) _state.update { it.copy(error = e.message ?: "加载失败") } }
         finally { _state.update { it.copy(loading = false) }; refreshMutex.unlock(); flushTelemetry(); if(refreshPending) { refreshPending = false; refresh() } }
@@ -160,12 +162,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelQueue(machineId: String) = mutate("已取消排队") { api.call("/api/queue?machineId=${api.encoded(machineId)}", "DELETE") }
     fun nick(value: String) = mutate { api.call("/api/user/profile", "POST", JSONObject().put("nick", value)) }
     fun randomNick(callback: (String) -> Unit) = mutate(null) { val j=api.call("/api/user/random?field=nick"); callback(j.str("nick", j.str("value"))) }
-    fun toggleAnnouncements(value: Boolean) = mutate { if(_state.value.profile != null) api.call("/api/user/announcements", "PATCH", JSONObject().put("enabled", value)); prefs.edit().putBoolean("announcements", value).apply(); _state.update { it.copy(announcementsOn = value) } }
-    fun toggleNotify(value: Boolean) = mutate(null) {
-        api.call("/api/user/notify", "POST", JSONObject().put("on", value))
-        val status = platform.enableNotifications(value)
-        _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
-        message(status)
+    fun toggleAnnouncements(value: Boolean): kotlinx.coroutines.Job {
+        val intent = announcementIntent.incrementAndGet()
+        val account = generation.get()
+        // Revoking a local preference must not wait for an unrelated write or the network.
+        if (!value) {
+            prefs.edit().putBoolean("announcements", false).commit()
+            _state.update { it.copy(announcementsOn = false, announcements = emptyList()) }
+            message("开屏公告已关闭")
+        }
+        return mutate(null, wait = true) {
+            if (intent != announcementIntent.get() || account != generation.get()) return@mutate
+            if (_state.value.profile != null) api.call("/api/user/announcements", "PATCH", JSONObject().put("enabled", value))
+            if (value && intent == announcementIntent.get() && account == generation.get()) {
+                prefs.edit().putBoolean("announcements", true).commit()
+                _state.update { it.copy(announcementsOn = true) }
+                message("开屏公告已开启")
+            }
+        }
+    }
+    fun toggleNotify(value: Boolean): kotlinx.coroutines.Job {
+        val intent = notificationIntent.incrementAndGet()
+        val account = generation.get()
+        if (!value) {
+            platform.enableNotifications(false)
+            _state.update { it.copy(notificationsOn = false) }
+            message("通知已关闭")
+        }
+        return mutate(null, wait = true) {
+            if (intent != notificationIntent.get() || account != generation.get()) return@mutate
+            api.call("/api/user/notify", "POST", JSONObject().put("on", value))
+            if (value && intent == notificationIntent.get() && account == generation.get()) {
+                val status = platform.enableNotifications(true)
+                _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
+                message(status)
+            }
+        }
     }
     fun saveReminders(enabled: Boolean, start: String, end: String) = mutate { api.call("/api/user/laundry-preferences", "PATCH", JSONObject().put("enabled", enabled).put("favorites", JSONArray(_state.value.favorites.toList())).put("timeWindows", JSONArray().put(JSONObject().put("start", start).put("end", end).put("days", JSONArray(listOf(1,2,3,4,5,6,7)))))) }
     fun channel(code: String) { _state.update { it.copy(channel = code, messages = emptyList()) }; viewModelScope.launch { try { loadMessagesNow(generation.get()) } catch(e: Exception) { message(e.message.orEmpty()) } } }
