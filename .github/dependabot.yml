@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      compose:
+        patterns: ["androidx.compose*", "org.jetbrains.kotlin*"]
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly

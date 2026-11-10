@@ -1,0 +1,8 @@
+-keep class com.alibaba.android.dingtalk.** { *; }
+-keep class com.android.dingtalk.openauth.** { *; }
+-keep class com.umeng.** { *; }
+-keep class com.uc.** { *; }
+-keep class org.android.agoo.** { *; }
+-keep class com.google.android.filament.** { *; }
+-dontwarn com.umeng.**
+-dontwarn com.uc.**

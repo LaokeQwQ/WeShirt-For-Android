@@ -1,0 +1,50 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+    <uses-permission android:name="freemme.permission.msa" tools:node="remove" />
+    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
+    <queries><package android:name="com.alibaba.android.rimet" /></queries>
+    <application android:name=".WeShirtApplication" android:allowBackup="false" android:label="WeShirt" android:icon="@drawable/ic_launcher" android:theme="@style/Theme.WeShirt" android:usesCleartextTraffic="false" android:supportsRtl="true">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity>
+        <activity android:name=".platform.login.DingTalkCallbackActivity" android:exported="false" />
+        <activity-alias android:name="${applicationId}.ddauth.DDAuthActivity" android:targetActivity=".platform.login.DingTalkCallbackActivity" android:exported="true" />
+        <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
+        <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
+        <receiver android:name=".platform.widget.LaundryWidgetProvider" android:exported="false"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" /></receiver>
+        <receiver android:name=".platform.notification.NotificationDismissReceiver" android:exported="false" />
+        <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
+        <provider android:name="com.google.firebase.provider.FirebaseInitProvider" tools:node="remove" />
+        <provider android:name="com.huawei.hms.aaid.InitProvider" tools:node="remove" />
+        <provider android:name="com.huawei.agconnect.core.provider.AGConnectInitializeProvider" tools:node="remove" />
+        <meta-data android:name="push_kit_auto_init_enabled" android:value="false" />
+        <provider android:name="com.umeng.message.component.UmengMessageProvider" android:enabled="false" tools:replace="android:enabled" />
+        <provider android:name="com.huawei.hms.support.api.push.PushProvider" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.xiaomi.push.service.UploadLogSDKService" tools:node="remove" />
+        <provider android:name="com.xiaomi.push.service.logupload.LogUploadFileProvider" tools:node="remove" />
+        <receiver android:name="com.google.firebase.iid.FirebaseInstanceIdReceiver" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.umeng.message.component.UmengIntentService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.umeng.message.component.UmengMessageReceiverService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.umeng.message.component.UmengMessageHandlerService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.taobao.accs.ChannelService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.taobao.accs.ChannelService$KernelService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.taobao.accs.data.MsgDistributeService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.taobao.accs.internal.AccsJobService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="org.android.agoo.accs.AgooService" android:enabled="false" tools:replace="android:enabled" />
+        <receiver android:name="com.taobao.accs.ServiceReceiver" android:enabled="false" tools:replace="android:enabled" />
+        <receiver android:name="org.android.agoo.xiaomi.MiPushBroadcastReceiver" android:enabled="false" tools:replace="android:enabled" />
+        <receiver android:name="com.xiaomi.push.service.receivers.PingReceiver" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.xiaomi.mipush.sdk.MessageHandleService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.xiaomi.mipush.sdk.PushMessageHandler" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.xiaomi.push.service.XMPushService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.xiaomi.push.service.XMJobService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="org.android.agoo.huawei.HuaweiRcvService" android:enabled="false" tools:replace="android:enabled" />
+        <service android:name="com.huawei.hms.support.api.push.service.HmsMsgService" android:enabled="false" tools:replace="android:enabled" />
+        <receiver android:name="com.huawei.hms.support.api.push.PushMsgReceiver" android:enabled="false" tools:replace="android:enabled" />
+        <receiver android:name="com.huawei.hms.support.api.push.PushReceiver" android:enabled="false" tools:replace="android:enabled" />
+    </application>
+</manifest>

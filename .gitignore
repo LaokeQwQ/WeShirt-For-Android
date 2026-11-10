@@ -30,6 +30,16 @@ render.experimental.xml
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json
+agconnect-services.json
+*.p12
+*.pfx
+*.pem
+*.key
+signing.properties
+secrets.properties
+.env
+.env.*
+!*.example
 
 # Android Profiling
 *.hprof
