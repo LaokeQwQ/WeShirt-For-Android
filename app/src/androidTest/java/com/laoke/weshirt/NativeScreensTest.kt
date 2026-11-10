@@ -3,6 +3,7 @@ package com.laoke.weshirt
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.data.*
 import com.laoke.weshirt.ui.MachineSheet
@@ -13,7 +14,6 @@ import org.junit.Rule
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class NativeScreensTest {
@@ -57,7 +57,8 @@ class NativeScreensTest {
 
     private fun saveScreenshot(name: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val file = File(instrumentation.targetContext.getExternalFilesDir(null), name)
-        instrumentation.uiAutomation.takeScreenshot()?.let { image -> file.outputStream().use { image.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) }; image.recycle() }
+        val image = requireNotNull(instrumentation.uiAutomation.takeScreenshot()) { "The native window did not provide a screenshot" }
+        try { image.writeToTestStorage(name.removeSuffix(".png")) }
+        finally { image.recycle() }
     }
 }

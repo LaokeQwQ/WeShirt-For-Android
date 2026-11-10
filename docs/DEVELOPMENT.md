@@ -13,6 +13,8 @@ Android 10 及以上，Kotlin + Jetpack Compose Material 3，Filament 原生 3D�
 
 本地 `local.properties` 配置 `sdk.dir`。服务端地址可以在应用中填写 HTTPS 根地址，也可以通过私有 `WESHIRT_API_BASE_URL` 环境变量注入。公开源码不包含学校、正式域名、账号或凭据。
 
+`local.properties` 使用 Java Properties 格式；Windows 路径请写为 `C:/Android/sdk` 这样的正斜杠路径，避免反斜杠被当作转义符。环境变量优先于同名本地属性。客户端推送变量及可选华为配置见 [PUSH.md](PUSH.md)，服务端凭据和 CloudBase 原子存储见 [API.md](API.md)。
+
 Android 仓库保留原有 `main` 分支，开发提交先进入 `dev`，通过 CI 和审核后晋升 `main`。后端仓库继续使用 `dev → master`，生产由 `master` 部署。
 
 ## 自签名分发
@@ -33,6 +35,14 @@ Android 仓库保留原有 `main` 分支，开发提交先进入 `dev`，通过 
 ```
 
 需要保留同一签名才能覆盖升级。APK 不上传公共制品站；私有分发时同时提供版本号和 SHA-256。
+
+仓库不附带 keystore。没有配置签名时，`assembleRelease` 只会生成未签名 APK；必须使用部署方保管的自签名证书签名后才能安装、覆盖升级和登记厂商应用。正式授权及投递验收使用 `com.laoke.weshirt` 的实际分发包与签名。
+
+## 当前接入范围
+
+原生页面、3D、登记、排队、频道媒体、朋友代取、本地通知与桌面小组件均在本仓库。频道目前使用前台约 45 秒的 HTTP 刷新，并在操作、页面恢复和推送到达时更新；尚未接入原生 WebSocket。后端的原生握手票据扩展见 [API.md](API.md)。
+
+FCM 和 U-Push 已有实际 SDK 回调与后端发送适配器；小米和华为经 U-Push 聚合。登记应用、云端配置、签名和各品牌真机验收是正式投递的前提。OPPO、vivo、荣耀等单独的厂商 SDK、厂商私有灵动岛以及 iOS/TestFlight 不属于当前 Android 交付；Android 16 的标准 Live Updates 由系统决定是否展示。
 
 ## 数据与性能
 

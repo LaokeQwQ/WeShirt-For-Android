@@ -6,6 +6,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.laoke.weshirt.push-tls")
 }
+// The ignored deployment file supplies AGConnect resources; it never enables SDK startup.
+if (file("agconnect-services.json").isFile) apply(plugin = "com.huawei.agconnect")
 val privateConfig = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
 fun config(name: String, default: String = "") = (System.getenv(name) ?: privateConfig.getProperty(name, default))
 fun literal(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "") + "\""

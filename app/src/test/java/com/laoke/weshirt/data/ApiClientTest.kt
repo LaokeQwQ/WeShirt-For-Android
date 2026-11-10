@@ -21,6 +21,7 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.net.InetAddress
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -46,8 +47,13 @@ class ApiClientTest {
             .addSubjectAlternativeName("127.0.0.1").addSubjectAlternativeName("::1").build()
         val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
         val trusted = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
-        server = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start() }
-        second = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start() }
+        // Keep the listening address and HTTPS URL on the same IP family. With
+        // retries disabled, the deliberate disconnect penalizes that route;
+        // localhost may then select an unbound IPv4/IPv6 alternative. A failure
+        // before receipt is not the uncertain completed write this test needs.
+        val loopback = InetAddress.getByName("127.0.0.1")
+        server = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start(loopback, 0) }
+        second = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start(loopback, 0) }
         client = OkHttpClient.Builder().sslSocketFactory(trusted.sslSocketFactory(), trusted.trustManager)
             .protocols(listOf(Protocol.HTTP_1_1)).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
             .connectTimeout(3, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS).build()
@@ -59,7 +65,7 @@ class ApiClientTest {
         client.connectionPool.evictAll(); client.dispatcher.executorService.shutdown()
         temporary.deleteRecursively()
     }
-    private fun origin(value: MockWebServer) = value.url("/").toString().trimEnd('/')
+    private fun origin(value: MockWebServer) = value.url("/").newBuilder().host("127.0.0.1").build().toString().trimEnd('/')
     private fun json(value: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(value)
     private fun expired() = sessions.save(JSONObject().put("origin", api.baseUrl).put("accessToken", "old-access").put("refreshToken", "old-refresh").put("expiresAt", 0))
     private fun valid() = sessions.save(JSONObject().put("origin", api.baseUrl).put("accessToken", "valid-access").put("refreshToken", "valid-refresh").put("expiresAt", System.currentTimeMillis() + 600_000))
@@ -154,12 +160,21 @@ class ApiClientTest {
         val body = JSONObject().put("machineId", "machine_one").put("minutes", 40)
         try { api.call("/api/tasks", "POST", body); fail("Expected uncertain network failure") }
         catch(e: ApiException) { assertEquals("network_error", e.code); assertEquals(0, e.status); assertTrue(e.eventId.startsWith("client_")) }
-        api.call("/api/tasks", "POST", body)
-        api.call("/api/tasks", "POST", body)
-        val first = server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("Idempotency-Key")
-        val retry = server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("Idempotency-Key")
-        val next = server.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("Idempotency-Key")
-        assertNotNull(first); assertEquals(first, retry); assertNotEquals(first, next)
+        val accepted = server.takeRequest(3, TimeUnit.SECONDS)
+        assertNotNull("The failed call must have reached the server before it disconnected", accepted)
+        assertEquals("POST", accepted!!.method); assertEquals("/api/tasks", accepted.path)
+        val acceptedBody = accepted.body.readUtf8()
+        assertEquals(body.toString(), acceptedBody)
+        val first = accepted.getHeader("Idempotency-Key")
+        assertFalse(first.isNullOrBlank())
+        assertTrue(api.call("/api/tasks", "POST", body).getBoolean("ok"))
+        assertTrue(api.call("/api/tasks", "POST", body).getBoolean("ok"))
+        val retry = server.takeRequest(3, TimeUnit.SECONDS)!!
+        val next = server.takeRequest(3, TimeUnit.SECONDS)!!
+        assertEquals(acceptedBody, retry.body.readUtf8()); assertEquals(acceptedBody, next.body.readUtf8())
+        assertEquals(first, retry.getHeader("Idempotency-Key"))
+        assertNotEquals(first, next.getHeader("Idempotency-Key"))
+        assertEquals(3, server.requestCount)
     }
 
     @Test fun unsafeEndpointsAreRejectedAndHttpsOriginIsNormalized() {

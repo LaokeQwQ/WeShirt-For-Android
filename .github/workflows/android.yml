@@ -74,3 +74,4 @@ jobs:
             app/build/reports/androidTests/
             app/build/reports/device-screenshots/
             app/build/reports/device-logcat.txt
+            app/build/outputs/connected_android_test_additional_output/

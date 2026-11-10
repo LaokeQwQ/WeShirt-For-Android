@@ -14,6 +14,26 @@ HMS 自带的 BI 桥通过 Manifest 的 `bi.setting=true` 与 `bireport.setting=
 
 小米需申请包名对应 App ID/App Key；华为需登记包名、签名证书并配置匹配的 HMS 应用信息。友盟服务端发送 Secret 不得写入 APK。友盟客户端的 message secret、公开 App Key 与服务端发送凭据用途不同，仍应从本地私有配置生成，避免混入仓库。
 
+## 发行配置
+
+以下内容从本机忽略的 `local.properties` 或同名环境变量读取，环境变量优先。缺任一必需项时对应通道保持不可用；通知同意、登录状态和系统权限仍独立检查。
+
+| 客户端配置 | 用途 |
+| --- | --- |
+| `WESHIRT_PUSH_FCM_APP_ID` | Firebase Android Application ID |
+| `WESHIRT_PUSH_FCM_API_KEY` | 同一 Firebase 项目的客户端 API Key |
+| `WESHIRT_PUSH_FCM_PROJECT_ID` | Firebase Project ID |
+| `WESHIRT_PUSH_FCM_SENDER_ID` | Firebase Messaging Sender ID |
+| `WESHIRT_PUSH_UMENG_APP_KEY` | U-Push Android AppKey |
+| `WESHIRT_PUSH_UMENG_MESSAGE_SECRET` | U-Push 客户端 Message Secret |
+| `WESHIRT_PUSH_XIAOMI_APP_ID` | 已登记的小米应用 ID，须同时配置 App Key |
+| `WESHIRT_PUSH_XIAOMI_APP_KEY` | 对应小米应用的客户端 App Key |
+| `WESHIRT_PUSH_HUAWEI_CONFIGURED` | 华为配置准备完成后设为 `true`；默认 `false` |
+
+FCM 使用手动 `FirebaseOptions`，无需提交 `google-services.json`。服务端还需配置同一项目的发送服务账号；U-Push 服务端需要 Master Secret，不能使用 Message Secret 代替。具体变量和发送条件见 [API.md](API.md)。
+
+华为另需把开放平台下载的配置放在被 Git 忽略的 `app/agconnect-services.json`。只有该文件存在时，构建才解析并应用固定版本 `com.huawei.agconnect:agcp:1.9.6.300`，由官方插件生成 AGConnect 配置资源；无文件的公共构建不应用该插件。APM 插桩固定关闭，SDK 自动初始化 Provider 仍被移除，运行时仅在登录、同意和通道条件满足后手动初始化。仅设置布尔开关不能补出 app_id，实际资源缺失时报告 `DISABLED_MISSING_APP_ID`。按[华为官方接入说明](https://developer.huawei.com/consumer/en/doc/appgallery-connect-Guides/agc-get-started-android-0000001058210705/)核对包名、数据处理区域、Push Kit 开关和实际签名；修改应用配置后重新下载文件。此路径仍须配置后的构建与华为真机验收，公共无凭据构建不能证明已投递。
+
 ## 与后端连接
 
 实现 `PushRegistrationSink.register/unregister`，使用已有应用会话调用后端。登记采用 installationId 幂等替换旧 provider/token，token 轮换会重新登记。客户端按顺序执行登记/注销，避免注销覆盖新 token。登录成功调用 `PushRuntime.onSessionAvailable`；退出前调用 suspend `PushRuntime.logout`。服务端退出接口也必须撤销 installation 绑定，处理断网退出时的旧 token；客户端随后不再展示该会话的通知，并清理本地提醒、进度卡片、小组件快照和登录中间数据。
@@ -30,6 +50,7 @@ HMS 自带的 BI 桥通过 Manifest 的 `bi.setting=true` 与 `bireport.setting=
   "title": "洗衣已结束",
   "body": "设备已确认结束，请及时取衣。",
   "taskId": "example",
+  "finishAt": "2026-01-01T12:30:00.000Z",
   "serverConfirmed": "true"
 }
 ```

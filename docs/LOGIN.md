@@ -6,6 +6,10 @@
 
 在钉钉开放平台登记 Android 应用包名和实际签名摘要。自签 release 与 debug 签名不同；测试与私有分发应分别登记，不要通过关闭签名校验绕过。客户端不保存应用 Secret。服务端的移动端应用配置与网站 OAuth 配置分开。
 
+当前移动端契约固定正式包名 `com.laoke.weshirt`，无凭据的 `.debug` APK 用于界面和自动化测试。真实授权使用已登记的正式包与自签证书；若要建立独立的调试授权环境，还需让对应服务端明确支持测试包名与移动应用配置，不能只登记 debug 签名便跳过包名检查。
+
+正式登录还需要服务端启用移动授权、配置独立的 `DINGTALK_MOBILE_CLIENT_ID/CLIENT_SECRET/REDIRECT_URI`，以及可用的 CloudBase 原子会话存储。未配置返回 `503 mobile_auth_not_configured`。本版只登录已经关联钉钉身份的既有账号；未关联用户返回 `409 account_link_required`，需管理员先关联，不能把原生登录成功当作自动注册。部署步骤见 [API.md](API.md)。
+
 官方 SDK 有 H5 降级能力，本项目通过两层限制关闭：启动前检查 `DDAuthUtil.isDDAppInstalled/isDDSupportAPI` 并限定目标包；在 Manifest 删除 SDK 的 `AuthWebviewActivity`。授权回调域名仅用于钉钉校验，不打开页面。若钉钉更新导致原生接口不可用，登录直接失败，用户可重试或更新钉钉。
 
 `DingTalkLoginBridge.createRequest(context, installationId)` 产生随机 state 与 S256 codeChallenge。将其提交后端 challenge 接口。服务端返回 challengeId、原样 state、到期时间，以及 provider 的 clientId、redirectUri、scope。客户端把结果转换成 `NativeLoginChallenge`，调用 `begin(activity, challenge)`。

@@ -7,6 +7,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.PointF
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.AttributeSet
@@ -64,6 +66,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     val renderStatistics: RoomRenderStatistics get() = RoomRenderStatistics(
         renderedFrames, rejectedFrames, engine != null, swapChain != null && uiHelper?.isReadyToRender == true,
         materials.size, meshes.size, machines.size, latestGpuDurationNanos, rendererFailure, disposed,
+        pendingMaterialCompilations,
     )
 
     private val surfaceView = SurfaceView(context)
@@ -95,7 +98,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var lastGpuFrame = -1
     private var renderedFrames = 0L
     private var rejectedFrames = 0L
-    private var surfaceWarmupFrames = 0
+    private var pendingMaterialCompilations = 0
+    private var initialSceneCompilationQueued = false
     private var latestGpuDurationNanos: Long? = null
     private var lastQuality: QualityState? = null
     private var lastAppliedFps = -1
@@ -371,7 +375,15 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                 try { renderer?.render(requireNotNull(view)) }
                 finally { renderer?.endFrame() }
                 renderedFrames++
-                if(surfaceWarmupFrames > 0) surfaceWarmupFrames--
+                if (!initialSceneCompilationQueued) {
+                    initialSceneCompilationQueued = true
+                    // Skybox, depth and post-processing programs are requested lazily by
+                    // the first real render. A barrier queued before that render cannot
+                    // cover them. Wait for the driver's complete first-scene queue too.
+                    val e = requireNotNull(engine)
+                    queueMaterialCompilation(e, materials.first(), LIT_VARIANTS)
+                    e.flush()
+                }
             } else rejectedFrames++
             val cpu = System.nanoTime() - started
             // 90 FPS on a 120 Hz display intentionally alternates VSync intervals. A frame
@@ -386,7 +398,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             publishQuality()
         }
         // A still room has no render loop. State changes and input explicitly invalidate it.
-        if (dirty || moving || animated || surfaceWarmupFrames > 0) scheduleFrame()
+        if (dirty || moving || animated || pendingMaterialCompilations > 0) scheduleFrame()
     }
 
     private fun initializeRenderer() {
@@ -423,10 +435,6 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                         swapChain = null
                         old?.let(e::destroySwapChain)
                         swapChain = e.createSwapChain(surface)
-                        // Material program creation and swap-chain buffers are asynchronous.
-                        // Even with reduced motion, give a new Surface a bounded series of real
-                        // submissions before entering render-on-demand mode.
-                        surfaceWarmupFrames = 4
                         lastAppliedFps = -1
                         lastGpuFrame = -1
                         previousFrameNanos = 0L
@@ -440,7 +448,6 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                     callbackScheduled = false
                     val old = swapChain
                     swapChain = null
-                    surfaceWarmupFrames = 0
                     if(engine !== e) return
                     runCatching { old?.let(e::destroySwapChain); e.flushAndWait() }
                         .onFailure { error -> deferRendererFailure(error) }
@@ -472,6 +479,24 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                 }
             }
         }
+        // A valid material package still needs real driver shader programs. OpenGL can
+        // amortize their compilation over several ticks, particularly on software GPUs.
+        // Do not let a reduced-motion, otherwise static room sleep before that work finishes.
+        queueMaterialCompilation(e, lit, LIT_VARIANTS)
+        queueMaterialCompilation(e, unlit, 0)
+        e.flush()
+    }
+
+    private fun queueMaterialCompilation(e: Engine, material: Material, variants: Int) {
+        pendingMaterialCompilations++
+        material.compile(Material.CompilerPriorityQueue.HIGH, variants, Handler(Looper.getMainLooper()), Runnable {
+            // Filament also delivers completion callbacks when an engine is destroyed.
+            // Never touch a disposed renderer or a newer engine from an old callback.
+            if (!disposed && !cleaningRenderer && engine === e) {
+                pendingMaterialCompilations = (pendingMaterialCompilations - 1).coerceAtLeast(0)
+                requestFrame(immediate = true)
+            }
+        })
     }
 
     private fun createMesh(data: MeshData, material: RoomMaterial): NativeMesh {
@@ -625,6 +650,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         val e = engine ?: return
         if(cleaningRenderer) return
         cleaningRenderer = true
+        pendingMaterialCompilations = 0
         val helper = uiHelper
         uiHelper = null
         try {
@@ -681,6 +707,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     companion object {
         private const val FOV = 45.0
+        private val LIT_VARIANTS = Material.UserVariantFilterBit.DIRECTIONAL_LIGHTING or Material.UserVariantFilterBit.SHADOW_RECEIVER
         private val ANIMATED_STATES = setOf(RoomMachineState.RUNNING, RoomMachineState.FINISHING)
         private val CONTENT_STATES = ANIMATED_STATES + RoomMachineState.AWAITING_PICKUP
         private fun floatBuffer(values: FloatArray): FloatBuffer = ByteBuffer.allocateDirect(values.size * 4)

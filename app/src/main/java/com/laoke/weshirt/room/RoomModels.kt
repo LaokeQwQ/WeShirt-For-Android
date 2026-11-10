@@ -38,4 +38,5 @@ data class RoomRenderStatistics(
     val latestGpuDurationNanos: Long?,
     val failureEvent: String?,
     val disposed: Boolean,
+    val pendingMaterialCompilations: Int = 0,
 )

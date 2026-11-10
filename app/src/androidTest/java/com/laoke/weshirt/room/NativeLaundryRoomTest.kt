@@ -11,6 +11,7 @@ import android.widget.FrameLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.test.core.app.ActivityScenario
+import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.MainActivity
@@ -25,7 +26,6 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-import java.io.File
 
 /** Runs the real Filament engine and material compiler on a GLES 3 emulator/device. */
 @RunWith(AndroidJUnit4::class)
@@ -205,10 +205,9 @@ class NativeLaundryRoomTest {
                 assertNull("Renderer failed while awaiting actual presentation", snapshot(room).failureEvent)
                 SystemClock.sleep(200)
             }
+            if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage("native-room-3d")
             assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
             assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)
-            val destination = File(instrumentation.targetContext.getExternalFilesDir(null), "native-room-3d.png")
-            destination.outputStream().use { pixels.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } finally { pixels.recycle() }
     }
 
