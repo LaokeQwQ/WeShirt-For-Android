@@ -42,7 +42,6 @@ import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.android.FilamentHelper
-import com.google.android.filament.filamat.MaterialBuilder
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -469,8 +468,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     private fun createMaterials(e: Engine) {
-        val lit = RoomMaterialCompiler.material(e, false).also(materials::add)
-        val unlit = RoomMaterialCompiler.material(e, true).also(materials::add)
+        val lit = RoomMaterialAssets.material(context, e, false).also(materials::add)
+        val unlit = RoomMaterialAssets.material(context, e, true).also(materials::add)
         RoomMaterial.entries.forEach { kind ->
             instances[kind] = (if (kind == RoomMaterial.GLOW) unlit else lit).createInstance().apply {
                 if (kind != RoomMaterial.GLOW) {
@@ -724,28 +723,15 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 }
 
-/** The compiler is initialized once and bytecode is cached across room recreation. */
-private object RoomMaterialCompiler {
-    private var initialized = false
+/** Material packages are built with the pinned Filament compiler, never on a user's UI thread. */
+private object RoomMaterialAssets {
     private val packages = mutableMapOf<Boolean, ByteArray>()
 
-    fun material(engine: Engine, unlit: Boolean): Material {
-        if (!initialized) { MaterialBuilder.init(); initialized = true }
+    fun material(context: Context, engine: Engine, unlit: Boolean): Material {
         val bytes = packages.getOrPut(unlit) {
-            val builder = MaterialBuilder().name(if (unlit) "room-lights" else "room-surfaces")
-                .platform(MaterialBuilder.Platform.MOBILE).targetApi(MaterialBuilder.TargetApi.OPENGL)
-                .optimization(MaterialBuilder.Optimization.PERFORMANCE)
-                .require(MaterialBuilder.VertexAttribute.COLOR)
-                .shading(if (unlit) MaterialBuilder.Shading.UNLIT else MaterialBuilder.Shading.LIT)
-            if (!unlit) builder.uniformParameter(MaterialBuilder.UniformType.FLOAT, "roughness")
-                .uniformParameter(MaterialBuilder.UniformType.FLOAT, "metallic")
-            builder.material(if (unlit)
-                "void material(inout MaterialInputs material) { prepareMaterial(material); material.baseColor = getColor(); }"
-            else "void material(inout MaterialInputs material) { prepareMaterial(material); material.baseColor = getColor(); material.roughness = materialParams.roughness; material.metallic = materialParams.metallic; }")
-            val compiled = builder.build(engine)
-            check(compiled.isValid) { "ROOM_MATERIAL_INVALID" }
-            val buffer = compiled.buffer
-            ByteArray(buffer.remaining()).also(buffer::get)
+            val name = if (unlit) "room-lights" else "room-surfaces"
+            context.assets.open("materials/$name.filamat").use { it.readBytes() }
+                .also { check(it.isNotEmpty()) { "ROOM_MATERIAL_INVALID" } }
         }
         val payload = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).apply { put(bytes); flip() }
         return Material.Builder().payload(payload, payload.remaining()).build(engine)

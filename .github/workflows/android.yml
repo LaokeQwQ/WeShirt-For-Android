@@ -63,7 +63,7 @@ jobs:
           api-level: 35
           arch: x86_64
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swangle -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: bash .github/scripts/test-device.sh
       - uses: actions/upload-artifact@v4

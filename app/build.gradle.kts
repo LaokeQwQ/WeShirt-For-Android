@@ -68,7 +68,6 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("com.google.android.filament:filament-android:1.75.1")
-    implementation("com.google.android.filament:filamat-android:1.75.1")
     implementation("com.alibaba.android:ddopenauth:1.5.0.11")
     implementation("com.google.firebase:firebase-messaging:24.1.2")
     implementation("com.umeng.umsdk:push:6.7.6")
