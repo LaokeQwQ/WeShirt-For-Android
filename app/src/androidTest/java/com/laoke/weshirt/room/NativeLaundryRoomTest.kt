@@ -15,6 +15,14 @@ import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.MainActivity
+import com.google.android.filament.Camera
+import com.google.android.filament.Engine
+import com.google.android.filament.Material
+import com.google.android.filament.MaterialInstance
+import com.google.android.filament.Renderer
+import com.google.android.filament.Scene
+import com.google.android.filament.Skybox
+import com.google.android.filament.View as FilamentView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -26,6 +34,7 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Runs the real Filament engine and material compiler on a GLES 3 emulator/device. */
 @RunWith(AndroidJUnit4::class)
@@ -206,9 +215,92 @@ class NativeLaundryRoomTest {
                 SystemClock.sleep(200)
             }
             if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage("native-room-3d")
+            if(copyResult == PixelCopy.SUCCESS && colorCount <= 8 && capturedDiagnostics.compareAndSet(false, true)) {
+                capturePipelineDiagnostics(room, surface, pixels)
+            }
             assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
             assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)
         } finally { pixels.recycle() }
+    }
+
+    /** Diagnostic experiments never replace the strict assertion on the original image. */
+    private fun capturePipelineDiagnostics(room: LaundryRoomView, surface: SurfaceView, pixels: Bitmap) {
+        fun <T> field(name: String): T {
+            @Suppress("UNCHECKED_CAST")
+            return LaundryRoomView::class.java.getDeclaredField(name).apply { isAccessible = true }.get(room) as T
+        }
+        val engine = onMain { field<Engine>("engine") }
+        val view = onMain { field<FilamentView>("view") }
+        val scene = onMain { field<Scene>("scene") }
+        val camera = onMain { field<Camera>("camera") }
+        val renderer = onMain { field<Renderer>("renderer") }
+        val material = onMain { field<List<Material>>("materials").first() }
+        val instances = onMain { field<Map<*, MaterialInstance>>("instances").values.map { it to it.cullingMode } }
+        val originalMsaa = onMain { view.multiSampleAntiAliasingOptions }
+        val originalPost = onMain { view.isPostProcessingEnabled }
+        val originalCull = onMain { view.isFrustumCullingEnabled }
+        val originalSky = onMain { scene.skybox }
+        val originalLight = onMain { scene.indirectLight }
+        val originalClear = onMain { renderer.clearOptions }
+        val exposure = onMain { Triple(camera.aperture, camera.shutterSpeed, camera.sensitivity) }
+        val temporarySkyboxes = mutableListOf<Skybox>()
+        fun restore() = onMain {
+            view.multiSampleAntiAliasingOptions = originalMsaa
+            view.setPostProcessingEnabled(originalPost)
+            view.setFrustumCullingEnabled(originalCull)
+            scene.skybox = originalSky
+            scene.indirectLight = originalLight
+            renderer.clearOptions = originalClear
+            camera.setExposure(exposure.first, exposure.second, exposure.third)
+            instances.forEach { (instance, culling) -> instance.setCullingMode(culling) }
+        }
+        fun capture(name: String, configure: () -> Unit) {
+            runCatching {
+                restore()
+                val before = snapshot(room).renderedFrames
+                onMain { configure(); room.resetCamera() }
+                await("Diagnostic $name did not render", 5_000) { snapshot(room).renderedFrames > before }
+                val rendered = snapshot(room).renderedFrames
+                onMain {
+                    LaundryRoomView::class.java.getDeclaredMethod("queueMaterialCompilation", Engine::class.java, Material::class.java, Int::class.javaPrimitiveType)
+                        .apply { isAccessible = true }.invoke(room, engine, material, Material.UserVariantFilterBit.DIRECTIONAL_LIGHTING or Material.UserVariantFilterBit.SHADOW_RECEIVER)
+                    engine.flush()
+                }
+                await("Diagnostic $name programs did not finish", 5_000) {
+                    snapshot(room).let { it.pendingMaterialCompilations == 0 && it.renderedFrames > rendered }
+                }
+                val copied = CountDownLatch(1)
+                val result = AtomicReference<Int>()
+                onMain { PixelCopy.request(surface, pixels, { status -> result.set(status); copied.countDown() }, Handler(Looper.getMainLooper())) }
+                if(copied.await(3, TimeUnit.SECONDS) && result.get() == PixelCopy.SUCCESS) pixels.writeToTestStorage("native-room-diagnostic-$name")
+            }.onFailure { android.util.Log.w("WeShirtRoomTest", "Diagnostic $name failed", it) }
+        }
+        try {
+            capture("no-msaa") { view.multiSampleAntiAliasingOptions = FilamentView.MultiSampleAntiAliasingOptions().apply { enabled = false } }
+            capture("no-post") { view.setPostProcessingEnabled(false) }
+            capture("no-culling") {
+                view.setFrustumCullingEnabled(false)
+                instances.forEach { (instance, _) -> instance.setCullingMode(Material.CullingMode.NONE) }
+            }
+            capture("dark-exposure") { camera.setExposure(32f, 1f / 8000f, 50f) }
+            capture("no-skybox") {
+                scene.skybox = null
+                renderer.clearOptions = Renderer.ClearOptions().apply { clear = true; clearColor = doubleArrayOf(0.0, 0.0, 0.0, 1.0) }
+            }
+            for((name, rgb) in listOf("red" to floatArrayOf(1f, 0f, 0f, 1f), "blue" to floatArrayOf(0f, 0f, 1f, 1f))) {
+                capture("skybox-$name") {
+                    view.setPostProcessingEnabled(false)
+                    view.setFrustumCullingEnabled(false)
+                    view.multiSampleAntiAliasingOptions = FilamentView.MultiSampleAntiAliasingOptions().apply { enabled = false }
+                    scene.indirectLight = null
+                    camera.setExposure(1f)
+                    scene.skybox = Skybox.Builder().color(rgb).intensity(1f).showSun(false).build(engine).also(temporarySkyboxes::add)
+                }
+            }
+        } finally {
+            restore()
+            onMain { temporarySkyboxes.forEach(engine::destroySkybox); room.resetCamera() }
+        }
     }
 
     private fun tap(room: LaundryRoomView, x: Float, y: Float) {
@@ -241,4 +333,6 @@ class NativeLaundryRoomTest {
             RoomMachine("native-machine-$slot", slot, "Machine $slot", state,
                 finishAt = System.currentTimeMillis() + 600_000, kind = if(slot.startsWith("D")) "dryer" else "washer")
         }
+
+    companion object { private val capturedDiagnostics = AtomicBoolean(false) }
 }

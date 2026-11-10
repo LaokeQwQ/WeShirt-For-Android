@@ -66,7 +66,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     val renderStatistics: RoomRenderStatistics get() = RoomRenderStatistics(
         renderedFrames, rejectedFrames, engine != null, swapChain != null && uiHelper?.isReadyToRender == true,
         materials.size, meshes.size, machines.size, latestGpuDurationNanos, rendererFailure, disposed,
-        pendingMaterialCompilations,
+        pendingMaterialCompilations, nativeDiagnostics(),
     )
 
     private val surfaceView = SurfaceView(context)
@@ -586,6 +586,15 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     private fun requestFrame(immediate: Boolean = false) { dirty = true; urgent = urgent || immediate; scheduleFrame() }
+    private fun nativeDiagnostics(): String {
+        val v = view ?: return "renderer-released"
+        val c = camera ?: return "camera-missing"
+        return "scene=${v.scene === scene},camera=${v.camera === c},viewport=${v.viewport.width}x${v.viewport.height}," +
+            "renderables=${scene?.renderableCount},lights=${scene?.lightCount}," +
+            "exposure=${c.aperture}/${c.shutterSpeed}/${c.sensitivity},eye=${c.getPosition(FloatArray(3)).contentToString()}," +
+            "projection=${c.getProjectionMatrix(DoubleArray(16)).contentToString()}," +
+            "colorWrite=${materials.map { it.isColorWriteEnabled }},post=${v.isPostProcessingEnabled},cull=${v.isFrustumCullingEnabled}"
+    }
     private fun canRender() = !disposed && !rendererFailurePending && resumed && isAttachedToWindow && windowVisibility == AndroidView.VISIBLE &&
         engine != null && swapChain != null && uiHelper?.isReadyToRender == true && viewportWidth > 0 && viewportHeight > 0
 

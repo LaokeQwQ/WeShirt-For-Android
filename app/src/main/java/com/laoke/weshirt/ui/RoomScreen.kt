@@ -14,6 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -62,9 +63,12 @@ import kotlinx.coroutines.delay
     }
     LaunchedEffect(notice) { if(notice != null) { delay(3000); notice = null } }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            SingleChoiceSegmentedButtonRow { SegmentedButton(threeD, { threeD = true }, SegmentedButtonDefaults.itemShape(0,2)) { Text("3D 洗衣房") }; SegmentedButton(!threeD, { threeD = false }, SegmentedButtonDefaults.itemShape(1,2)) { Text("机器列表") } }
-            FilterChip(onlyFavorites, { onlyFavorites = !onlyFavorites }, label = { Text("常用") }, leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
+                SegmentedButton(threeD, { threeD = true }, SegmentedButtonDefaults.itemShape(0,2), icon = {}) { Text("3D 洗衣房", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                SegmentedButton(!threeD, { threeD = false }, SegmentedButtonDefaults.itemShape(1,2), icon = {}) { Text("机器列表", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            }
+            FilterChip(onlyFavorites, { onlyFavorites = !onlyFavorites }, label = { Text("常用", maxLines = 1) }, leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
         }
         if(threeD) {
             Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp))) {

@@ -39,4 +39,5 @@ data class RoomRenderStatistics(
     val failureEvent: String?,
     val disposed: Boolean,
     val pendingMaterialCompilations: Int = 0,
+    val nativeDiagnostics: String = "",
 )

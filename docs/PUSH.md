@@ -32,6 +32,8 @@ HMS 自带的 BI 桥通过 Manifest 的 `bi.setting=true` 与 `bireport.setting=
 
 FCM 使用手动 `FirebaseOptions`，无需提交 `google-services.json`。服务端还需配置同一项目的发送服务账号；U-Push 服务端需要 Master Secret，不能使用 Message Secret 代替。具体变量和发送条件见 [API.md](API.md)。
 
+配置构建保持默认日志级别。AGConnect 插件在 `--info` 或 `--debug` 下会输出配置内容，因此这些详细日志只能保存在私有环境。
+
 华为另需把开放平台下载的配置放在被 Git 忽略的 `app/agconnect-services.json`。只有该文件存在时，构建才解析并应用固定版本 `com.huawei.agconnect:agcp:1.9.6.300`，由官方插件生成 AGConnect 配置资源；无文件的公共构建不应用该插件。APM 插桩固定关闭，SDK 自动初始化 Provider 仍被移除，运行时仅在登录、同意和通道条件满足后手动初始化。仅设置布尔开关不能补出 app_id，实际资源缺失时报告 `DISABLED_MISSING_APP_ID`。按[华为官方接入说明](https://developer.huawei.com/consumer/en/doc/appgallery-connect-Guides/agc-get-started-android-0000001058210705/)核对包名、数据处理区域、Push Kit 开关和实际签名；修改应用配置后重新下载文件。此路径仍须配置后的构建与华为真机验收，公共无凭据构建不能证明已投递。
 
 ## 与后端连接
