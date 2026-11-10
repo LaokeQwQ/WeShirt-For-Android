@@ -14,7 +14,7 @@ java {
 
 dependencies {
     implementation("com.android.tools.build:gradle-api:8.13.2")
-    implementation("org.ow2.asm:asm:9.8")
+    implementation("org.ow2.asm:asm:9.11.1")
     implementation("org.ow2.asm:asm-tree:9.8")
     testImplementation("junit:junit:4.13.2")
     // Read the exact upstream bytes in regression tests; never load its Android classes.
