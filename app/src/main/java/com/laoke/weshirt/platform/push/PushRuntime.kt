@@ -229,14 +229,16 @@ object PushRuntime {
         if (!prefs.getBoolean("session", false) || !prefs.getBoolean("consent", false) || prefs.getString("provider", "") != provider.name) return
         val event = parseEvent(data) ?: return
         if (event.kind == PushEventKind.TASK_FINISHED && event.taskId != null) LaundryReminders.confirmFinished(context, event.taskId)
-        LaundryNotifications(context).post(event)
+        val notifications = LaundryNotifications(context)
+        if (notifications.post(event) || notifications.wasHandled(event)) LaundryReminders.receivedRemotePhase(context, event)
         listener?.invoke(event)
     }
 
     fun parseEvent(data: Map<String, String>): NativePushEvent? = runCatching {
         NativePushEvent(requireNotNull(data["eventId"]), requireNotNull(data["revision"]).toLong(),
             PushEventKind.valueOf(requireNotNull(data["kind"])), data["title"].orEmpty(), data["body"].orEmpty(),
-            data["taskId"], data["serverConfirmed"] == "true").takeIf { it.valid() }
+            data["taskId"], data["serverConfirmed"] == "true",
+            data["finishAt"]?.takeIf { it.isNotBlank() }?.let { java.time.Instant.parse(it).toEpochMilli() }).takeIf { it.valid() }
     }.getOrNull()
 
     /** Call before invalidating the API session. Server logout must also revoke its installation association. */

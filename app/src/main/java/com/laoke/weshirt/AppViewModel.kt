@@ -25,15 +25,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val refreshMutex = Mutex()
     private var refreshPending = false
     private val mutationMutex = Mutex()
-    private var generation = 0
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
     private data class CachedMetadata(val value: JSONObject, val generation: Int, val until: Long)
     private val metadata = mutableMapOf<String, CachedMetadata>()
     private suspend fun metadata(path: String, auth: Boolean = true): JSONObject {
-        val version = generation
+        val version = generation.get()
         val now = android.os.SystemClock.elapsedRealtime()
         metadata[path]?.takeIf { it.generation == version && now < it.until }?.let { return it.value }
         val value = api.call(path, auth = auth)
-        if(version == generation) metadata[path] = CachedMetadata(value, version, now + 300_000)
+        if(version == generation.get()) metadata[path] = CachedMetadata(value, version, now + 300_000)
         return value
     }
     private val telemetryBuffer = ArrayDeque<JSONObject>()
@@ -50,7 +50,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         } }
         api.onSessionInvalidated = {
-            generation++
+            generation.incrementAndGet()
             platform.clearLocal()
             coil.Coil.imageLoader(app).memoryCache?.clear()
             _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), social = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = false) }
@@ -59,7 +59,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         refresh()
     }
-    fun platformSessionChanged() { generation++; metadata.clear(); platform.sessionChanged(); refresh() }
+    fun platformSessionChanged() { generation.incrementAndGet(); metadata.clear(); platform.sessionChanged(); refresh() }
     fun notificationPermissionDenied() { platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
     fun message(text: String) { _state.update { it.copy(info = text) } }
     fun clearFeedback() { _state.update { it.copy(info = null, error = null) } }
@@ -79,7 +79,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val url = api.validEndpoint(endpoint) ?: return message("请输入完整的 HTTPS 服务地址，不含路径、账号或参数")
         mutate(null) {
             if (url != api.baseUrl) {
-                generation++
+                generation.incrementAndGet()
                 telemetryBuffer.clear()
                 com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
                 getApplication<Application>().getSharedPreferences("native_login_origin", 0).edit().clear().commit()
@@ -91,18 +91,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun selectBuilding(code: String) {
-        if (_state.value.profile == null) { generation++; prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) }; refresh() }
-        else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation++; prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) } }
+        if (_state.value.profile == null) { generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) }; refresh() }
+        else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) } }
     }
     fun refresh(forceMetadata: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
         if (api.baseUrl.isBlank()) return@launch
         if(forceMetadata) metadata.clear()
         if (!refreshMutex.tryLock()) { refreshPending = true; return@launch }
-        val version = generation
+        val version = generation.get()
         _state.update { it.copy(loading = true) }
         try {
             val site = metadata("/api/site", auth = false)
-            if(version != generation) return@launch
+            if(version != generation.get()) return@launch
             val buildings = site.optJSONArray("buildings")?.objects().orEmpty().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
             val signedIn = session.read() != null
             val profile = if(signedIn) Profile.parse(metadata("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
@@ -113,7 +113,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val favorites = async { if (signedIn) metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }
                 Triple(board.await(), tasks.await(), favorites.await())
             }
-            if(version != generation) return@launch
+            if(version != generation.get()) return@launch
             val occupancy = if(building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") else null
             val machines = result.first.optJSONObject("board")?.optJSONArray("floors")?.objects().orEmpty().flatMap { it.optJSONArray("machines")?.objects().orEmpty() }.map(Machine::parse).map { machine ->
                 val o = occupancy?.optJSONObject(machine.id); val care = o?.optJSONObject("care")
@@ -123,16 +123,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val queues = if(signedIn && building.isNotBlank()) api.call("/api/queue?dorm=${api.encoded(building)}").optJSONArray("queue")?.objects().orEmpty() else emptyList()
             val announcementPrefs = if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
             val favs = result.third.optJSONArray("favorites") ?: JSONArray()
-            if(version != generation) return@launch
+            if(version != generation.get()) return@launch
             _state.update { it.copy(buildings = buildings, building = building, profile = profile, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
             if(_state.value.tab == 2) loadChannelsNow(version)
             if(_state.value.tab == 1 && signedIn) loadSocialNow(version)
-            if (version == generation) platform.synchronize(_state.value)
+            if (version == generation.get()) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
                 val announcements = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
-                if(version == generation) _state.update { it.copy(announcements = announcements) }
+                if(version == generation.get()) _state.update { it.copy(announcements = announcements) }
             }
-        } catch (e: CancellationException) { throw e } catch (e: Exception) { if (version == generation) _state.update { it.copy(error = e.message ?: "加载失败") } }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { if (version == generation.get()) _state.update { it.copy(error = e.message ?: "加载失败") } }
         finally { _state.update { it.copy(loading = false) }; refreshMutex.unlock(); flushTelemetry(); if(refreshPending) { refreshPending = false; refresh() } }
     }
     private val seenAnnouncements = mutableSetOf<String>()
@@ -168,11 +168,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         message(status)
     }
     fun saveReminders(enabled: Boolean, start: String, end: String) = mutate { api.call("/api/user/laundry-preferences", "PATCH", JSONObject().put("enabled", enabled).put("favorites", JSONArray(_state.value.favorites.toList())).put("timeWindows", JSONArray().put(JSONObject().put("start", start).put("end", end).put("days", JSONArray(listOf(1,2,3,4,5,6,7)))))) }
-    fun channel(code: String) { _state.update { it.copy(channel = code, messages = emptyList()) }; viewModelScope.launch { try { loadMessagesNow(generation) } catch(e: Exception) { message(e.message.orEmpty()) } } }
+    fun channel(code: String) { _state.update { it.copy(channel = code, messages = emptyList()) }; viewModelScope.launch { try { loadMessagesNow(generation.get()) } catch(e: Exception) { message(e.message.orEmpty()) } } }
     private suspend fun loadChannelsNow(version: Int) {
         val j = api.call("/api/messages/channels")
         val channels = j.optJSONArray("channels")?.objects().orEmpty().map { Channel(it.str("code"), it.str("name"), it.str("avatarData"), it.optJSONObject("permissions")?.optBoolean("canMentionAll") == true) }
-        if(version != generation) return
+        if(version != generation.get()) return
         _state.update { it.copy(channels = channels, channel = it.channel.takeIf { c -> channels.any { ch -> ch.code == c } } ?: "public") }
         loadMessagesNow(version)
     }
@@ -180,15 +180,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val channel = _state.value.channel
         val j = api.call("/api/messages?channel=${api.encoded(channel)}&limit=50")
         val rows = j.optJSONArray("messages")?.objects().orEmpty().map { Message(it.str("id"), it.str("nick"), it.str("text"), it.str("avatarUrl"), it.str("authorBuildingName"), it.optJSONObject("identity")?.str("label").orEmpty(), it.str("mentionRef"), it.optBoolean("mine"), it.optBoolean("pinned"), it.optBoolean("mentionedMe"), it.optJSONObject("reply")?.let { r -> r.str("nick") + ": " + r.str("text") }.orEmpty(), it.optJSONObject("media")?.str("id").orEmpty(), it.optJSONObject("media")?.str("kind").orEmpty()) }
-        if(version == generation && channel == _state.value.channel) _state.update { it.copy(messages = rows) }
+        if(version == generation.get() && channel == _state.value.channel) _state.update { it.copy(messages = rows) }
     }
     fun sendMessage(text: String, reply: String?, mentions: List<String>, all: Boolean) = mutate(null) {
-        api.call("/api/messages", "POST", JSONObject().put("channel", _state.value.channel).put("text", text).put("replyTo", reply).put("mentions", JSONArray(mentions)).put("mentionAll", all)); loadMessagesNow(generation)
+        api.call("/api/messages", "POST", JSONObject().put("channel", _state.value.channel).put("text", text).put("replyTo", reply).put("mentions", JSONArray(mentions)).put("mentionAll", all)); loadMessagesNow(generation.get())
     }
     fun report(message: Message) = mutate("举报已提交管理员") { api.call("/api/messages/${api.encoded(message.id)}/report", "POST", JSONObject().put("reason", "other").put("detail", "用户通过原生客户端举报")) }
     private suspend fun loadSocialNow(version: Int) {
         val social = api.call("/api/social"); val pickups = api.call("/api/social/pickups"); social.put("receivedPickups", pickups.optJSONArray("received")); social.put("sentPickups", pickups.optJSONArray("sent")); val queue = api.call("/api/queue?dorm=${api.encoded(_state.value.building)}")
-        if(version == generation) _state.update { it.copy(social = social, queues = queue.optJSONArray("queue")?.objects().orEmpty()) }
+        if(version == generation.get()) _state.update { it.copy(social = social, queues = queue.optJSONArray("queue")?.objects().orEmpty()) }
     }
     fun pickup(friend: String, task: String) = mutate("代取请求已发送") { api.call("/api/social/pickup", "POST", JSONObject().put("friendId", friend).put("taskId", task)) }
     fun respondPickup(id: String, action: String) = mutate { api.call("/api/social/pickups/${api.encoded(id)}/respond", "POST", JSONObject().put("action", action)) }
@@ -196,7 +196,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun acceptInvite(ticket: String) = mutate("朋友已绑定") { api.call("/api/social/accept", "POST", JSONObject().put("ticket", ticket)) }
     fun assistant(text: String, callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/assistant/chat", "POST", JSONObject().put("input", text)); callback(j.str("reply", j.str("message"))) }
     fun logout() = mutate("已退出登录") {
-        generation++
+        generation.incrementAndGet()
         com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
         try {
             platform.beforeSessionCleared()

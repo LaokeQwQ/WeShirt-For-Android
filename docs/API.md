@@ -10,7 +10,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 {"error":{"code":"invalid_refresh_token","message":"登录状态已过期，请重新登录","status":401,"eventId":"evt_example"}}
 ```
 
-`X-Event-ID` 与响应中的事件编号一致。客户端只展示安全的中文说明和事件编号，不把授权码、用户令牌、手机号或推送令牌写入日志。业务写入可使用 `Idempotency-Key`；登录、刷新、退出由原子会话协议负责，不能缓存这些接口的响应。
+`X-Event-ID` 与响应中的事件编号一致。客户端只展示安全的中文说明和事件编号，不把授权码、用户令牌、手机号或推送令牌写入日志。业务写入可使用 `Idempotency-Key`；移动登录、刷新、退出和设备登记由原子会话及设备版本校验负责，不经过通用响应缓存。
 
 ## 能力发现
 
@@ -47,7 +47,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 访问令牌最长 15 分钟；刷新会话绝对寿命 30 天。刷新请求为 `POST /api/mobile/auth/refresh`，内容 `{installationId,refreshToken}`，响应格式同上。刷新同时替换访问和刷新令牌；并发刷新只有一个成功，旧令牌立即失效。客户端必须串行刷新并原子保存整组新凭据。响应丢失后重新授权，不能循环重试旧刷新令牌。
 
-退出使用 `POST /api/mobile/auth/logout`，内容 `{installationId,refreshToken}`。成功后会话立即失效，并清除该安装的推送凭据、释放账号绑定。客户端清除本地凭据、通知、小组件数据与私有缓存。
+退出使用 `POST /api/mobile/auth/logout`，内容 `{installationId,refreshToken}`。成功后会话立即失效，并清除该会话持有的推送凭据、释放账号绑定；旧会话重复退出不会注销同安装中新会话的登记。客户端清除本地凭据、通知、小组件数据与私有缓存。
 
 当前原生登录仅关联经过验证的已有账号：先验证钉钉 `unionId`，必要时通过钉钉企业通讯录核实 `userId`。不会根据昵称、手机号自动合并用户。旧账号目录仍在最终一致 KV 中，因此首版不在这条链路自动创建/合并账号；未关联账号返回 `409 account_link_required`，由管理员关联。首次注册应在账号目录迁移到事务数据库后开放。
 
@@ -81,7 +81,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 服务器支持 `fcm` 与 `upush` 两个互斥的主通道；小米、华为等经友盟聚合通道时不重复登记成 FCM。服务端按私有环境变量配置自动发现可用发送器，能力发现只公布已配置的通道。未接入返回 `503 mobile_push_not_configured`。关闭请求为 `{notificationsEnabled:false,appVersion:"0.1.1"}`，会删除推送令牌并取消该安装的待发消息。
 
-响应不包含令牌：`{installation:{installationId,provider,notificationsEnabled,appVersion,updatedAt}}`。访问别人的安装返回 403；同时修改发生冲突返回 409。消息建议使用数据载荷 `{eventId,revision,kind,title,body,taskId,serverConfirmed}`，由客户端按 `eventId+revision` 去重。登记接口不发送测试通知；没有厂商凭据时不能宣称投递链路已经验收。
+响应不包含令牌：`{installation:{installationId,provider,notificationsEnabled,appVersion,updatedAt}}`。原生会话只能操作登录时绑定的安装；访问其他安装返回 403，同时修改发生冲突返回 409。消息使用数据载荷 `{eventId,revision,kind,title,body,taskId,finishAt,serverConfirmed}`，由客户端按 `eventId` 及递增 `revision` 去重。登记接口不发送测试通知；没有厂商凭据时不能宣称投递链路已经验收。
 
 ## 小组件与刷新
 
@@ -100,7 +100,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 后端源码仓库提供 `packages/core/mobile-store.js` 和 `tools/cloudbase-fn/weshirt-mobile-store/index.mjs`。EdgeOne KV 只有最终一致性，进程内锁不能解决多节点授权码重放，因此不能用它保存/轮换移动会话。
 
 1. 管理员在 CloudBase 创建私有集合 `weshirt_mobile_sessions`，客户端读写权限全部拒绝，仅云函数服务角色访问。为 `expireAt` 增加 TTL 清理索引；鉴权本身在事务内检查毫秒时间，不依赖 TTL 删除时机。
-2. 后端仓库运行 `node tools/cloudbase-fn/build-mobile-store.mjs`，在输出目录安装生产依赖，上传为 Node 22+ HTTP 云函数，入口 `index.main`。构建产物含精确版本的 `@cloudbase/node-sdk` 依赖。
+2. 后端仓库运行 `npm ci`、`node tools/cloudbase-fn/build-mobile-store.mjs`，在输出目录 `.cloudbase-build/weshirt-mobile-store` 执行 `npm install --omit=dev`，上传为 Node 22+ HTTP 云函数，入口 `index.main`。构建产物含精确版本的 `@cloudbase/node-sdk` 依赖。
 3. 云函数配置 `CLOUDBASE_ENV_ID`、`MOBILE_SESSION_COLLECTION`（可省略）、`MOBILE_ATOMIC_STORE_SECRET`（至少 32 个随机字符）。使用 HTTPS 路由；禁止记录 Authorization 或请求体。内部端点只接受服务端凭据和限定的 `mobile:*` 命名空间，不向 App 开放密钥。
 4. EdgeOne 服务端配置相同 `MOBILE_ATOMIC_STORE_SECRET` 和该函数的完整 `MOBILE_ATOMIC_STORE_URL`。可用时自动接入远程原子适配器。Node 直接部署也可通过 `createApp({store,env,mobile:{atomicStore:createCloudBaseMobileAtomicStore(db)}})` 注入 SDK 数据库实例。
 5. 服务端另设 `MOBILE_AUTH_ENABLED=true`、`DINGTALK_MOBILE_CLIENT_ID`、`DINGTALK_MOBILE_CLIENT_SECRET`、`DINGTALK_MOBILE_REDIRECT_URI`。在钉钉后台登记正式包名、实际自签证书指纹和回调 URI。密钥仅保留在云环境变量中。
@@ -126,11 +126,13 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 FCM 使用 RS256 服务账号 JWT 换取一小时 OAuth 访问令牌，权限范围仅为 `firebase.messaging`，再调用 HTTP v1 `projects.messages:send`。仅发送 data payload，由原生客户端统一展示和去重。服务账号须获目标 Firebase 项目的 Cloud Messaging 发送权限，Android 使用同一项目的配置。
 
-友盟使用 `POST https://msg.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验。正常使用 `display_type=message` 自定义数据。若开启厂商离线转通知，需在友盟后台同时配置小米、华为等应用凭据及通知分类，`channel_activity` 为 `com.laoke.weshirt.MainActivity`，U-Push 的 FCM 通道固定关闭，防止同一安装双通道投递。厂商离线通知的展示与点击由厂商及友盟 SDK 处理，须逐机型验证，不能视为所有厂商已经验收。
+友盟使用 `POST https://msgapi.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验。正常使用 `display_type=message` 自定义数据。若开启厂商离线转通知，需在友盟后台同时配置小米、华为等应用凭据及通知分类，`channel_activity` 为 `com.laoke.weshirt.MainActivity`，U-Push 的 FCM 通道固定关闭，防止同一安装双通道投递。厂商离线通知的展示与点击由厂商及友盟 SDK 处理，须逐机型验证，不能视为所有厂商已经验收。
 
-社区 @、取衣、排队和代取提醒会加入原生独立待发队列；即使钉钉先成功，也不会取消原生通道自己的重试。每次同步开始会继续处理原生队列：同一安装和事件只由一个短期租约发送，失败最多四次并递增退避。`eventId` 来自稳定业务事件标识，`revision` 默认 1；客户端继续去重，网络结果不确定时仍可能收到重复数据。消息过期一天后丢弃。排队取消、频道权限变化、任务取衣、账号禁用或退出登录都会阻止相关后续投递。
+社区 @、取衣、排队和代取提醒会加入原生独立待发队列；即使钉钉先成功，也不会取消原生通道自己的重试。每次同步开始会继续处理原生队列：同一安装和事件只由一个短期租约发送，失败最多四次并递增退避。每次同步最多并行发送八条，避免厂商串行超时拖慢上游状态查询。`eventId` 来自稳定业务事件标识，`revision` 默认 1；新版本会抑制旧版本重试，客户端继续去重，网络结果不确定时仍可能收到重复数据。消息过期一天后丢弃。排队取消、频道权限变化、任务取衣、账号禁用、关闭通知或退出登录都会阻止相关后续投递。
 
 FCM 明确返回 `UNREGISTERED` 时会原子删除该安装令牌并移除用户索引。普通参数错误、凭据错误或暂时网络错误不会误删设备。友盟单播失败不能一概等同卸载，不根据未知错误码删除令牌；App 退出或关闭系统提醒会主动注销。
+
+与本地提醒合并时，`taskId` 对本人任务为原任务编号，对排队为 `queue:<reservationId>`；`finishAt` 为 ISO 预计结束时间，没有可用时间则为空字符串。可用“任务编号 + 结束时间 + 提前/结束阶段”避免本地计时和服务端推送重复提醒；确认结束可覆盖预计结束，不能反向降级。旧排队记录没有稳定编号时 `taskId` 可为空，不应猜测关联。
 
 待发队列只在私有服务端保存短期通知内容；操作日志不记录消息正文、手机号、设备令牌、OAuth 返回正文或服务端私钥。桥接仅允许 `mobile:*` 内部命名空间，所有发送端点固定为厂商官方 HTTPS 地址并禁止重定向。
 

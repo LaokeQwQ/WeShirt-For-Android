@@ -1,0 +1,1 @@
+`expired-localhost.der` is a public, self-signed RSA certificate used only by offline Android TLS tests. It has a `localhost` subject alternative name and expired on 2020-01-02. Its temporary signing key was generated in memory and was never serialized or retained. This file contains no private key or service credential.

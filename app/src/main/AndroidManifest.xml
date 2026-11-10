@@ -22,7 +22,10 @@
         <provider android:name="com.huawei.hms.aaid.InitProvider" tools:node="remove" />
         <provider android:name="com.huawei.agconnect.core.provider.AGConnectInitializeProvider" tools:node="remove" />
         <meta-data android:name="push_kit_auto_init_enabled" android:value="false" />
-        <provider android:name="com.umeng.message.component.UmengMessageProvider" android:enabled="false" tools:replace="android:enabled" />
+        <!-- HMS AnalyticsSwitchHolder: bi.setting=true means ANALYTICS_DISABLED. -->
+        <meta-data android:name="com.huawei.hms.client.bi.setting" android:value="true" />
+        <meta-data android:name="com.huawei.hms.client.bireport.setting" android:value="false" />
+        <provider android:name="com.umeng.message.component.UmengMessageProvider" android:enabled="false" android:exported="false" tools:replace="android:enabled,android:exported" />
         <provider android:name="com.huawei.hms.support.api.push.PushProvider" android:enabled="false" tools:replace="android:enabled" />
         <service android:name="com.xiaomi.push.service.UploadLogSDKService" tools:node="remove" />
         <provider android:name="com.xiaomi.push.service.logupload.LogUploadFileProvider" tools:node="remove" />

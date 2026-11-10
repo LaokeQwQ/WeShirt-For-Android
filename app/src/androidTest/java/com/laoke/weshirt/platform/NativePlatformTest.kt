@@ -120,6 +120,28 @@ class NativePlatformTest {
         assertTrue(WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).all { it.state.isFinished })
     }
 
+    @Test fun serverAndLocalTaskEventsShareOneCardAndConfirmationReplacesTheEstimate() {
+        grantNotifications()
+        PushRuntime.initialize(app, PushConfiguration(consent = true))
+        PushRuntime.onSessionAvailable(app)
+        val taskId = "coalesced:${UUID.randomUUID()}"
+        val finish = System.currentTimeMillis() + 60_000
+        val local = NativePushEvent("local-$taskId", 7, PushEventKind.QUEUE_THREE_MINUTES, "预计即将结束", "本地估计", taskId, finishAtMillis = finish)
+        assertTrue(notices.post(local))
+        val remote = local.copy(eventId = "remote-$taskId", revision = 1)
+        assertFalse(notices.post(remote))
+        assertTrue(notices.wasHandled(remote))
+        assertEquals(1, manager.activeNotifications.count { it.tag == "taskPhase:$taskId:lead" })
+        val estimate = local.copy(eventId = "estimate-$taskId", kind = PushEventKind.ESTIMATED_END)
+        assertTrue(notices.post(estimate))
+        assertTrue(notices.post(estimate.copy(eventId = "confirmed-$taskId", revision = 1,
+            kind = PushEventKind.TASK_FINISHED, serverConfirmed = true, title = "设备确认结束")))
+        assertFalse(notices.post(estimate.copy(revision = 8)))
+        val end = manager.activeNotifications.single { it.tag == "taskPhase:$taskId:end" }
+        assertEquals("设备确认结束", end.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
+        assertFalse(notices.post(local.copy(eventId = "expired-$taskId", finishAtMillis = System.currentTimeMillis() - 1)))
+    }
+
     @Test fun unconfiguredNativeColdStartOpensWithoutInitializingFirebase() {
         org.junit.Assume.assumeTrue("This case runs only in the public, unconfigured build", BuildConfig.API_BASE_URL.isBlank() && BuildConfig.PUSH_FCM_APP_ID.isBlank())
         app.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().remove("endpoint").putBoolean("nativePushConsent", false).commit()
@@ -134,7 +156,9 @@ class NativePlatformTest {
     }
 
     @Test fun nativeNotificationNavigationHandlesColdAndWarmStartsAndRejectsUrls() {
-        val intent = requireNotNull(app.packageManager.getLaunchIntentForPackage(app.packageName))
+        // ActivityScenario matches lifecycle callbacks by Intent.filterEquals. Keep the same
+        // action for the real warm launches, otherwise it ignores RESUMED after setIntent().
+        val intent = Intent(app, MainActivity::class.java).setAction("weshirt.open.navigation-test")
             .putExtra(NativeNavigation.DESTINATION_EXTRA, "CHAT_MENTION")
         ActivityScenario.launch<MainActivity>(intent).use { scenario ->
             scenario.onActivity { activity ->
@@ -142,17 +166,17 @@ class NativePlatformTest {
                 assertEquals(2, vm.state.value.tab)
                 assertFalse(activity.intent.hasExtra(NativeNavigation.DESTINATION_EXTRA))
             }
-            requireNotNull(NativeNavigation.pendingIntent(app, "MY_LAUNDRY", "warm-start-test")).send()
-            awaitActivity(scenario) { it.intent.action == "weshirt.open.warm-start-test" }
+            requireNotNull(NativeNavigation.pendingIntent(app, "MY_LAUNDRY", "navigation-test")).send()
+            awaitActivity(scenario) { ViewModelProvider(it)[AppViewModel::class.java].state.value.tab == 1 }
             scenario.onActivity { activity ->
                 assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab)
                 assertFalse(activity.intent.hasExtra(NativeNavigation.DESTINATION_EXTRA))
             }
             app.startActivity(Intent(app, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .setAction("untrusted-start-test")
+                .setAction("weshirt.open.navigation-test").putExtra("navigationTestSequence", 2)
                 .putExtra(NativeNavigation.DESTINATION_EXTRA, "https://example.invalid/untrusted"))
-            awaitActivity(scenario) { it.intent.action == "untrusted-start-test" }
+            awaitActivity(scenario) { it.intent.getIntExtra("navigationTestSequence", 0) == 2 }
             scenario.onActivity { activity -> assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab) }
             scenario.recreate()
             scenario.onActivity { activity -> assertEquals(1, ViewModelProvider(activity)[AppViewModel::class.java].state.value.tab) }

@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.laoke.weshirt.push-tls")
 }
 val privateConfig = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
 fun config(name: String, default: String = "") = (System.getenv(name) ?: privateConfig.getProperty(name, default))
@@ -18,6 +19,7 @@ android {
         versionCode = 1
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunnerArguments["timeout_msec"] = "90000"
         buildConfigField("String", "API_BASE_URL", literal(config("WESHIRT_API_BASE_URL")))
         listOf("PUSH_FCM_APP_ID", "PUSH_FCM_API_KEY", "PUSH_FCM_PROJECT_ID", "PUSH_FCM_SENDER_ID", "PUSH_UMENG_APP_KEY", "PUSH_UMENG_MESSAGE_SECRET", "PUSH_XIAOMI_APP_ID", "PUSH_XIAOMI_APP_KEY").forEach { name -> buildConfigField("String", name, literal(config("WESHIRT_$name"))) }
         buildConfigField("boolean", "PUSH_HUAWEI_CONFIGURED", config("WESHIRT_PUSH_HUAWEI_CONFIGURED", "false").toBoolean().toString())
@@ -51,6 +53,8 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.10.01")
     implementation(composeBom)
     implementation("androidx.activity:activity-compose:1.11.0")
+    // Scanner SDKs bring an older Fragment; Activity Result requires a compatible version.
+    implementation("androidx.fragment:fragment:1.8.9")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")

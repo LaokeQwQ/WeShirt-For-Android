@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
     }
     val roomMachines = remember(machines, now / 30_000) {
         machines.map { m -> RoomMachine(m.id, m.slot, m.name, when(m.state) {
-            "idle" -> RoomMachineState.IDLE
+            "idle" -> if(m.suspectedUncollected) RoomMachineState.AWAITING_PICKUP else RoomMachineState.IDLE
             // An estimate reaching zero cannot confirm a physical machine has stopped.
             "occupied" -> if (m.finishAt?.let { it - now in 1..180_000L } == true) RoomMachineState.FINISHING else RoomMachineState.RUNNING
             "pending_pickup", "awaiting_pickup" -> RoomMachineState.AWAITING_PICKUP
@@ -99,7 +99,7 @@ import kotlinx.coroutines.delay
             if(machines.isEmpty()) item { Text(if(onlyFavorites) "还没有收藏机器" else "这个楼栋暂时没有可用的机器数据") }
             items(machines, key = { it.id }) { machine -> MachineCard(machine, machine.id in state.favorites) { onMachine(machine) } }
         } else Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            val idle = machines.count { it.state == "idle" }
+            val idle = machines.count { it.state == "idle" && !it.suspectedUncollected }
             Text("${machines.size} 台机器", style = MaterialTheme.typography.labelLarge)
             Text("$idle 台空闲", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text("${machines.count { it.state == "occupied" }} 台使用中", style = MaterialTheme.typography.labelLarge)

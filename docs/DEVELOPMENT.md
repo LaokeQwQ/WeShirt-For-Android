@@ -7,7 +7,8 @@ Android 10 及以上，Kotlin + Jetpack Compose Material 3，Filament 原生 3D�
 需要 JDK 17 或 21、Android SDK 36。项目包含 Gradle Wrapper 和发行包 SHA-256 校验。
 
 ```sh
-./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./gradlew -p buildSrc test --no-configuration-cache
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-configuration-cache
 ```
 
 本地 `local.properties` 配置 `sdk.dir`。服务端地址可以在应用中填写 HTTPS 根地址，也可以通过私有 `WESHIRT_API_BASE_URL` 环境变量注入。公开源码不包含学校、正式域名、账号或凭据。
@@ -28,7 +29,7 @@ Android 仓库保留原有 `main` 分支，开发提交先进入 `dev`，通过 
 | `WESHIRT_KEY_PASSWORD` | 签名密码 |
 
 ```sh
-./gradlew :app:assembleRelease
+./gradlew :app:assembleRelease --no-configuration-cache
 ```
 
 需要保留同一签名才能覆盖升级。APK 不上传公共制品站；私有分发时同时提供版本号和 SHA-256。

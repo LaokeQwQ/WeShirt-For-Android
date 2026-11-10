@@ -10,8 +10,8 @@ fun epoch(value: String): Long? = runCatching { Instant.parse(value).toEpochMill
 data class Building(val code: String, val name: String)
 data class Machine(val id: String, val name: String, val slot: String, val kind: String, val state: String, val finishAt: Long?, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val health: String, val occupantId: String = "", val suspectedUncollected: Boolean = false) {
     fun minutes(now: Long = System.currentTimeMillis()) = finishAt?.let { ((it - now + 59999) / 60000).coerceAtLeast(0) }
-    fun availability(now: Long) = when (state) { "idle" -> 0L; "occupied", "abnormal" -> finishAt?.takeIf { it > now } ?: Long.MAX_VALUE - 1; else -> Long.MAX_VALUE }
-    val stateLabel get() = when (state) { "idle" -> "空闲"; "occupied" -> "使用中"; "abnormal" -> "待复核"; "faulty" -> "暂不可用"; else -> "状态待更新" }
+    fun availability(now: Long) = if(suspectedUncollected) Long.MAX_VALUE - 2 else when (state) { "idle" -> 0L; "occupied", "abnormal" -> finishAt?.takeIf { it > now } ?: Long.MAX_VALUE - 1; else -> Long.MAX_VALUE }
+    val stateLabel get() = if(suspectedUncollected) "疑似未取" else when (state) { "idle" -> "空闲"; "occupied" -> "使用中"; "abnormal" -> "待复核"; "faulty" -> "暂不可用"; else -> "状态待更新" }
     companion object { fun parse(j: JSONObject) = Machine(j.str("id"), j.str("displayName", j.str("name")), j.str("slot"), j.str("kind", "washer"), j.str("state", "unknown"), epoch(j.str("finishAt")), j.optJSONObject("occupancy")?.str("note") ?: j.str("note"), j.optBoolean("useDisinfectant") || j.optJSONObject("occupancy")?.optBoolean("useDisinfectant") == true, j.optBoolean("selfCleaned") || j.optJSONObject("occupancy")?.optBoolean("selfCleaned") == true, j.optJSONObject("health")?.str("label") ?: "") }
 }
 data class LaundryTask(val id: String, val machineId: String, val name: String, val kind: String, val endAt: Long?, val done: Boolean, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val estimated: Boolean, val startAt: Long? = null) {

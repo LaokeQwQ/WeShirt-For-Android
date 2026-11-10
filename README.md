@@ -28,4 +28,3 @@ WeShirt 基于海乐生活公开数据提供洗衣机状态服务。客户端使
 感谢 [PA733 / Laundry-Status-Monitor](https://github.com/PA733/Laundry-Status-Monitor) 提供的基础轮子支持。
 
 MIT License. Made by Laoke.
-An App rewrite from WeShirt that let user have better nofitication experience and services.

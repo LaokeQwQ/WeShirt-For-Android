@@ -48,10 +48,38 @@ data class NativePushEvent(
     val body: String,
     val taskId: String? = null,
     val serverConfirmed: Boolean = false,
+    val finishAtMillis: Long? = null,
 ) {
     fun valid(): Boolean = eventId.isNotBlank() && eventId.length <= 160 && revision >= 0 &&
         title.isNotBlank() && title.length <= 160 && body.length <= 1500 &&
+        (taskId == null || taskId.length <= 160) && (finishAtMillis == null || finishAtMillis > 0) &&
         (kind != PushEventKind.TASK_FINISHED || serverConfirmed)
+}
+
+data class TaskNoticeReceipt(val eventId: String, val revision: Long, val finishAtMillis: Long?, val confirmed: Boolean)
+
+/** Local timers and vendor pushes have different event IDs for the same task phase. */
+object TaskNoticeCoalescing {
+    fun key(event: NativePushEvent): String? {
+        val task = event.taskId?.takeIf { it.isNotBlank() } ?: return null
+        val phase = when (event.kind) {
+            PushEventKind.QUEUE_THREE_MINUTES -> "lead"
+            PushEventKind.ESTIMATED_END, PushEventKind.TASK_FINISHED -> "end"
+            else -> return null
+        }
+        return "$task:$phase"
+    }
+
+    fun sameFinish(first: Long?, second: Long?): Boolean = first == null || second == null ||
+        kotlin.math.abs(first - second) <= 120_000L
+
+    fun shouldDisplay(event: NativePushEvent, previous: TaskNoticeReceipt?): Boolean {
+        if (previous == null) return true
+        if (previous.confirmed && !event.serverConfirmed) return false
+        if (!sameFinish(previous.finishAtMillis, event.finishAtMillis)) return true
+        if (event.serverConfirmed && !previous.confirmed) return true
+        return event.eventId == previous.eventId && event.revision > previous.revision
+    }
 }
 
 /** A bounded monotonic ledger: replayed events and older revisions never re-alert the user. */

@@ -95,6 +95,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var lastGpuFrame = -1
     private var renderedFrames = 0L
     private var rejectedFrames = 0L
+    private var surfaceWarmupFrames = 0
     private var latestGpuDurationNanos: Long? = null
     private var lastQuality: QualityState? = null
     private var lastAppliedFps = -1
@@ -370,6 +371,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                 try { renderer?.render(requireNotNull(view)) }
                 finally { renderer?.endFrame() }
                 renderedFrames++
+                if(surfaceWarmupFrames > 0) surfaceWarmupFrames--
             } else rejectedFrames++
             val cpu = System.nanoTime() - started
             // 90 FPS on a 120 Hz display intentionally alternates VSync intervals. A frame
@@ -384,7 +386,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             publishQuality()
         }
         // A still room has no render loop. State changes and input explicitly invalidate it.
-        if (dirty || moving || animated) scheduleFrame()
+        if (dirty || moving || animated || surfaceWarmupFrames > 0) scheduleFrame()
     }
 
     private fun initializeRenderer() {
@@ -421,6 +423,10 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                         swapChain = null
                         old?.let(e::destroySwapChain)
                         swapChain = e.createSwapChain(surface)
+                        // Material program creation and swap-chain buffers are asynchronous.
+                        // Even with reduced motion, give a new Surface a bounded series of real
+                        // submissions before entering render-on-demand mode.
+                        surfaceWarmupFrames = 4
                         lastAppliedFps = -1
                         lastGpuFrame = -1
                         previousFrameNanos = 0L
@@ -434,6 +440,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                     callbackScheduled = false
                     val old = swapChain
                     swapChain = null
+                    surfaceWarmupFrames = 0
                     if(engine !== e) return
                     runCatching { old?.let(e::destroySwapChain); e.flushAndWait() }
                         .onFailure { error -> deferRendererFailure(error) }

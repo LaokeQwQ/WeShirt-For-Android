@@ -109,6 +109,17 @@ class AdaptiveFrameControllerTest {
         assertEquals(0, controller.state().adaptiveLevel)
     }
 
+    @Test fun healthyThirtyFpsDoesNotBounceBackToAnUnsustainableSixtyFps() {
+        val controller = activeController()
+        feed(controller, 0, 3, work = 20_000_000)
+        assertEquals(1, controller.state().adaptiveLevel)
+        for(frame in 0 until 30 * 30) controller.observeFrame(
+            3_000_000_000L + frame * 33_333_333L, 20_000_000, 1_000_000, 33_333_333,
+        )
+        assertEquals(1, controller.state().adaptiveLevel)
+        assertEquals(30, controller.state().targetFps)
+    }
+
     private fun activeController(refreshRate: Float = 60f) = AdaptiveFrameController(refreshRate).apply {
         setActivity(interacting = true, animated = true)
     }

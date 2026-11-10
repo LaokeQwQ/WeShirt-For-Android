@@ -9,8 +9,21 @@ concurrency:
   group: android-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  promotion:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check production promotion source
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          SOURCE_BRANCH: ${{ github.head_ref }}
+        run: |
+          if [ "$BASE_BRANCH" = main ] && [ "$SOURCE_BRANCH" != dev ]; then
+            echo 'Production changes must be promoted from dev.'
+            exit 1
+          fi
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -23,9 +36,11 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
-      - run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon
+      - run: ./gradlew -p buildSrc test --no-daemon --no-configuration-cache
+      - run: ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-daemon --no-configuration-cache
   device:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -50,9 +65,12 @@ jobs:
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+          script: bash .github/scripts/test-device.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: native-device-tests
-          path: app/build/reports/androidTests/
+          path: |
+            app/build/reports/androidTests/
+            app/build/reports/device-screenshots/
+            app/build/reports/device-logcat.txt

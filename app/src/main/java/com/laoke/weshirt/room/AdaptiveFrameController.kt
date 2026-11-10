@@ -22,6 +22,7 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
     private var windowStart = -1L
     private var frames = 0
     private var badFrames = 0
+    private var recoveryFrames = 0
     private var goodSince = -1L
     private var lastChange = Long.MIN_VALUE / 2
     private var noticePending = false
@@ -118,6 +119,7 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         val bad = rendererBusy || work > scheduledBudgetNanos * 0.9 ||
             missedVsyncNanos > scheduledBudgetNanos * 0.75
         if (bad) badFrames++
+        if (!bad && hasRecoveryHeadroom(work)) recoveryFrames++
         if (nowNanos - windowStart < WINDOW_NANOS || frames < MIN_WINDOW_FRAMES) return
 
         val badRatio = badFrames.toDouble() / frames
@@ -130,7 +132,7 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
                     noticePending = true
                 }
             }
-            badRatio <= 0.05 -> {
+            badRatio <= 0.05 && recoveryFrames.toDouble() / frames >= 0.9 -> {
                 if (goodSince < 0L) goodSince = windowStart
                 if (adaptiveLevel > 0 && nowNanos - goodSince >= RECOVERY_NANOS &&
                     nowNanos - lastChange >= DOWNGRADE_COOLDOWN
@@ -145,14 +147,31 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         windowStart = nowNanos
         frames = 0
         badFrames = 0
+        recoveryFrames = 0
     }
 
     private fun resetWindow() {
         windowStart = -1L
         frames = 0
         badFrames = 0
+        recoveryFrames = 0
         goodSince = -1L
     }
+
+    private fun hasRecoveryHeadroom(workNanos: Long): Boolean {
+        if(adaptiveLevel == 0) return true
+        val deviceCap = supportedCap(refreshRate)
+        val ladder = listOf(deviceCap, 90, 60, 30).filter { it <= deviceCap }.distinct()
+        val currentScale = scaleFor(adaptiveLevel)
+        val nextScale = scaleFor(adaptiveLevel - 1)
+        val nextFps = ladder[min(adaptiveLevel - 1, ladder.lastIndex)]
+        // Require enough headroom for the next quality step, not just for the reduced
+        // frame rate. Otherwise a 20 ms device would repeatedly bounce between 30 and 60 FPS.
+        val estimatedWork = workNanos * (nextScale / currentScale) * (nextScale / currentScale)
+        return estimatedWork < (1_000_000_000.0 / nextFps) * .75
+    }
+
+    private fun scaleFor(level: Int) = when(level) { 0, 1 -> 1f; 2 -> .9f; else -> .8f }
 
     companion object {
         private const val WINDOW_NANOS = 2_000_000_000L

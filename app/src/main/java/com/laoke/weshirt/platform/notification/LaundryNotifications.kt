@@ -18,6 +18,8 @@ import com.laoke.weshirt.platform.push.EventRevisionLedger
 import com.laoke.weshirt.platform.push.NativePushEvent
 import com.laoke.weshirt.platform.push.PushEventKind
 import com.laoke.weshirt.platform.push.PushRuntime
+import com.laoke.weshirt.platform.push.TaskNoticeCoalescing
+import com.laoke.weshirt.platform.push.TaskNoticeReceipt
 import org.json.JSONObject
 
 data class TaskProgress(
@@ -48,10 +50,22 @@ class LaundryNotifications(context: Context) {
     @SuppressLint("MissingPermission") // Permission is checked by capabilities immediately before delivery.
     fun post(event: NativePushEvent): Boolean = synchronized(lock) {
         if (!event.valid() || !PushRuntime.notificationsAllowed(app)) return false
+        if (event.kind == PushEventKind.QUEUE_THREE_MINUTES && event.finishAtMillis?.let { it <= System.currentTimeMillis() } == true) return false
         val capability = capabilities()
         if (!capability.permissionGranted || !capability.notificationsEnabled) return false
         val ledger = loadLedger()
         if (!ledger.shouldAccept(event.eventId, event.revision)) return false
+        val taskKey = TaskNoticeCoalescing.key(event)
+        val receipts = runCatching { JSONObject(prefs.getString("taskPhases", "{}")!!) }.getOrDefault(JSONObject())
+        val previous = taskKey?.let { receipts.optJSONObject(it) }?.let {
+            TaskNoticeReceipt(it.optString("eventId"), it.optLong("revision", -1),
+                it.optLong("finish").takeIf { value -> value > 0 }, it.optBoolean("confirmed"))
+        }
+        if (taskKey != null && !TaskNoticeCoalescing.shouldDisplay(event, previous)) {
+            ledger.record(event.eventId, event.revision)
+            prefs.edit().putString("ledger", JSONObject(ledger.entries()).toString()).commit()
+            return false
+        }
         createChannels()
         val channel = if (event.kind == PushEventKind.CHAT_MENTION) CHAT_CHANNEL else ALERT_CHANNEL
         if (manager.getNotificationChannel(channel)?.importance == NotificationManager.IMPORTANCE_NONE) return false
@@ -65,9 +79,17 @@ class LaundryNotifications(context: Context) {
             .setAutoCancel(true).setOnlyAlertOnce(true)
             .setContentIntent(NativeNavigation.pendingIntent(app, event.kind.name, event.eventId)).build()
         try {
-            manager.notify("event:${event.eventId}", 0, notification)
+            // A server-confirmed end replaces its estimate in place, rather than adding a second card.
+            manager.notify(taskKey?.let { "taskPhase:$it" } ?: "event:${event.eventId}", 0, notification)
             ledger.record(event.eventId, event.revision)
-            prefs.edit().putString("ledger", JSONObject(ledger.entries()).toString()).commit()
+            if (taskKey != null) {
+                receipts.put(taskKey, JSONObject().put("eventId", event.eventId).put("revision", event.revision)
+                    .put("finish", event.finishAtMillis ?: 0).put("confirmed", event.serverConfirmed)
+                    .put("at", System.currentTimeMillis()))
+                receipts.keys().asSequence().toList().sortedBy { receipts.optJSONObject(it)?.optLong("at") ?: 0 }
+                    .take((receipts.length() - 256).coerceAtLeast(0)).forEach { receipts.remove(it) }
+            }
+            prefs.edit().putString("ledger", JSONObject(ledger.entries()).toString()).putString("taskPhases", receipts.toString()).commit()
             true
         } catch (_: SecurityException) { false }
     }
@@ -116,6 +138,7 @@ class LaundryNotifications(context: Context) {
     }
 
     fun cancelProgress(taskId: String) { manager.cancel("progress:$taskId", 0) }
+    fun wasHandled(event: NativePushEvent): Boolean = synchronized(lock) { !loadLedger().shouldAccept(event.eventId, event.revision) }
     fun clear() { synchronized(lock) { manager.cancelAll(); prefs.edit().clear().commit() } }
 
     private fun createChannels() {

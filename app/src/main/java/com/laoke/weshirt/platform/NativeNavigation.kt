@@ -3,6 +3,7 @@ package com.laoke.weshirt.platform
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import com.laoke.weshirt.MainActivity
 
 /** Only fixed, native destinations are accepted; push payloads cannot provide URLs or channel IDs. */
 object NativeNavigation {
@@ -22,8 +23,8 @@ object NativeNavigation {
     }
 
     fun pendingIntent(context: Context, destination: String, identity: String): PendingIntent? {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
-        intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val intent = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         intent.action = "weshirt.open.${identity.take(180)}"
         intent.putExtra(DESTINATION_EXTRA, destination)
         return PendingIntent.getActivity(context, identity.hashCode(), intent,

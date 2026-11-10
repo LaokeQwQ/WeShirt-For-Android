@@ -10,6 +10,7 @@ import androidx.work.WorkerParameters
 import com.laoke.weshirt.platform.push.NativePushEvent
 import com.laoke.weshirt.platform.push.PushEventKind
 import com.laoke.weshirt.platform.push.PushRuntime
+import com.laoke.weshirt.platform.push.TaskNoticeCoalescing
 import com.laoke.weshirt.platform.widget.LaundryWidgetStore
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -35,6 +36,8 @@ object LaundryReminders {
             // Do not cancel a pending three-minute warning every time the foreground board refreshes.
             if (kind == "soon" && task.estimatedFinishAtMillis <= now) { manager.cancelUniqueWork(name(task.taskId, kind)); return@forEach }
             if (previous?.optLong("${kind}DeliveredRevision", -1) == task.revision) return@forEach
+            if (previous?.optLong("${kind}DeliveredFinish", 0)?.takeIf { it > 0 }?.let {
+                    TaskNoticeCoalescing.sameFinish(it, task.estimatedFinishAtMillis) } == true) return@forEach
             if (at < now - 15 * 60_000L) return@forEach
             val request = OneTimeWorkRequestBuilder<LaundryReminderWorker>()
                 .setInputData(Data.Builder().putString("taskId", task.taskId).putLong("revision", task.revision)
@@ -55,6 +58,21 @@ object LaundryReminders {
         LaundryNotifications(context).cancelProgress(taskId)
     }
     fun isConfirmedFinished(context: Context, taskId: String): Boolean = context.getSharedPreferences(CONFIRMED_PREFS, Context.MODE_PRIVATE).contains(taskId)
+    fun receivedRemotePhase(context: Context, event: NativePushEvent) {
+        val taskId = event.taskId ?: return
+        val kind = when (event.kind) {
+            PushEventKind.QUEUE_THREE_MINUTES -> "soon"
+            PushEventKind.ESTIMATED_END -> "estimated"
+            else -> return
+        }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val state = runCatching { JSONObject(prefs.getString(taskId, null) ?: return) }.getOrNull() ?: return
+        val finish = state.optLong("finish", 0)
+        if (!TaskNoticeCoalescing.sameFinish(finish, event.finishAtMillis)) return
+        prefs.edit().putString(taskId, state.put("${kind}DeliveredRevision", state.optLong("revision", -1))
+            .put("${kind}DeliveredFinish", finish).toString()).commit()
+        WorkManager.getInstance(context).cancelUniqueWork(name(taskId, kind))
+    }
     fun cancel(context: Context, taskId: String) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(taskId).commit()
         WorkManager.getInstance(context).cancelUniqueWork(name(taskId, "soon"))
@@ -84,19 +102,20 @@ class LaundryReminderWorker(context: Context, parameters: WorkerParameters) : Wo
         val machine = state.optString("name", "洗衣机")
         val remaining = ((finish - now + 59_999L) / 60_000L).coerceAtLeast(1)
         val event = if (kind == "soon") NativePushEvent("task:$taskId:soon", revision,
-            PushEventKind.QUEUE_THREE_MINUTES, "洗衣预计还有 $remaining 分钟", "$machine 即将到达预计结束时间，可准备前往。设备实际状态以看板为准。", taskId)
+            PushEventKind.QUEUE_THREE_MINUTES, "洗衣预计还有 $remaining 分钟", "$machine 即将到达预计结束时间，可准备前往。设备实际状态以看板为准。", taskId, finishAtMillis = finish)
         else NativePushEvent("task:$taskId:estimated", revision, PushEventKind.ESTIMATED_END,
-            "洗衣预计时间已到", "$machine 已到预计结束时间，尚待设备确认结束，请查看最新状态。", taskId)
+            "洗衣预计时间已到", "$machine 已到预计结束时间，尚待设备确认结束，请查看最新状态。", taskId, finishAtMillis = finish)
         if (kind == "estimated") {
             LaundryNotifications(applicationContext).updateProgress(
                 TaskProgress(taskId, revision, machine, 0L, finish, userRequestedTracking = true))
             LaundryWidgetStore.refresh(applicationContext)
         }
-        if (LaundryNotifications(applicationContext).post(event)) {
+        val notices = LaundryNotifications(applicationContext)
+        if (notices.post(event) || notices.wasHandled(event)) {
             val prefs = applicationContext.getSharedPreferences(LaundryReminders.PREFS, Context.MODE_PRIVATE)
             val latest = runCatching { JSONObject(prefs.getString(taskId, "{}")!!) }.getOrNull()
             if (latest != null && latest.optLong("revision", -1) == revision)
-                prefs.edit().putString(taskId, latest.put("${kind}DeliveredRevision", revision).toString()).commit()
+                prefs.edit().putString(taskId, latest.put("${kind}DeliveredRevision", revision).put("${kind}DeliveredFinish", finish).toString()).commit()
         }
         return Result.success()
     }

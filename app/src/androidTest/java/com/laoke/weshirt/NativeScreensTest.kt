@@ -10,6 +10,7 @@ import com.laoke.weshirt.ui.RoomScreen
 import com.laoke.weshirt.ui.WeShirtTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -17,6 +18,10 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 class NativeScreensTest {
     @get:Rule val compose = createComposeRule()
+    @Before fun isolateBackend() {
+        InstrumentationRegistry.getInstrumentation().targetContext.getSharedPreferences("preferences", 0)
+            .edit().clear().putString("endpoint", "").commit()
+    }
     private fun machine(id: String, slot: String, kind: String = "washer") = Machine(id, "测试机 $slot", slot, kind, "idle", null, "", false, false, "")
 
     @Test fun nativeRoomLoadsAndSelectionPreservesBusinessId() {

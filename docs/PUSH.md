@@ -10,6 +10,8 @@ FCM 使用真正的 `FirebaseMessagingService.onNewToken/onMessageReceived`；�
 
 合并清单移除了广告 ID、Freeme 标识权限、小米日志上传服务/Provider，以及 HMS AAID/AGConnect 自动初始化 Provider。推送入站组件默认禁用，仅在已登录、明确同意、系统通知允许且对应通道已配置后启用。HMS 使用显式 `AGConnectInstance.initialize`，只有本地配置含有效 app_id 才注册；未配置保持停用。应用进程由系统推送唤醒时，只恢复此前同意的 SDK 配置，不另建 API 客户端或发起会话刷新。
 
+HMS 自带的 BI 桥通过 Manifest 的 `bi.setting=true` 与 `bireport.setting=false` 固定关闭；不加入可选 HiAnalytics SDK。正式包压缩仅忽略 6 个已核查有兼容回退的 Huawei ROM 类和 6 个按需检测的可选 HiAnalytics 类，规则逐项列名，不忽略整个 HMS 包。版本升级时须重新核查 SDK 的兼容分支与 BI 开关含义。
+
 小米需申请包名对应 App ID/App Key；华为需登记包名、签名证书并配置匹配的 HMS 应用信息。友盟服务端发送 Secret 不得写入 APK。友盟客户端的 message secret、公开 App Key 与服务端发送凭据用途不同，仍应从本地私有配置生成，避免混入仓库。
 
 ## 与后端连接
@@ -51,6 +53,10 @@ Android 13+ 在用户明确开启通知时申请 `POST_NOTIFICATIONS`。拒绝�
 原生 `AppWidgetProvider` 只保存当前楼栋的数量摘要、本人任务机器名、预计时间和更新时间。没有账号、手机号、备注、聊天、头像或推送 token。点按通过 PendingIntent 打开原生主 Activity。快照超过 10 分钟提示打开刷新，不在后台高频联网。退出后即清空桌面内容。
 
 ## 设备验收
+
+UMDID 1.1.0 的自定义 TLS 实现由构建插件替换为系统证书链校验、证书有效期检查和当前主机名校验。变换仅匹配四个已审查类的十九个方法；坐标、原始 JAR SHA-256 或方法结构变化都会中止构建。没有关闭 lint、忽略证书异常或添加信任所有证书的降级。升级该依赖前须重新审查并通过证书与 APK 内实际 SDK 的测试；不能直接改掉指纹校验。构建必须禁用 configuration cache，以确保每次都校验原始 SDK。
+
+本地计时与厂商推送按任务、提前/结束阶段和预计结束时间合并；设备确认结束会替换预计结束卡片，迟到的提前提醒会被丢弃。MiPush 预混淆代码按[官方小米通道集成说明](https://cloud.tencent.com.cn/document/product/548/36654)保留，避免再次优化推送入口。厂商通道仍须用正式登记的应用和对应真机验收；编译通过不代表真实投递已验证。
 
 单元测试覆盖单通道路由、无配置/无同意、修订去重和完成状态区分。发布前需使用登记后的真实应用分别验证 Google Play、无 GMS 小米、华为 HMS：首次同意、拒绝通知、系统禁用频道、切换账号、断网退出、杀进程后推送、token 轮换、取消排队、省电模式提醒延迟、重复与乱序消息、进度卡片划掉、桌面小组件和 API 36 的允许/禁用 Live Updates。没有配置或没有测试设备的项目应保留未验收状态。
 

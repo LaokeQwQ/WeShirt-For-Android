@@ -25,6 +25,7 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.io.File
 
 /** Runs the real Filament engine and material compiler on a GLES 3 emulator/device. */
 @RunWith(AndroidJUnit4::class)
@@ -185,22 +186,29 @@ class NativeLaundryRoomTest {
         val pixels = Bitmap.createBitmap(dimensions.first, dimensions.second, Bitmap.Config.ARGB_8888)
         try {
             var copyResult = PixelCopy.ERROR_SOURCE_NO_DATA
-            repeat(4) {
-                if(copyResult != PixelCopy.SUCCESS) {
-                    val copied = CountDownLatch(1)
-                    val result = AtomicReference<Int>()
-                    onMain {
-                        PixelCopy.request(surface, pixels, { status -> result.set(status); copied.countDown() }, Handler(Looper.getMainLooper()))
-                    }
-                    assertTrue("Timed out copying the rendered native surface", copied.await(5, TimeUnit.SECONDS))
-                    copyResult = result.get()
-                    if(copyResult == PixelCopy.ERROR_SOURCE_NO_DATA) SystemClock.sleep(80)
+            var colorCount = 0
+            val deadline = SystemClock.uptimeMillis() + 20_000
+            while(SystemClock.uptimeMillis() < deadline) {
+                val copied = CountDownLatch(1)
+                val result = AtomicReference<Int>()
+                onMain {
+                    PixelCopy.request(surface, pixels, { status -> result.set(status); copied.countDown() }, Handler(Looper.getMainLooper()))
                 }
+                assertTrue("Timed out copying the rendered native surface: ${snapshot(room)}", copied.await(5, TimeUnit.SECONDS))
+                copyResult = result.get()
+                if(copyResult == PixelCopy.SUCCESS) {
+                    val colors = mutableSetOf<Int>()
+                    for(x in 1..15) for(y in 1..15) colors += pixels.getPixel(x * pixels.width / 16, y * pixels.height / 16)
+                    colorCount = colors.size
+                    if(colorCount > 8) break
+                }
+                assertNull("Renderer failed while awaiting actual presentation", snapshot(room).failureEvent)
+                SystemClock.sleep(200)
             }
-            assertEquals("PixelCopy must read a completed GPU surface", PixelCopy.SUCCESS, copyResult)
-            val colors = mutableSetOf<Int>()
-            for(x in 1..15) for(y in 1..15) colors += pixels.getPixel(x * pixels.width / 16, y * pixels.height / 16)
-            assertTrue("A clear-only or blank surface cannot count as a rendered room", colors.size > 8)
+            assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
+            assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)
+            val destination = File(instrumentation.targetContext.getExternalFilesDir(null), "native-room-3d.png")
+            destination.outputStream().use { pixels.compress(Bitmap.CompressFormat.PNG, 100, it) }
         } finally { pixels.recycle() }
     }
 
