@@ -38,6 +38,7 @@ import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Exercises the real ViewModel, Android preferences, notification service and WorkManager. */
 @RunWith(AndroidJUnit4::class)
@@ -107,6 +108,8 @@ class NativePreferencePrivacyTest {
             val entered = CountDownLatch(1)
             val release = CountDownLatch(1)
             val serverPreferenceRead = CountDownLatch(1)
+            val serverDisabledRead = CountDownLatch(1)
+            val serverEnabled = AtomicBoolean(true)
             val origin = "https://example.invalid"
             onMain {
                 vm.api.baseUrl = origin
@@ -121,11 +124,15 @@ class NativePreferencePrivacyTest {
                         entered.countDown()
                         check(release.await(10, TimeUnit.SECONDS)) { "Test did not release the in-flight API response" }
                     }
-                    if (request.url.encodedPath == "/api/user/announcements" && request.method == "GET") serverPreferenceRead.countDown()
+                    val announcementsEnabled = serverEnabled.get()
+                    if (request.url.encodedPath == "/api/user/announcements" && request.method == "GET") {
+                        serverPreferenceRead.countDown()
+                        if (!announcementsEnabled) serverDisabledRead.countDown()
+                    }
                     val body = when (request.url.encodedPath) {
                         "/api/site" -> "{\"buildings\":[{\"code\":\"test\",\"name\":\"测试楼\"}]}"
                         "/api/auth/me" -> "{\"user\":{\"id\":\"privacy-test\",\"nick\":\"测试用户\",\"dormBuilding\":\"test\"}}"
-                        "/api/user/announcements" -> "{\"enabled\":true}"
+                        "/api/user/announcements" -> JSONObject().put("enabled", announcementsEnabled).toString()
                         "/api/announcements" -> "{\"announcements\":[{\"id\":\"late\",\"version\":\"1\",\"title\":\"晚到公告\"}]}"
                         else -> "{}"
                     }
@@ -152,6 +159,21 @@ class NativePreferencePrivacyTest {
                     assertFalse("Server enabled=true must respect the newer local opt-out", vm.state.value.announcementsOn)
                     assertTrue(vm.state.value.announcements.isEmpty())
                     assertFalse(prefs.getBoolean("announcements", true))
+                    serverEnabled.set(false)
+                    val refresh = onMain {
+                        prefs.edit().putBoolean("announcements", true).commit()
+                        seedState(vm, Profile("privacy-test", "测试用户", "", "test", 1, "user"), active = true)
+                        assertTrue("An already loaded announcement is present before the server opt-out", vm.state.value.announcements.isNotEmpty())
+                        vm.refresh(forceMetadata = true)
+                    }
+                    runBlocking { refresh.join() }
+                    assertTrue("Refresh must consume the server-side opt-out", serverDisabledRead.await(10, TimeUnit.SECONDS))
+                    val remoteDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+                    while (vm.state.value.loading && System.nanoTime() < remoteDeadline) Thread.sleep(30)
+                    assertFalse(vm.state.value.loading)
+                    assertTrue("This case keeps the device preference enabled", prefs.getBoolean("announcements", false))
+                    assertFalse("A server-side opt-out must disable announcements", vm.state.value.announcementsOn)
+                    assertTrue("A server-side opt-out must erase already loaded announcements", vm.state.value.announcements.isEmpty())
                 }
             } finally { release.countDown(); onMain { store.clear() }; SecureSession(app).clear() }
         }
