@@ -44,13 +44,43 @@ internal data class RoomBounds(val minimum: Vec3, val maximum: Vec3) {
     }
 }
 
-internal data class RoomSlot(val slot: String, val x: Float, val z: Float = -1.0f, val label: String = slot, val dryer: Boolean = label.startsWith("D")) {
-    val bounds get() = RoomBounds(Vec3(x - .54, 0.0, z - .45), Vec3(x + .54, 1.82, z + .55))
+internal data class RoomSlot(
+    val slot: String, val x: Float, val z: Float = -1.0f,
+    val label: String = slot, val dryer: Boolean = label.startsWith("D"), val yaw: Float = 0f,
+) {
+    fun point(localX: Float, localY: Float, localZ: Float): Vec3 = Vec3(
+        (x + localX * cos(yaw) + localZ * sin(yaw)).toDouble(), localY.toDouble(),
+        (z - localX * sin(yaw) + localZ * cos(yaw)).toDouble(),
+    )
+    val doorCenter get() = point(0f, .53f, .39f)
+    fun intersection(ray: Ray): Double? {
+        // Intersect in the machine's local coordinates, so facing doors and their
+        // hit boxes stay aligned on both sides of the same central aisle.
+        val relative = ray.origin - Vec3(x.toDouble(), 0.0, z.toDouble())
+        fun local(v: Vec3) = Vec3(v.x * cos(yaw) - v.z * sin(yaw), v.y, v.x * sin(yaw) + v.z * cos(yaw))
+        return RoomBounds(Vec3(-.35, 0.0, -.33), Vec3(.35, 1.11, .43))
+            .intersection(Ray(local(relative), local(ray.direction)))
+    }
 }
 
 internal object RoomLayout {
-    val slots = listOf("D1", "1", "2", "3", "4", "5", "6", "7", "D2")
-        .mapIndexed { index, slot -> RoomSlot(slot, (index - 4) * 1.19f) }
+    // Same surveyed layout and numbering as the Web Room3D.vue SLOTS. Looking
+    // inward from the door: right D1,1–4; left boiler,D2,7,6,5.
+    val slots = listOf(
+        RoomSlot("D1", 1.42f, 2.7f, yaw = (-Math.PI / 2).toFloat()),
+        RoomSlot("1", 1.42f, 1.65f, yaw = (-Math.PI / 2).toFloat()),
+        RoomSlot("2", 1.42f, .6f, yaw = (-Math.PI / 2).toFloat()),
+        RoomSlot("3", 1.42f, -.45f, yaw = (-Math.PI / 2).toFloat()),
+        RoomSlot("4", 1.42f, -1.5f, yaw = (-Math.PI / 2).toFloat()),
+        RoomSlot("D2", -1.42f, 2.7f, yaw = (Math.PI / 2).toFloat()),
+        RoomSlot("7", -1.42f, 1.65f, yaw = (Math.PI / 2).toFloat()),
+        RoomSlot("6", -1.42f, .6f, yaw = (Math.PI / 2).toFloat()),
+        RoomSlot("5", -1.42f, -.45f, yaw = (Math.PI / 2).toFloat()),
+    )
+
+    fun isSurveyedLayout(positions: List<RoomSlot>): Boolean = positions.all { position ->
+        slots.any { it.label == position.label && it.x == position.x && it.z == position.z && it.yaw == position.yaw }
+    }
 
     fun normalizeSlot(value: String): String = value.trim().uppercase().removePrefix("#")
         .replace("号机", "").replace("号", "").removePrefix("W")
@@ -63,7 +93,7 @@ internal object RoomLayout {
         if (known) return unique.map { machine ->
             val position = slots.first { it.slot == normalizeSlot(machine.slot) }
             position.copy(slot = machine.id, label = position.slot, dryer = machine.kind == "dryer" || position.dryer)
-        }.sortedBy { it.x }
+        }.sortedBy { position -> slots.indexOfFirst { it.slot == position.label } }
         val sorted = unique.sortedWith(compareBy<RoomMachine> { normalizeSlot(it.slot).toIntOrNull() ?: Int.MAX_VALUE }
             .thenBy { normalizeSlot(it.slot) }.thenBy { it.id })
         val columns = min(7, max(1, kotlin.math.ceil(sqrt(sorted.size * 1.8)).toInt()))
@@ -78,7 +108,7 @@ internal object RoomLayout {
 
     fun pick(ray: Ray, positions: List<RoomSlot>): String? =
         positions.asSequence()
-            .mapNotNull { slot -> slot.bounds.intersection(ray)?.let { slot.slot to it } }
+            .mapNotNull { slot -> slot.intersection(ray)?.let { slot.slot to it } }
             .minByOrNull { it.second }?.first
 
     fun screenRay(x: Float, y: Float, width: Int, height: Int, eye: Vec3, target: Vec3, fovDegrees: Double): Ray {
@@ -104,39 +134,79 @@ internal object RoomGeometry {
         val paint = MeshBuilder()
         val metal = MeshBuilder()
         val glow = MeshBuilder()
-        val floor = rgb(0xDDE6E5)
-        paint.box(0f, -.09f, .3f + extraDepth / 2, 12.5f, .18f, 6.7f + extraDepth, floor)
-        paint.box(0f, 1.9f, -1.94f, 12.5f, 3.8f, .16f, rgb(0xE5ECE7))
-        paint.box(-6.18f, .65f, .35f + extraDepth / 2, .15f, 1.3f, 4.5f + extraDepth, rgb(0xC9D9D3))
-        paint.box(6.18f, .65f, .35f + extraDepth / 2, .15f, 1.3f, 4.5f + extraDepth, rgb(0xC9D9D3))
-        paint.box(0f, .10f, -1.79f, 12.3f, .20f, .08f, rgb(0x81958D))
-        for (x in -6..6) paint.box(x.toFloat(), .009f, .35f + extraDepth / 2, .013f, .006f, 6.5f + extraDepth, rgb(0xC7D4D1))
-        for (z in -1..(3 + extraDepth.toInt())) paint.box(0f, .010f, z.toFloat(), 12.3f, .006f, .012f, rgb(0xC7D4D1))
-        // Recessed windows with separate frames and handles.
-        for (x in listOf(-3.6f, 0f, 3.6f)) {
-            metal.box(x, 2.76f, -1.79f, 2.65f, 1.28f, .13f, rgb(0x708C86))
-            glow.box(x, 2.76f, -1.70f, 2.46f, 1.10f, .035f, rgb(0xB2D4DF))
-            metal.box(x, 2.76f, -1.64f, .055f, 1.12f, .05f, rgb(0xE7F0EC))
-            metal.box(x, 2.76f, -1.64f, 2.47f, .055f, .05f, rgb(0xE7F0EC))
-            metal.box(x + .12f, 2.65f, -1.58f, .035f, .16f, .04f, rgb(0x5C716C))
-            paint.box(x, 2.13f, -1.55f, 2.78f, .09f, .40f, rgb(0xEEF4ED))
+        val wall = rgb(0xBCAC88)
+        val tile = rgb(0xAC966E)
+        val frame = rgb(0x101418)
+        val pipe = rgb(0x8A98A5)
+        val end = 4.42f + extraDepth
+        val depth = 6.52f + extraDepth
+        val center = 1.16f + extraDepth / 2
+        paint.box(0f, -.055f, center, 4.1f, .11f, depth, tile)
+        for (i in -4..4) paint.box(i * .5f, .004f, center, .008f, .005f, depth, rgb(0x786949))
+        for (i in 0..(depth / .5f).toInt()) paint.box(0f, .005f, -2.1f + i * .5f, 4.1f, .005f, .008f, rgb(0x786949))
+        // Tile walls with a cutaway toward the entrance. The aisle remains visible
+        // from all allowed camera angles; no transparent full-room overdraw.
+        for (side in listOf(-1f, 1f)) {
+            val x = side * 2.05
+            val points = listOf(Vec3(x, 0.0, -2.1), Vec3(x, 0.0, end.toDouble()),
+                Vec3(x, 2.6, end.toDouble()), Vec3(x, 2.6, -2.1))
+            val ordered = if (side < 0) points.reversed() else points
+            paint.face(ordered[0], ordered[1], ordered[2], ordered[3], wall)
+            for (i in 0..(depth / .3f).toInt()) paint.box(side * 2.011f, 1.3f, -2.1f + i * .3f, .008f, 2.6f, .006f, rgb(0x8C8068))
+            for (row in 1..8) paint.box(side * 2.009f, row * .3f, center, .008f, .006f, depth, rgb(0x8C8068))
+            metal.box(side * 1.97f, .16f, center, .025f, .06f, depth, pipe)
+            metal.box(side * 1.97f, 1.2f, .55f, .025f, .035f, 5.15f, pipe)
         }
-        paint.box(0f, .51f, 1.7f + extraDepth, 3.6f, .13f, .65f, rgb(0xBC9671))
-        for (x in listOf(-1.45f, 1.45f)) {
-            metal.box(x, .24f, 1.7f + extraDepth, .10f, .48f, .48f, rgb(0x65776F))
-            paint.box(x, .61f, 1.7f + extraDepth, .025f, .015f, .66f, rgb(0x8E6E51))
+        // Ceiling and the two warm-white grid lamps use exactly the Web positions.
+        paint.face(Vec3(-2.05, 2.7, -2.1), Vec3(2.05, 2.7, -2.1),
+            Vec3(2.05, 2.7, end.toDouble()), Vec3(-2.05, 2.7, end.toDouble()), rgb(0x4A4E56))
+        for (x in listOf(-.85f, .85f)) {
+            metal.box(x, 2.63f, .6f, .36f, .06f, 1.3f, rgb(0x3A4048))
+            glow.box(x, 2.595f, .6f, .29f, .02f, 1.2f, rgb(0xFFF4E2))
         }
-        for (x in listOf(-5.6f, 5.6f)) {
-            paint.cylinder(x, .31f, 1.6f + extraDepth, .27f, .54f, rgb(0xC2A78D), axisZ = false, segments = 20)
-            metal.box(x, .82f, 1.6f + extraDepth, .035f, .65f, .035f, rgb(0x5D8063))
-            for (leaf in 0..6) {
-                val angle = leaf * 2.4f
-                paint.ellipsoid(x + cos(angle) * .19f, .82f + leaf * .045f, 1.6f + extraDepth + sin(angle) * .17f,
-                    .15f, .23f, .07f, rgb(if (leaf % 2 == 0) 0x547F60 else 0x6A9671))
-            }
+        // Rear wall assembled around two 1.35 × 1.3m windows, not a row of
+        // arbitrary display windows. The recess and handles remain real geometry.
+        paint.box(0f, .425f, -2.1f, 4.1f, .85f, .07f, wall)
+        paint.box(0f, 2.375f, -2.1f, 4.1f, .45f, .07f, wall)
+        paint.box(0f, 1.5f, -2.1f, .34f, 1.3f, .07f, wall)
+        for (side in listOf(-1f, 1f)) {
+            val x = side * .845f
+            paint.box(side * 1.785f, 1.5f, -2.1f, .53f, 1.3f, .07f, wall)
+            glow.box(x, 1.5f, -2.115f, 1.29f, 1.22f, .025f, rgb(0xA7C7DA))
+            for (dy in listOf(-.65f, .65f)) metal.box(x, 1.5f + dy, -2.032f, 1.35f, .06f, .06f, frame)
+            for (dx in listOf(-.645f, 0f, .645f)) metal.box(x + dx, 1.5f, -2.03f, .045f, 1.3f, .06f, frame)
+            for (dx in listOf(-.12f, .12f)) metal.box(x + dx, 1.5f, -1.98f, .026f, .15f, .032f, rgb(0xD5DEE8))
         }
-        // Floor edge and a quiet teal mat establish the room's scale.
-        paint.box(0f, .025f, .1f + extraDepth, 8.8f, .035f, 1.0f, rgb(0x9DB7AB))
+        paint.box(0f, .79f, -1.99f, 3.28f, .06f, .14f, rgb(0x726452))
+        // Open door, entrance piers, breaker and the opposite hall doorway.
+        for (side in listOf(-1f, 1f)) {
+            paint.box(side * 1.6f, 1.3f, end - .07f, .9f, 2.6f, .10f, wall)
+            metal.box(side * .84f, 1.2f, end - .07f, .06f, 2.4f, .08f, rgb(0xB4A697))
+        }
+        metal.box(0f, 2.36f, end - .07f, 1.74f, .08f, .1f, rgb(0xB4A697))
+        paint.box(-1.38f, 1.15f, end + .40f, 1.12f, 2.26f, .06f, rgb(0x806044))
+        // One-sided hall backdrop stays visible looking outward, never from
+        // behind the doorway camera on a narrow portrait display.
+        paint.face(Vec3(1.05, 0.0, end + .95), Vec3(-1.05, 0.0, end + .95),
+            Vec3(-1.05, 2.6, end + .95), Vec3(1.05, 2.6, end + .95), rgb(0xD9D6CF))
+        paint.face(Vec3(.45, 0.0, end + .91), Vec3(-.45, 0.0, end + .91),
+            Vec3(-.45, 2.2, end + .91), Vec3(.45, 2.2, end + .91), rgb(0x775A3D))
+        glow.box(0f, .011f, end - .12f, 2.6f, .012f, .08f, rgb(0x22C55E))
+        paint.box(1.62f, 1.5f, 3.95f, .56f, .24f, .1f, rgb(0xB4BAC2))
+        for (i in 0..4) metal.box(1.42f + i * .1f, 1.5f, 3.88f, .055f, .10f, .035f, rgb(0x252C32))
+        // Water boiler by the left entrance, display/card reader, dispensing recess.
+        paint.box(-1.55f, .76f, 4.02f, .42f, 1.52f, .38f, rgb(0x252B32))
+        glow.box(-1.33f, 1.42f, 4.02f, .02f, .13f, .23f, rgb(0x84C1D7))
+        paint.box(-1.325f, 1.2f, 4.02f, .025f, .16f, .15f, rgb(0x536270))
+        paint.box(-1.325f, .69f, 4.02f, .025f, .42f, .29f, rgb(0x11171D))
+        metal.box(-1.295f, .89f, 4.02f, .12f, .027f, .035f, rgb(0xB7BEC5))
+        metal.box(-1.29f, .43f, 4.02f, .14f, .035f, .32f, rgb(0x9DA6B0))
+        metal.box(-1.96f, 1.03f, 3.15f, .12f, .035f, .045f, rgb(0xAAB7C0))
+        // Small corner sink and waste bin complete the same entrance facilities.
+        paint.box(-1.77f, .73f, -1.43f, .45f, .09f, .48f, rgb(0xD8DCDD))
+        metal.box(-1.89f, .91f, -1.43f, .025f, .27f, .025f, pipe)
+        metal.box(-1.82f, 1.04f, -1.43f, .17f, .025f, .025f, pipe)
+        metal.cylinder(-1.02f, .17f, 3.66f, .13f, .34f, rgb(0x37414A), axisZ = false, segments = 16)
         return mapOf(RoomMaterial.PAINT to paint.build(), RoomMaterial.METAL to metal.build(), RoomMaterial.GLOW to glow.build())
     }
 
@@ -144,47 +214,64 @@ internal object RoomGeometry {
         val paint = MeshBuilder()
         val metal = MeshBuilder()
         for (slot in positions) {
-            val x = slot.x
-            val z = slot.z
-            val dryer = slot.dryer
-            paint.box(x, .89f, z, 1.06f, 1.68f, .88f, rgb(if (dryer) 0xE5D8BE else 0xE7EFEB))
-            paint.box(x, 1.73f, z, 1.08f, .065f, .91f, rgb(0xF4F5EC))
-            paint.box(x, 1.44f, z + .452f, 1.0f, .32f, .035f, rgb(0xD9E2DC))
-            paint.box(x + .16f, 1.46f, z + .48f, .43f, .16f, .025f, rgb(0x334B47))
-            metal.cylinder(x - .29f, 1.46f, z + .49f, .075f, .045f, rgb(0xBBC7C1), segments = 20)
-            paint.box(x - .29f, 1.48f, z + .521f, .015f, .063f, .009f, rgb(0x536A62))
-            // The drum sits in front of the body. The open ring leaves the contents visible.
-            metal.cylinder(x, .80f, z + .464f, .385f, .035f, rgb(0x263C39), segments = 36)
-            metal.torus(x, .80f, z + .50f, .359f, .066f, rgb(0xA8B9B2))
-            metal.torus(x, .80f, z + .542f, .293f, .018f, rgb(0x556D66))
-            for (i in 0..20) {
-                val a = i * (Math.PI * 2 / 21)
-                metal.cylinder(x + (cos(a) * .258).toFloat(), .80f + (sin(a) * .258).toFloat(), z + .487f,
-                    .008f, .007f, rgb(0x8CABA2), segments = 5)
+            val body = MeshBuilder()
+            val detail = MeshBuilder()
+            val height = if (slot.dryer) 1.02f else .95f
+            val radius = if (slot.dryer) .23f else .205f
+            body.box(0f, height / 2, 0f, .66f, height, .62f, rgb(if (slot.dryer) 0xD9D4CB else 0xDDE1E2))
+            body.box(0f, height + .022f, 0f, .68f, .044f, .64f, rgb(0xE8EBE9))
+            body.box(0f, height - .11f, .315f, .62f, .16f, .024f, rgb(0xC5CDD1))
+            body.box(.105f, height - .10f, .334f, .24f, .09f, .02f, rgb(0x263840))
+            detail.cylinder(-.20f, height - .10f, .34f, .043f, .025f, rgb(0xBCC5CB), segments = 16)
+            detail.cylinder(0f, .53f, .328f, radius + .038f, .025f, rgb(0x26343C), segments = 28)
+            detail.torus(0f, .53f, .36f, radius, .038f, rgb(0xACB6BC))
+            detail.torus(0f, .53f, .389f, radius - .03f, .012f, rgb(0x5C6C76))
+            detail.torusArc(0f, .53f, .40f, radius + .008f, .008f, .35f, 1.25f, rgb(0xDAE5E8))
+            for (i in 0..15) {
+                val a = i * (Math.PI * 2 / 16)
+                detail.cylinder((cos(a) * (radius - .05f)).toFloat(), .53f + (sin(a) * (radius - .05f)).toFloat(), .342f,
+                    .005f, .005f, rgb(0x8B9DA5), segments = 5)
             }
-            // A small bevel highlight suggests door glass without hiding garment silhouettes.
-            metal.torusArc(x, .80f, z + .56f, .325f, .013f, .35f, 1.25f, rgb(0xD0E3DF))
-            paint.box(x + .37f, .81f, z + .57f, .06f, .20f, .065f, rgb(0x6F847B))
-            paint.box(x, .19f, z + .456f, .90f, .13f, .025f, rgb(0xBACAC0))
-            for (i in 0..6) paint.box(x - .28f + i * .095f, .19f, z + .474f, .044f, .008f, .008f, rgb(0x748B81))
-            for (dx in listOf(-.39f, .39f)) metal.box(x + dx, .037f, z + .27f, .14f, .07f, .18f, rgb(0x53675E))
-            paint.glyph(slot.label.take(3), x, 1.62f, z + .481f, .09f, rgb(0x3F5C52))
+            body.box(radius + .035f, .53f, .411f, .038f, .13f, .04f, rgb(0x6C7A82))
+            body.box(0f, .12f, .32f, .55f, .10f, .018f, rgb(0xB5C0C5))
+            for (i in 0..6) body.box(-.20f + i * .066f, .12f, .334f, .035f, .006f, .006f, rgb(0x75868E))
+            for (dx in listOf(-.25f, .25f)) detail.box(dx, .023f, .20f, .07f, .046f, .10f, rgb(0x4F5962))
+            body.glyph(slot.label.take(3), 0f, height + .15f, .35f, .105f, rgb(0xE5EAF0))
+            // The Web room places dosing equipment and utility lines behind each
+            // washer. Keep these static details batched in the same two materials.
+            if (!slot.dryer) {
+                body.box(0f, 1.52f, -.43f, .36f, .28f, .12f, rgb(0xD5DEE5))
+                body.box(-.07f, 1.30f, -.43f, .10f, .15f, .085f, rgb(0xB0CADB))
+                body.box(.07f, 1.30f, -.43f, .10f, .15f, .085f, rgb(0xD0C8E0))
+                detail.box(0f, 1.15f, -.47f, .018f, .55f, .018f, rgb(0x8B99A5))
+                detail.box(.23f, 1.44f, -.45f, .09f, .12f, .04f, rgb(0xE6E9EA))
+            } else {
+                for (i in 0..4) detail.box(-.14f + i * .07f, height + .048f, -.13f, .025f, .012f, .20f, rgb(0x6D7A83))
+                detail.box(0f, .55f, -.42f, .07f, .7f, .07f, rgb(0x8694A1))
+            }
+            paint.append(body.build(), slot)
+            metal.append(detail.build(), slot)
         }
         return mapOf(RoomMaterial.PAINT to paint.build(), RoomMaterial.METAL to metal.build())
     }
 
-    fun status(slot: RoomSlot, state: RoomMachineState): MeshData = MeshBuilder().apply {
+    fun status(slot: RoomSlot, state: RoomMachineState): MeshData {
         val color = when (state) {
-            RoomMachineState.IDLE -> 0x61B994
-            RoomMachineState.RUNNING -> 0x71A4DB
+            RoomMachineState.IDLE -> 0x22C55E
+            RoomMachineState.RUNNING -> 0xF59E0B
             RoomMachineState.FINISHING -> 0xE2BD68
-            RoomMachineState.AWAITING_PICKUP -> 0xDC9B5D
-            RoomMachineState.FAULT -> 0xD66E6B
-            RoomMachineState.UNKNOWN -> 0xA3ACA9
+            RoomMachineState.AWAITING_PICKUP -> 0xF97316
+            RoomMachineState.FAULT -> 0xEF4444
+            RoomMachineState.UNKNOWN -> 0x6B7280
         }
-        box(slot.x + .16f, 1.46f, slot.z + .50f, .28f, .048f, .012f, rgb(color))
-        cylinder(slot.x + .43f, 1.62f, slot.z + .485f, .024f, .016f, rgb(color), segments = 12)
-    }.build()
+        val height = if (slot.dryer) 1.02f else .95f
+        val local = MeshBuilder().apply {
+            box(.105f, height - .10f, .35f, .16f, .028f, .01f, rgb(color))
+            cylinder(.27f, height - .045f, .34f, .017f, .012f, rgb(color), segments = 10)
+            box(0f, height + .065f, .26f, .54f, .018f, .035f, rgb(color))
+        }.build()
+        return MeshBuilder().apply { append(local, slot) }.build()
+    }
 
     /** Local coordinates allow rotation by a transform, with no vertex uploads per frame. */
     fun garments(slotIndex: Int): MeshData = MeshBuilder().apply {
@@ -227,6 +314,8 @@ internal class MeshBuilder {
         vertex(b, normal, color); vertex(c, normal, color); vertex(d, normal, color)
         indices.addAll(listOf(base, base + 1, base + 2, base, base + 2, base + 3))
     }
+
+    fun face(a: Vec3, b: Vec3, c: Vec3, d: Vec3, color: FloatArray) = quad(a, b, c, d, color)
 
     fun box(x: Float, y: Float, z: Float, width: Float, height: Float, depth: Float, color: FloatArray) {
         val a = Vec3((x-width/2).toDouble(), (y-height/2).toDouble(), (z-depth/2).toDouble())
@@ -316,6 +405,18 @@ internal class MeshBuilder {
                 'C' -> box(px+size*.3f,y-size*.27f,z,size*.13f,size*.5f,.009f,color)
             }
         }
+    }
+
+    fun append(mesh: MeshData, slot: RoomSlot) {
+        val base = positions.size / 3
+        for (index in 0 until mesh.vertexCount) {
+            val offset = index * 3
+            val point = slot.point(mesh.positions[offset], mesh.positions[offset + 1], mesh.positions[offset + 2])
+            val nx = mesh.normals[offset]; val ny = mesh.normals[offset + 1]; val nz = mesh.normals[offset + 2]
+            vertex(point, Vec3((nx * cos(slot.yaw) + nz * sin(slot.yaw)).toDouble(), ny.toDouble(),
+                (-nx * sin(slot.yaw) + nz * cos(slot.yaw)).toDouble()), mesh.colors.copyOfRange(index * 4, index * 4 + 4))
+        }
+        mesh.indices.forEach { indices.add(base + it) }
     }
 
     fun build() = MeshData(positions.toFloatArray(),normals.toFloatArray(),colors.toFloatArray(),indices.toIntArray())
