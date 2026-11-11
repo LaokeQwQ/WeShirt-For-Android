@@ -123,7 +123,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 FCM 使用 RS256 服务账号 JWT 换取一小时 OAuth 访问令牌，权限范围仅为 `firebase.messaging`，再调用 HTTP v1 `projects.messages:send`。仅发送 data payload，由原生客户端统一展示和去重。服务账号须获目标 Firebase 项目的 Cloud Messaging 发送权限，Android 使用同一项目的配置。
 
-友盟使用 `POST https://msgapi.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验，使用 `display_type=message` 自定义数据。当前 Android 仅接入基础 U-Push；不配置厂商离线转通知，也不宣称杀进程后的厂商离线投递已接通。U-Push 的 FCM 通道固定关闭，避免与客户端原生 FCM 重复投递。
+友盟使用 `POST https://msgapi.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验，使用 `display_type=message` 自定义数据。当前 Android 仅接入基础 U-Push；不配置厂商离线转通知，也不宣称杀进程后的厂商离线投递已接通。不启用 U-Push 聚合 FCM，同一安装仅登记 FCM 或基础 U-Push 中的一种。
 
 社区 @、取衣、排队和代取提醒会加入原生独立待发队列；即使钉钉先成功，也不会取消原生通道自己的重试。每次同步开始会继续处理原生队列：同一安装和事件只由一个短期租约发送，失败最多四次并递增退避。每次同步最多并行发送八条，避免发送器串行超时拖慢上游状态查询。`eventId` 来自稳定业务事件标识，`revision` 默认 1；新版本会抑制旧版本重试，客户端继续去重，网络结果不确定时仍可能收到重复数据。消息过期一天后丢弃。排队取消、频道权限变化、任务取衣、账号禁用、关闭通知或退出登录都会阻止相关后续投递。
 
