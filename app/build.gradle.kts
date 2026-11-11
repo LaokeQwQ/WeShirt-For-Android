@@ -70,7 +70,7 @@ dependencies {
     implementation("com.umeng.umsdk:push:6.7.6")
     implementation("com.umeng.umsdk:common:10.0.1")
     implementation("com.umeng.umsdk:asms:1.8.7.2")
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.google.zxing:core:3.5.4")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:ext-tables:4.6.2")
