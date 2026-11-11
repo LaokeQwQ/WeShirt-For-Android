@@ -81,7 +81,15 @@ class NativeLaundryRoomTest {
         await("Scene did not become ready for picking") { snapshot(room).renderedFrames > 0 }
         val selected = AtomicReference<String?>(null)
         onMain { room.onMachineSelected = selected::set }
+        // Verify the actual initial overview before any selection changes the camera.
         originalMachines().forEach { machine ->
+            assertNotNull("Initial framing must show the door for ${machine.slot}", onMain { room.machineScreenPosition(machine.id) })
+        }
+        originalMachines().forEach { machine ->
+            // Selection deliberately flies to a close-up. Return to the overview
+            // and wait for its submitted frame before finding the next real door.
+            val beforeReset = onMain { room.resetCamera(); room.renderStatistics.renderedFrames }
+            await("Overview did not render after selecting the previous door") { snapshot(room).renderedFrames > beforeReset }
             selected.set(null)
             val center = onMain { room.machineScreenPosition(machine.id) }
             assertNotNull("Initial framing must show the door for ${machine.slot}", center)

@@ -130,13 +130,17 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var layoutVersion = 0L
     private var gestureLayoutVersion = -1L
     private var yaw = 0.0
-    private var pitch = .17325
+    private var pitch = RoomOverview.PITCH
     private var zoom = 1.0
     private var yawVelocity = 0.0
     private var touching = false
     private var lastScaleAt = 0L
     private var viewportWidth = 0
     private var viewportHeight = 0
+    private var overviewFit: RoomOverview? = null
+    private var overviewFitWidth = 0
+    private var overviewFitHeight = 0
+    private var overviewFitLayout = -1L
     private var displayPeriodNanos = 16_666_667L
     private var eye = Vec3(0.0, 6.0, 12.0)
     private var target = Vec3(0.0, .74, -1.3)
@@ -307,7 +311,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     fun resetCamera() {
         cameraGoal = null; focusTarget = null
-        yaw = 0.0; pitch = .17325; zoom = 1.0; yawVelocity = 0.0
+        yaw = 0.0; pitch = RoomOverview.PITCH; zoom = 1.0; yawVelocity = 0.0
         requestFrame(immediate = true)
     }
 
@@ -683,17 +687,17 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         val aspect = viewportWidth.toDouble() / viewportHeight
         val surveyed = RoomLayout.isSurveyedLayout(positions)
         fieldOfView = if (surveyed) { if (aspect < .85) 72.0 else 58.0 } else 45.0
+        if (surveyed && (overviewFit == null || overviewFitWidth != viewportWidth ||
+                overviewFitHeight != viewportHeight || overviewFitLayout != layoutVersion)) {
+            overviewFit = RoomOverview.fit(positions, aspect, fieldOfView)
+            overviewFitWidth = viewportWidth; overviewFitHeight = viewportHeight; overviewFitLayout = layoutVersion
+        }
         val overviewTarget = if (surveyed) {
-            if (aspect < .85) Vec3(0.0, .74, -1.3) else Vec3(0.0, .8, -.8)
+            requireNotNull(overviewFit).target
         } else Vec3(0.0, .8, -.15 + extraDepth / 2)
         val orbitTarget = focusTarget ?: overviewTarget
         val distance = if (focusTarget != null) focusDistance * zoom else if (surveyed) {
-            // Match the Web doorway camera, retreating just enough on very tall
-            // screens to keep the near pair of doors selectable inside the viewport.
-            val nearDoorZ = positions.maxOfOrNull { it.z }?.toDouble() ?: 2.7
-            val horizontalFit = 1.16 / (tan(Math.toRadians(fieldOfView) / 2) * aspect) +
-                (nearDoorZ - orbitTarget.z) * cos(pitch) - (orbitTarget.y - .53) * sin(pitch)
-            max(if (aspect < .85) 5.685 else 5.12, horizontalFit) * zoom
+            requireNotNull(overviewFit).distance * zoom
         } else {
             val halfWidth = positions.maxOfOrNull { abs(it.x) + .7f }?.toDouble() ?: 6.2
             val horizontalFit = halfWidth / (tan(Math.toRadians(fieldOfView) / 2) * aspect) * 1.12

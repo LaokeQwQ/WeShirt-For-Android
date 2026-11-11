@@ -41,11 +41,13 @@ class MachineBoardTest {
         val machines = listOf(machine("pickup", suspected = true), machine("unknown", state = "unknown"))
         compose.setContent { WeShirtTheme("light", "blue") { MachineBoard(machines, emptySet(), now, {}) } }
         compose.onNodeWithText("2 台 · 0 台空闲").assertIsDisplayed()
-        compose.onNodeWithText("空闲").assertDoesNotExist()
-        compose.onNodeWithText("预计剩余", substring = true).assertDoesNotExist()
-        compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag("machine:pickup"))
-        compose.onNodeWithText("疑似未取").assertIsDisplayed()
-        compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag("machine:unknown"))
-        compose.onNodeWithText("状态待更新").assertIsDisplayed()
+        listOf("pickup" to "疑似未取", "unknown" to "状态待更新").forEach { (id, status) ->
+            val tag = "machine:$id"
+            compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag(tag))
+            compose.onNodeWithTag(tag).assertIsDisplayed().assertTextContains(status)
+            // The building summary has its own "空闲" label; inspect each actual machine.
+            compose.onNode(hasText("空闲") and hasAnyAncestor(hasTestTag(tag)), useUnmergedTree = true).assertDoesNotExist()
+            compose.onNode(hasText("预计剩余", substring = true) and hasAnyAncestor(hasTestTag(tag)), useUnmergedTree = true).assertDoesNotExist()
+        }
     }
 }
