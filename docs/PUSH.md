@@ -60,7 +60,7 @@ kind 支持 `QUEUE_THREE_MINUTES`、`ESTIMATED_END`、`TASK_FINISHED`、`CHAT_ME
 
 Android 13+ 在用户明确开启通知时申请 `POST_NOTIFICATIONS`。拒绝权限不影响查询与登记功能。用户还可在系统设置中独立禁用消息频道。
 
-`LaundryReminders.schedule` 按当前剩余时间安排结束前 3 分钟与预计结束提醒。任务修订会替换旧工作，取消、取衣、服务端确认结束或退出登录会撤销工作。使用 WorkManager，不申请精确闹钟或后台保活；省电与系统调度可能延后本地提醒，文案明确为预计。服务端设备确认后的消息才称“已结束”。
+`LaundryReminders.schedule` 按当前剩余时间安排提醒：本人任务遵循设置中的提前 0/3/5/10 分钟（0 关闭提前提醒），排队固定提前 3 分钟，预计结束提醒另行保留。修改提前时间只替换提前任务，关闭时取消旧任务，已送达的阶段不会重复发送。任务修订会替换旧工作，取消、取衣、服务端确认结束或退出登录会撤销工作。使用 WorkManager，不申请精确闹钟或后台保活；省电与系统调度可能延后本地提醒，文案明确为预计。服务端设备确认后的消息才称“已结束”。
 
 `LaundryNotifications.updateProgress` 提供原生进度通知及系统 Chronometer 倒计时，没有逐秒联网轮询。Android 16/API 36+ 会在用户主动跟踪本次任务、任务仍在进行且 `canPostPromotedNotifications()` 返回允许时请求 Live Update。是否实际晋升由系统决定。用户划掉后不会持续重弹同一任务。
 
