@@ -19,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -54,7 +55,7 @@ import java.io.ByteArrayOutputStream
         if(requestOwner != vm.state.value.let { s -> s.profile?.id?.let { s.endpoint + "|" + it } }) return@mutate
         vm.api.call("/api/user/profile","POST",JSONObject().put("avatarUrl",data))
     } }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    LazyColumn(Modifier.fillMaxSize().testTag("settings-sections"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { SettingsCard("资料与账号") {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Surface(Modifier.size(64.dp).clip(CircleShape).clickable(enabled = state.profile != null) { avatarMenu = true }, color = MaterialTheme.colorScheme.secondaryContainer) { if(state.profile?.avatarUrl?.isNotBlank() == true) AsyncImage(state.profile.avatarUrl, "点击修改头像", Modifier.fillMaxSize()) else Icon(Icons.Outlined.PersonOutline, "头像", Modifier.padding(14.dp)) }
@@ -71,7 +72,6 @@ import java.io.ByteArrayOutputStream
                 Spacer(Modifier.height(14.dp))
                 OutlinedButton(onClick = { logout = true }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("退出登录") }
             }
-            TextButton(onClick = endpoint) { Text("服务地址设置") }
         } }
         item { SettingsCard("通知") {
             ToggleRow("系统洗衣提醒", "结束前提醒、排队与被 @ 提示", state.notificationsOn) { if(it) requestNotifications() else vm.toggleNotify(false) }
@@ -83,6 +83,7 @@ import java.io.ByteArrayOutputStream
             TextButton(onClick = { vm.mutate(null) { val result = vm.api.call("/api/user/test-notify", "POST", JSONObject()); vm.message(result.str("message", result.str("hint", "通知请求已提交，请检查钉钉和系统通知"))) } }, enabled = state.profile != null && !state.busy) { Text("发送测试提醒") }
             FilledTonalButton(onClick = { favoriteSettings = true }, enabled = state.profile != null && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("常用机器与洗衣时段 · ${if (state.favoriteRemindersOn) "提醒已开启" else "提醒已关闭"}") }
         } }
+        item { GeneralSettingsCard(endpoint) }
         item { SettingsCard("显示与性能") {
             Text("外观", style = MaterialTheme.typography.labelLarge)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key,label) -> FilterChip(state.appearance == key, { vm.preference("appearance", key) }, label = { Text(label) }) } }
@@ -115,6 +116,16 @@ import java.io.ByteArrayOutputStream
         TextButton(onClick = { avatarOwner = owner; avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); avatarMenu = false }) { Text("自定义头像") }
     } }, confirmButton = { TextButton(onClick = { avatarMenu = false }) { Text("取消") } })
     if(logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("退出当前账号？") }, text = { Text("会清理本机账号数据和洗衣通知。") }, confirmButton = { TextButton(onClick = { vm.logout(); logout = false }) { Text("退出登录") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("取消") } })
+}
+@Composable internal fun GeneralSettingsCard(endpoint: () -> Unit) {
+    SettingsCard("通用") {
+        OutlinedButton(onClick = endpoint, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("settings-service-address")) {
+            Icon(Icons.Outlined.Dns, null, Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text("服务地址设置", Modifier.weight(1f))
+            Icon(Icons.Outlined.ChevronRight, null, Modifier.size(20.dp))
+        }
+    }
 }
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary); content() } } }
 @Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, change: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked, change) } }

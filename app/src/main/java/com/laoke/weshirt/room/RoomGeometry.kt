@@ -123,7 +123,7 @@ internal object RoomLayout {
     }
 }
 
-internal enum class RoomMaterial { PAINT, METAL, CLOTH, GLOW }
+internal enum class RoomMaterial { PAINT, ENAMEL, METAL, CLOTH, GLOW }
 internal data class MeshData(val positions: FloatArray, val normals: FloatArray, val colors: FloatArray, val indices: IntArray) {
     val vertexCount get() = positions.size / 3
 }
@@ -228,21 +228,51 @@ internal object RoomGeometry {
             val detail = MeshBuilder()
             val height = if (slot.dryer) 1.02f else .95f
             val radius = if (slot.dryer) .23f else .205f
-            body.box(0f, height / 2, 0f, .66f, height, .62f, rgb(if (slot.dryer) 0xD9D4CB else 0xDDE1E2))
-            body.box(0f, height + .022f, 0f, .68f, .044f, .64f, rgb(0xE8EBE9))
-            body.box(0f, height - .11f, .315f, .62f, .16f, .024f, rgb(0xC5CDD1))
-            body.box(.105f, height - .10f, .334f, .24f, .09f, .02f, rgb(0x263840))
-            detail.cylinder(-.20f, height - .10f, .34f, .043f, .025f, rgb(0xBCC5CB), segments = 16)
-            detail.cylinder(0f, .53f, .328f, radius + .038f, .025f, rgb(0x26343C), segments = 28)
-            for (i in 0..15) {
-                val a = i * (Math.PI * 2 / 16)
-                detail.cylinder((cos(a) * (radius - .05f)).toFloat(), .53f + (sin(a) * (radius - .05f)).toFloat(), .342f,
-                    .005f, .005f, rgb(0x8B9DA5), segments = 5)
+            val enamel = rgb(if (slot.dryer) 0xE1E4E3 else 0xF0F2F0)
+            // The cabinet is genuinely hollow at the door. A solid white box
+            // behind the old ring made open machines look like a flat appliance icon.
+            body.beveledBox(0f, height / 2 + .025f, 0f, .68f, height - .05f, .65f, .018f, enamel, front = false)
+            body.beveledBox(0f, height + .006f, -.005f, .69f, .045f, .67f, .012f, rgb(0xF5F6F3))
+            body.panelWithHole(-.315f, .315f, .17f, height - .155f, 0f, .53f, radius + .026f, .327f, enamel)
+            body.beveledBox(0f, .105f, .326f, .63f, .13f, .035f, .008f, rgb(0xE1E5E4))
+            body.beveledBox(0f, height - .102f, .327f, .635f, .154f, .045f, .009f, rgb(if (slot.dryer) 0xBFC8CB else 0xE5E9E8))
+
+            // Recognisable controls: detergent drawer, rotary program dial,
+            // recessed display and a separate start button. No invented countdown.
+            body.beveledBox(-.218f, height - .102f, .356f, .155f, .066f, .019f, .005f, rgb(0xC9D0D1))
+            body.box(-.218f, height - .105f, .369f, .123f, .004f, .006f, rgb(0x74838B))
+            detail.cylinder(-.045f, height - .102f, .364f, .044f, .031f, rgb(0xAEBAC1), segments = 24)
+            body.cylinder(-.045f, height - .102f, .383f, .034f, .007f, rgb(0xE4E8E7), segments = 24)
+            body.box(-.045f, height - .077f, .389f, .004f, .014f, .006f, rgb(0x44515C))
+            body.beveledBox(.123f, height - .101f, .356f, .191f, .072f, .017f, .005f, rgb(0x182A34))
+            body.cylinder(.267f, height - .101f, .361f, .021f, .018f, rgb(0x697C85), segments = 16)
+
+            // Deep stainless drum, rubber gasket, and perforations remain behind
+            // the opening, so moving clothes are inside the cabinet instead of on it.
+            detail.cylinder(0f, .53f, .105f, radius - .011f, .012f, rgb(0x536570), segments = 40)
+            detail.tube(0f, .53f, .21f, radius - .006f, .20f, rgb(0x8A9CA4), segments = 40)
+            detail.annulus(0f, .53f, .319f, radius - .008f, radius + .025f, rgb(0x26363D), segments = 40)
+            detail.annulus(0f, .53f, .334f, radius + .004f, radius + .019f, rgb(0x53656D), segments = 40)
+            for (ring in 0..1) for (i in 0 until 16) {
+                val a = (i + ring * .5) * Math.PI * 2 / 16
+                val r = radius * if (ring == 0) .66 else .86
+                detail.cylinder((cos(a) * r).toFloat(), .53f + (sin(a) * r).toFloat(), .114f,
+                    .005f, .003f, rgb(0x253D48), segments = 5)
             }
-            body.box(0f, .12f, .32f, .55f, .10f, .018f, rgb(0xB5C0C5))
-            for (i in 0..6) body.box(-.20f + i * .066f, .12f, .334f, .035f, .006f, .006f, rgb(0x75868E))
-            for (dx in listOf(-.25f, .25f)) detail.box(dx, .023f, .20f, .07f, .046f, .10f, rgb(0x4F5962))
-            body.glyph(slot.label.take(3), 0f, height + .15f, .35f, .105f, rgb(0xE5EAF0))
+            // Feet, inset plinth and washer filter cap / dryer lint ventilation.
+            body.box(0f, .037f, .015f, .59f, .035f, .57f, rgb(0x26363E))
+            for (dx in listOf(-.26f, .26f)) for (dz in listOf(-.22f, .22f))
+                detail.cylinder(dx, .026f, dz, .025f, .046f, rgb(0x36434C), axisZ = false, segments = 8)
+            if (slot.dryer) {
+                for (row in 0..3) for (column in 0..7)
+                    body.box(-.245f + column * .07f, .075f + row * .022f, .349f, .047f, .005f, .006f, rgb(0x687C85))
+            } else {
+                body.cylinder(.231f, .105f, .349f, .037f, .008f, rgb(0xAFBEC3), segments = 24)
+                body.cylinder(.231f, .105f, .356f, .028f, .006f, enamel, segments = 24)
+                body.box(-.078f, .105f, .35f, .28f, .005f, .005f, rgb(0xBCC7C9))
+            }
+            // Machine numbers are native screen-space controls. World-space
+            // seven-segment letters clipped into these pipes and vanished at oblique angles.
             // The Web room places dosing equipment and utility lines behind each
             // washer. Keep these static details batched in the same two materials.
             if (!slot.dryer) {
@@ -258,7 +288,7 @@ internal object RoomGeometry {
             paint.append(body.build(), slot)
             metal.append(detail.build(), slot)
         }
-        return mapOf(RoomMaterial.PAINT to paint.build(), RoomMaterial.METAL to metal.build())
+        return mapOf(RoomMaterial.ENAMEL to paint.build(), RoomMaterial.METAL to metal.build())
     }
 
     fun status(slot: RoomSlot, state: RoomMachineState): MeshData {
@@ -272,9 +302,8 @@ internal object RoomGeometry {
         }
         val height = if (slot.dryer) 1.02f else .95f
         val local = MeshBuilder().apply {
-            box(.105f, height - .10f, .35f, .16f, .028f, .01f, rgb(color))
-            cylinder(.27f, height - .045f, .34f, .017f, .012f, rgb(color), segments = 10)
-            box(0f, height + .065f, .26f, .54f, .018f, .035f, rgb(color))
+            box(.123f, height - .101f, .369f, .133f, .019f, .006f, rgb(color))
+            cylinder(.267f, height - .101f, .374f, .010f, .006f, rgb(color), segments = 10)
             if (state == RoomMachineState.FAULT) for (angle in listOf(-.7854f, .7854f)) {
                 polygon(listOf(-.14f to -.015f, .14f to -.015f, .14f to .015f, -.14f to .015f)
                     .map { (x, y) -> (x * cos(angle) - y * sin(angle)) to (.53f + x * sin(angle) + y * cos(angle)) }, .402f, rgb(color))
@@ -314,10 +343,16 @@ internal object RoomGeometry {
     fun door(slot: RoomSlot): MeshData = MeshBuilder().apply {
         val radius = if (slot.dryer) .23f else .205f
         val x = radius * .95f
-        torus(x, 0f, 0f, radius, .038f, rgb(0xACB6BC))
-        torus(x, 0f, .029f, radius - .03f, .012f, rgb(0x5C6C76))
-        torusArc(x, 0f, .04f, radius + .008f, .008f, .35f, 1.25f, rgb(0xDAE5E8))
-        box(x + radius + .025f, 0f, .025f, .038f, .13f, .04f, rgb(0x6C7A82))
+        torus(x, 0f, 0f, radius + .012f, .027f, rgb(0xC0CBD1))
+        annulus(x, 0f, .028f, radius - .028f, radius + .006f, rgb(0x233740), segments = 40)
+        torusArc(x, 0f, .031f, radius - .025f, .009f, 0f, (Math.PI * 2).toFloat(), rgb(0x596E79), segments = 40)
+        // Curved highlights suggest the glass without an opaque centre or a
+        // full transparent shell that would obscure clothes and add layered overdraw.
+        torusArc(x, 0f, .040f, radius * .70f, .007f, .48f, 1.28f, rgb(0xACC5CF), segments = 12)
+        torusArc(x, 0f, .043f, radius * .64f, .0035f, .64f, 1.12f, rgb(0xE3EFF1), segments = 10)
+        beveledBox(x + radius + .012f, 0f, .024f, .043f, .112f, .052f, .008f, rgb(0x354C59))
+        box(-.017f, -.052f, -.006f, .028f, .055f, .049f, rgb(0x8C9EA6))
+        box(-.017f, .052f, -.006f, .028f, .055f, .049f, rgb(0x8C9EA6))
     }.build()
 
     fun queueBuckets(slot: RoomSlot, count: Int): MeshData = MeshBuilder().apply {
@@ -335,7 +370,7 @@ internal object RoomGeometry {
             val angle = Math.PI + i * Math.PI / 20
             (cos(angle) * radius).toFloat() to (.53f + sin(angle).toFloat() * radius)
         }
-        polygon(outline, .38f, rgb(0x4E8EA4))
+        polygon(outline, .29f, rgb(0x4E8EA4))
     }.build().let { local -> MeshBuilder().apply { append(local, slot) }.build() }
 
     fun windowSash(index: Int): MeshData = MeshBuilder().apply {
@@ -389,6 +424,81 @@ internal class MeshBuilder {
         quad(Vec3(a.x,a.y,a.z),Vec3(b.x,a.y,a.z),Vec3(b.x,a.y,b.z),Vec3(a.x,a.y,b.z),color)
         quad(Vec3(b.x,a.y,b.z),Vec3(b.x,a.y,a.z),Vec3(b.x,b.y,a.z),Vec3(b.x,b.y,b.z),color)
         quad(Vec3(a.x,a.y,a.z),Vec3(a.x,a.y,b.z),Vec3(a.x,b.y,b.z),Vec3(a.x,b.y,a.z),color)
+    }
+
+    /** Shallow rounded-corner chamfers give the cabinet a manufactured edge. */
+    fun beveledBox(x: Float, y: Float, z: Float, width: Float, height: Float, depth: Float,
+                   bevel: Float, color: FloatArray, front: Boolean = true) {
+        val edge = min(bevel, min(width, height) / 4).coerceAtLeast(.001f)
+        fun outline(inset: Float): List<Pair<Double, Double>> {
+            val halfWidth = width / 2.0 - inset
+            val halfHeight = height / 2.0 - inset
+            val radius = (edge - inset).coerceAtLeast(.001f).toDouble()
+            return (0..3).flatMap { corner ->
+                val angle = corner * Math.PI / 2
+                val cx = if (corner == 0 || corner == 3) halfWidth - radius else -halfWidth + radius
+                val cy = if (corner < 2) halfHeight - radius else -halfHeight + radius
+                (0..2).map { segment ->
+                    val a = angle + segment * Math.PI / 4
+                    (x + cx + cos(a) * radius) to (y + cy + sin(a) * radius)
+                }
+            }
+        }
+        val outer = outline(0f)
+        val inner = outline(edge * .42f)
+        val back = z - depth / 2.0
+        val shoulder = z + depth / 2.0 - min(edge * .42f, depth * .3f)
+        val nose = z + depth / 2.0
+        fun point(p: Pair<Double, Double>, at: Double) = Vec3(p.first, p.second, at)
+        for (index in outer.indices) {
+            val next = (index + 1) % outer.size
+            quad(point(outer[index], back), point(outer[next], back), point(outer[next], shoulder), point(outer[index], shoulder), color)
+            quad(point(outer[index], shoulder), point(outer[next], shoulder), point(inner[next], nose), point(inner[index], nose), color)
+            triangle(Vec3(x.toDouble(), y.toDouble(), back), point(outer[next], back), point(outer[index], back), color)
+            if (front) triangle(Vec3(x.toDouble(), y.toDouble(), nose), point(inner[index], nose), point(inner[next], nose), color)
+        }
+    }
+
+    /** Front sheet metal follows the circular opening rather than covering it. */
+    fun panelWithHole(left: Float, right: Float, bottom: Float, top: Float, x: Float, y: Float,
+                      radius: Float, z: Float, color: FloatArray, segments: Int = 48) {
+        fun point(angle: Double, outer: Boolean): Vec3 {
+            val dx = cos(angle); val dy = sin(angle)
+            val distance = if (!outer) radius.toDouble() else min(
+                if (abs(dx) < 1e-9) Double.POSITIVE_INFINITY else ((if (dx > 0) right else left) - x) / dx,
+                if (abs(dy) < 1e-9) Double.POSITIVE_INFINITY else ((if (dy > 0) top else bottom) - y) / dy,
+            )
+            return Vec3(x + dx * distance, y + dy * distance, z.toDouble())
+        }
+        // Include rectangle-corner rays as well as evenly spaced circle samples.
+        // Without these four vertices the outer rectangle would have diagonal gaps.
+        val angles = ((0 until segments).map { it * Math.PI * 2 / segments } + listOf(
+            kotlin.math.atan2((top-y).toDouble(), (right-x).toDouble()),
+            kotlin.math.atan2((top-y).toDouble(), (left-x).toDouble()),
+            kotlin.math.atan2((bottom-y).toDouble(), (left-x).toDouble()),
+            kotlin.math.atan2((bottom-y).toDouble(), (right-x).toDouble()),
+        ).map { if (it < 0) it + Math.PI * 2 else it }).distinct().sorted()
+        for (i in angles.indices) {
+            val a = angles[i]; val b = angles[(i + 1) % angles.size]
+            quad(point(a, false), point(a, true), point(b, true), point(b, false), color)
+        }
+    }
+
+    /** Open tube, used for a real drum cavity without front/back caps. */
+    fun tube(x: Float, y: Float, z: Float, radius: Float, depth: Float, color: FloatArray, segments: Int = 40) {
+        fun point(angle: Double, dz: Double) = Vec3(x + cos(angle) * radius, y + sin(angle) * radius, z + dz)
+        for (i in 0 until segments) {
+            val a = i * Math.PI * 2 / segments; val b = (i + 1) * Math.PI * 2 / segments
+            quad(point(a, -depth / 2.0), point(a, depth / 2.0), point(b, depth / 2.0), point(b, -depth / 2.0), color)
+        }
+    }
+
+    fun annulus(x: Float, y: Float, z: Float, inner: Float, outer: Float, color: FloatArray, segments: Int = 40) {
+        fun point(angle: Double, radius: Float) = Vec3(x + cos(angle) * radius, y + sin(angle) * radius, z.toDouble())
+        for (i in 0 until segments) {
+            val a = i * Math.PI * 2 / segments; val b = (i + 1) * Math.PI * 2 / segments
+            quad(point(a, inner), point(a, outer), point(b, outer), point(b, inner), color)
+        }
     }
 
     fun cylinder(x: Float, y: Float, z: Float, radius: Float, depth: Float, color: FloatArray, axisZ: Boolean = true, segments: Int = 28) {
@@ -453,22 +563,6 @@ internal class MeshBuilder {
 
     private fun insideTriangle(p: Vec3,a: Vec3,b: Vec3,c: Vec3): Boolean =
         (b-a).cross(p-a).z >= -1e-9 && (c-b).cross(p-b).z >= -1e-9 && (a-c).cross(p-c).z >= -1e-9
-
-    fun glyph(text: String,x: Float,y: Float,z: Float,size: Float,color: FloatArray) {
-        val segments = mapOf('0' to "ABCDEF",'1' to "BC",'2' to "ABGED",'3' to "ABGCD",'4' to "FGBC",'5' to "AFGCD",'6' to "AFGECD",'7' to "ABC",'8' to "ABCDEFG",'9' to "ABCGFD",'D' to "FEBCD",'-' to "G")
-        text.forEachIndexed { i,c ->
-            val px=x+(i-(text.length-1)/2f)*size*.85f
-            for (segment in segments[c].orEmpty()) when (segment) {
-                'A' -> box(px,y+size*.55f,z,size*.53f,size*.13f,.009f,color)
-                'G' -> box(px,y,z,size*.53f,size*.13f,.009f,color)
-                'D' -> box(px,y-size*.55f,z,size*.53f,size*.13f,.009f,color)
-                'F' -> box(px-size*.3f,y+size*.27f,z,size*.13f,size*.5f,.009f,color)
-                'E' -> box(px-size*.3f,y-size*.27f,z,size*.13f,size*.5f,.009f,color)
-                'B' -> box(px+size*.3f,y+size*.27f,z,size*.13f,size*.5f,.009f,color)
-                'C' -> box(px+size*.3f,y-size*.27f,z,size*.13f,size*.5f,.009f,color)
-            }
-        }
-    }
 
     fun append(mesh: MeshData, slot: RoomSlot) {
         val base = positions.size / 3

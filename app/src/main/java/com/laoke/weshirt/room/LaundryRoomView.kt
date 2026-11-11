@@ -545,7 +545,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         RoomMaterial.entries.forEach { kind ->
             instances[kind] = (if (kind == RoomMaterial.GLOW) unlit else lit).createInstance().apply {
                 if (kind != RoomMaterial.GLOW) {
-                    setParameter("roughness", when (kind) { RoomMaterial.METAL -> .32f; RoomMaterial.CLOTH -> 1f; else -> .78f })
+                    setParameter("roughness", when (kind) { RoomMaterial.METAL -> .28f; RoomMaterial.ENAMEL -> .36f; RoomMaterial.CLOTH -> 1f; else -> .78f })
                     setParameter("metallic", if (kind == RoomMaterial.METAL) .65f else 0f)
                 }
             }
@@ -610,8 +610,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         val cy = cos(slot.yaw); val sy = sin(slot.yaw)
         val ca = cos(angle); val sa = sin(angle)
         val radius = if (slot.dryer) .23f else .205f
-        val scale = radius * .74f * 1.25f
-        val center = slot.point(0f, .53f - radius * .06f, .365f)
+        val scale = radius * .71f
+        val center = slot.point(0f, .53f - radius * .09f, .274f)
         transform.fill(0f)
         transform[0] = cy * ca * scale; transform[1] = sa * scale; transform[2] = -sy * ca * scale
         transform[4] = -cy * sa * scale; transform[5] = ca * scale; transform[6] = sy * sa * scale
@@ -624,7 +624,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     private fun updateDoorTransform(slot: RoomSlot, angle: Float) {
         val radius = if (slot.dryer) .23f else .205f
-        setMeshPose(doorMeshes[slot.slot], slot.point(-radius * .95f, .53f, if (slot.dryer) .36f else .38f), slot.yaw + angle)
+        setMeshPose(doorMeshes[slot.slot], slot.point(-radius * .95f, .53f, .365f), slot.yaw + angle)
     }
 
     private fun setMeshPose(mesh: NativeMesh?, center: Vec3, angle: Float) {

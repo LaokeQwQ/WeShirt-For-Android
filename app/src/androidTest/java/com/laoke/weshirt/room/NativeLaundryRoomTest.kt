@@ -155,6 +155,38 @@ class NativeLaundryRoomTest {
         assertSurfaceContainsRenderedGeometry(room)
     }
 
+    @Test fun realSurfaceShowsWasherAndDryerCloseupsWithOpenAndClosedDoors() = withRoom { _, room, errors ->
+        await("Scene did not become ready") { snapshot(room).renderedFrames > 0 }
+        for ((slot, state, filename) in listOf(
+            Triple("1", RoomMachineState.RUNNING, "native-washer-closed"),
+            Triple("1", RoomMachineState.IDLE, "native-washer-open"),
+            Triple("D1", RoomMachineState.RUNNING, "native-dryer-closed"),
+        )) {
+            val id = "native-machine-$slot"
+            val before = snapshot(room).renderedFrames
+            onMain {
+                room.setMachines(originalMachines().map { if (it.id == id) it.copy(state = state) else it })
+                room.focusMachine(id)
+            }
+            await("Close-up did not submit a fresh frame") { snapshot(room).renderedFrames > before }
+            // With system animation scale enabled the native camera uses a
+            // bounded easing flight; allow it and the door to settle before capture.
+            var previous: android.graphics.PointF? = null
+            var steadySamples = 0
+            await("Close-up camera did not settle") {
+                val point = onMain { room.machineScreenPosition(id) }
+                val old = previous
+                steadySamples = if (point != null && old != null && kotlin.math.abs(point.x-old.x) < .15f && kotlin.math.abs(point.y-old.y) < .15f) steadySamples + 1 else 0
+                previous = point
+                steadySamples >= 6
+            }
+            assertSurfaceContainsRenderedGeometry(room, filename)
+            assertNull(snapshot(room).failureEvent)
+        }
+        assertEquals(9, snapshot(room).machineCount)
+        assertTrue(errors.get().isEmpty())
+    }
+
     private fun withRoom(test: (ActivityScenario<MainActivity>, LaundryRoomView, AtomicReference<List<String>>) -> Unit) {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             val errors = AtomicReference<List<String>>(emptyList())
@@ -187,7 +219,7 @@ class NativeLaundryRoomTest {
         }
     }
 
-    private fun assertSurfaceContainsRenderedGeometry(room: LaundryRoomView) {
+    private fun assertSurfaceContainsRenderedGeometry(room: LaundryRoomView, filename: String = "native-room-3d") {
         val surface = onMain { room.getChildAt(0) as SurfaceView }
         val dimensions = onMain { surface.width to surface.height }
         assertTrue(dimensions.first > 0 && dimensions.second > 0)
@@ -213,7 +245,7 @@ class NativeLaundryRoomTest {
                 assertNull("Renderer failed while awaiting actual presentation", snapshot(room).failureEvent)
                 SystemClock.sleep(200)
             }
-            if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage("native-room-3d")
+            if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage(filename)
             android.util.Log.i("WeShirtRoomTest", "Baseline native surface: copy=$copyResult, colors=$colorCount, ${snapshot(room)}")
             assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
             assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)

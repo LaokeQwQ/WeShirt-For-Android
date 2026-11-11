@@ -114,6 +114,47 @@ class RoomGeometryTest {
         assertTrue(RoomGeometry.status(slot, RoomMachineState.FAULT).vertexCount > RoomGeometry.status(slot, RoomMachineState.IDLE).vertexCount)
     }
 
+    @Test fun anOpenDoorRevealsARecessedDrumInsteadOfTheSolidCabinetFront() {
+        for (dryer in listOf(false, true)) {
+            val slot = RoomSlot("machine", 0f, 0f, dryer = dryer)
+            val meshes = RoomGeometry.machineBodies(listOf(slot)).values
+            val cavity = firstSurface(meshes, Ray(Vec3(0.0, .53, 1.2), Vec3(0.0, 0.0, -1.0)))
+            val frontPanel = firstSurface(meshes, Ray(Vec3(.29, .53, 1.2), Vec3(0.0, 0.0, -1.0)))
+            assertTrue("The drum must be recessed at least 15 cm behind the front panel", cavity - frontPanel > .15)
+            assertEquals("The drum back must close the cavity inside the cabinet", 1.089, cavity, .005)
+        }
+    }
+
+    @Test fun numberLabelsDoNotCreateGeometryFloatingAboveTheFrontOfAMachine() {
+        for (dryer in listOf(false, true)) {
+            val height = if (dryer) 1.02f else .95f
+            val meshes = RoomGeometry.machineBodies(listOf(RoomSlot("D1", 0f, 0f, dryer = dryer))).values
+            val frontPoints = meshes.flatMap { it.positions.toList().chunked(3) }.filter { it[2] > .30f }
+            assertTrue(frontPoints.isNotEmpty())
+            assertTrue("Readable labels belong to native controls rather than clipping into utility pipes",
+                frontPoints.all { it[1] <= height + .05f })
+        }
+    }
+
+    private fun firstSurface(meshes: Collection<MeshData>, ray: Ray): Double {
+        return meshes.flatMap { mesh ->
+            fun vertex(index: Int) = Vec3(mesh.positions[index * 3].toDouble(), mesh.positions[index * 3 + 1].toDouble(), mesh.positions[index * 3 + 2].toDouble())
+            mesh.indices.toList().chunked(3).mapNotNull { (ai, bi, ci) ->
+                val a = vertex(ai); val b = vertex(bi); val c = vertex(ci)
+                val e1 = b - a; val e2 = c - a
+                val p = ray.direction.cross(e2)
+                val determinant = e1.dot(p)
+                if (abs(determinant) < 1e-9) return@mapNotNull null
+                val t = ray.origin - a
+                val u = t.dot(p) / determinant
+                val q = t.cross(e1)
+                val v = ray.direction.dot(q) / determinant
+                val distance = e2.dot(q) / determinant
+                distance.takeIf { u >= -1e-8 && v >= -1e-8 && u + v <= 1.00000001 && it >= 0 }
+            }
+        }.minOrNull() ?: error("The ray missed the complete appliance")
+    }
+
     @Test fun reviewUsesTheWebOrangeIndicatorInsteadOfUnknownGrayOrFaultCross() {
         val slot = RoomLayout.slots.first()
         val review = RoomGeometry.status(slot, RoomMachineState.REVIEW)

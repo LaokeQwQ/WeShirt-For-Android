@@ -22,8 +22,7 @@
                 <data android:scheme="https" android:host="${weshirtShareHost}" android:path="/" />
             </intent-filter>
         </activity>
-        <activity android:name=".platform.login.DingTalkCallbackActivity" android:exported="false" />
-        <activity-alias android:name="${applicationId}.ddauth.DDAuthActivity" android:targetActivity=".platform.login.DingTalkCallbackActivity" android:exported="true" />
+        <activity android:name=".ddauth.DDAuthActivity" android:exported="true" android:excludeFromRecents="true" />
         <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
         <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
         <receiver android:name=".platform.widget.LaundryWidgetProvider" android:label="@string/widget_name" android:exported="false"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" /></receiver>

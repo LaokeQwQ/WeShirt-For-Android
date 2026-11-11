@@ -13,16 +13,20 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.Lifecycle
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.login.*
 import com.laoke.weshirt.platform.NativeNavigation
 import com.laoke.weshirt.ui.WeShirtApp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
     private var notificationIdentity: String? = null
+    private var loginResumeFeedback: Job? = null
     private fun accountIdentity(): String? = vm.state.value.profile?.id?.let { vm.state.value.endpoint + "|" + it }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val expected = notificationIdentity
@@ -58,6 +62,19 @@ class MainActivity : ComponentActivity() {
         }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); consumeLogin(intent); consumeNavigation(intent) }
+    override fun onResume() {
+        super.onResume()
+        consumeLogin(intent)
+        loginResumeFeedback?.cancel()
+        loginResumeFeedback = lifecycleScope.launch {
+            // Some clients deliver the SDK callback shortly after bringing the
+            // task forward. Give that delivery a chance before offering a retry.
+            delay(1500)
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+                DingTalkLoginBridge.resumeFeedback(this@MainActivity)?.let(vm::message)
+        }
+    }
+    override fun onStop() { loginResumeFeedback?.cancel(); DingTalkLoginBridge.noteBackground(this); super.onStop() }
     private fun consumeNavigation(intent: Intent?) {
         NativeNavigation.consumeTab(intent)?.let(vm::tab)
         val value = when (intent?.action) {
@@ -72,22 +89,26 @@ class MainActivity : ComponentActivity() {
     }
     private fun login() {
         vm.mutate(null) {
-            val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)
-            getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().putString("origin", vm.api.baseUrl).commit()
-            val j = vm.api.call("/api/mobile/auth/challenge", "POST", JSONObject().put("installationId", request.installationId).put("state", request.state).put("codeChallenge", request.codeChallenge).put("platform", "android").put("packageName", "com.laoke.weshirt"), auth = false)
-            val provider = j.optJSONObject("provider") ?: JSONObject()
-            val result = DingTalkLoginBridge.begin(this, NativeLoginChallenge(j.str("challengeId"), j.str("state"), provider.str("clientId"), provider.str("redirectUri"), System.currentTimeMillis() + j.optLong("expiresIn", 300) * 1000, provider.str("scope", "openid")))
-            if(result is LoginLaunchResult.Unavailable) vm.message(result.message)
+            try {
+                val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)
+                check(getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().putString("origin", vm.api.baseUrl).commit()) { DingTalkLoginBridge.failureMessage("LOGIN_STORAGE_FAILED") }
+                val j = vm.api.call("/api/mobile/auth/challenge", "POST", JSONObject().put("installationId", request.installationId).put("state", request.state).put("codeChallenge", request.codeChallenge).put("platform", "android").put("packageName", "com.laoke.weshirt"), auth = false)
+                val provider = j.optJSONObject("provider") ?: JSONObject()
+                val result = DingTalkLoginBridge.begin(this, NativeLoginChallenge(j.str("challengeId"), j.str("state"), provider.str("clientId"), provider.str("redirectUri"), System.currentTimeMillis() + j.optLong("expiresIn", 300) * 1000, provider.str("scope", "openid")))
+                if(result is LoginLaunchResult.Unavailable) { DingTalkLoginBridge.clear(this); vm.message(result.message) }
+            } catch (problem: Exception) { DingTalkLoginBridge.clear(this); throw problem }
         }
     }
     private fun consumeLogin(intent: Intent?) {
         val origin = getSharedPreferences("native_login_origin", MODE_PRIVATE).getString("origin", null)
-        val reply = DingTalkLoginBridge.consumeReply(this, intent) ?: return
+        val reply = try { DingTalkLoginBridge.consumeReply(this, intent) }
+            catch (problem: IllegalStateException) { vm.message(problem.message ?: DingTalkLoginBridge.failureMessage("LOGIN_STORAGE_FAILED")); return }
+            ?: return
         getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().clear().commit()
-        if(origin == null || origin != vm.api.baseUrl) { vm.message("服务地址已变更，请重新登录"); return }
-        if(reply.authCode == null) { vm.message(if(reply.errorCode == "LOGIN_CANCELLED") "已取消登录" else "钉钉授权未完成，请重试"); return }
+        if(origin == null || origin != vm.api.baseUrl) { vm.message(DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId)); return }
+        if(reply.authCode == null) { vm.message(DingTalkLoginBridge.failureMessage(reply.errorCode ?: "LOGIN_CALLBACK_FAILED", reply.eventId)); return }
         vm.mutate("登录成功", wait = true) {
-            check(origin == vm.api.baseUrl) { "服务地址已变更，请重新登录" }
+            check(origin == vm.api.baseUrl) { DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId) }
             val j = vm.api.call("/api/mobile/auth/exchange", "POST", JSONObject().put("challengeId", reply.challengeId).put("state", reply.state).put("codeVerifier", reply.codeVerifier).put("authCode", reply.authCode), auth = false)
             vm.api.saveSession(j, origin)
             vm.platformSessionChanged()

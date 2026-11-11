@@ -1,10 +1,12 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 
 package com.laoke.weshirt.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.laoke.weshirt.data.Machine
@@ -106,12 +109,20 @@ fun MachineBoard(
         if (header != null) item(key = "board-header", span = { GridItemSpan(maxLineSpan) }, contentType = "header") { header() }
         item(key = "board-summary", span = { GridItemSpan(maxLineSpan) }, contentType = "summary") {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("本楼机器" to summary.total, "空闲" to summary.available, "占用" to summary.occupied, "故障" to summary.faulty).forEach { (label, count) ->
-                        Surface(Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp)) {
-                            Column(Modifier.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(count.toString(), style = MaterialTheme.typography.titleLarge, color = when (label) { "空闲" -> MaterialTheme.colorScheme.primary; "故障" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface })
-                                Text(label, style = MaterialTheme.typography.labelSmall)
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val columns = if (maxWidth < 340.dp || LocalDensity.current.fontScale > 1.2f) 2 else 4
+                    val summaries = listOf("本楼机器" to summary.total, "空闲" to summary.available, "占用" to summary.occupied, "故障" to summary.faulty)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        summaries.chunked(columns).forEach { chunk ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                chunk.forEach { (label, count) ->
+                                    Surface(Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp)) {
+                                        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(count.toString(), style = MaterialTheme.typography.titleLarge, color = when (label) { "空闲" -> MaterialTheme.colorScheme.primary; "故障" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface })
+                                            Text(label, style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -123,12 +134,11 @@ fun MachineBoard(
             }
         }
         item(key = "board-controls", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
-            Column {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("最快可用", style = MaterialTheme.typography.titleMedium)
-                        Text("按设备状态与预计结束时间排序", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("最快可用", style = MaterialTheme.typography.titleMedium)
+                Text("按设备状态与预计结束时间排序", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("显示方式", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     IconToggleButton(checked = !cards, onCheckedChange = { cards = false }, modifier = Modifier.size(48.dp).testTag("machine-layout-list")) {
                         Icon(Icons.Outlined.ViewList, "列表视图", tint = if (!cards) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -136,7 +146,7 @@ fun MachineBoard(
                         Icon(Icons.Outlined.GridView, "卡片视图", tint = if (cards) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("all" to "全部", "washer" to "洗衣", "dryer" to "烘干").forEach { (kind, label) ->
                         FilterChip(
                             selected = filter == kind,
@@ -163,7 +173,7 @@ fun MachineBoard(
         }
         groups.forEach { (kind, group) ->
             item(key = "group-$kind", span = { GridItemSpan(maxLineSpan) }, contentType = "section") {
-                Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(when (kind) { "washer" -> "洗衣机"; "dryer" -> "烘干机"; else -> "其他设备" }, style = MaterialTheme.typography.titleSmall)
                     val available = group.count { it.state == "idle" && !it.suspectedUncollected }
                     Text("${group.size} 台 · $available 台空闲", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -195,7 +205,7 @@ private fun BoardMachineItem(machine: Machine, favorite: Boolean, status: Machin
                     MachineIcon(machine)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(machine.name.ifBlank { "未命名设备" }, modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                            Text(machine.name.ifBlank { "未命名设备" }, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                             if (favorite) Icon(Icons.Outlined.Star, "已收藏", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                         }
                         MachineStatusBadge(status)
