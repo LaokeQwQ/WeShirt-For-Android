@@ -183,6 +183,18 @@ class ApiClientTest {
         assertEquals("https://example.org:8443", api.validEndpoint("https://example.org:8443/"))
     }
 
+    @Test fun publicDynamicBoardNeverReusesACacheableOldResponse() = runBlocking {
+        val cached = client.newBuilder().cache(okhttp3.Cache(java.io.File(temporary, "dynamic-cache"), 1024 * 1024)).build()
+        val boardApi = ApiClient(sessions, temporary, cached).apply { baseUrl = origin(server) }
+        server.enqueue(json("{\"version\":1}").setHeader("Cache-Control", "public,max-age=86400"))
+        server.enqueue(json("{\"version\":2}").setHeader("Cache-Control", "public,max-age=86400"))
+        assertEquals(1, boardApi.call("/api/machines?dorm=building", auth = false).getInt("version"))
+        assertEquals(2, boardApi.call("/api/machines?dorm=building", auth = false).getInt("version"))
+        repeat(2) { val request = server.takeRequest(1, TimeUnit.SECONDS)!!; assertTrue(request.getHeader("Cache-Control").orEmpty().contains("no-cache")); assertTrue(request.getHeader("Cache-Control").orEmpty().contains("no-store")); assertNull(request.getHeader("Authorization")) }
+        cached.cache?.close()
+        Unit
+    }
+
     @Test fun refreshUnauthorizedInvalidatesOnceAndNeverSendsTheOldAccessToken() = runBlocking {
         expired()
         var invalidations = 0; api.onSessionInvalidated = { invalidations++ }

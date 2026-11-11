@@ -80,7 +80,8 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     private suspend fun raw(origin: String, path: String, method: String, body: JSONObject?, token: String?, key: String?): JSONObject {
         val requestId = eventId()
         val req = Request.Builder().url(origin + path).header("Accept", "application/json").header("X-Request-ID", requestId)
-        if(!token.isNullOrEmpty()) req.header("Authorization", "Bearer $token").header("Cache-Control", "no-store")
+            .header("Cache-Control", "no-cache, no-store")
+        if(!token.isNullOrEmpty()) req.header("Authorization", "Bearer $token")
         if(method != "GET") req.header("Idempotency-Key", key ?: UUID.randomUUID().toString())
         req.method(method, if(method in listOf("GET", "HEAD")) null else (body ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         val started = System.nanoTime()

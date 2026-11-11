@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -62,6 +63,11 @@ import kotlinx.coroutines.delay
     }
     LaunchedEffect(notice) { if(notice != null) { delay(3000); notice = null } }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        state.boardWarning?.let { warning ->
+            Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("board-freshness-warning"), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
+                Text(warning, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            }
+        }
         if(allow3D) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
                 SegmentedButton(showing3D, { rendererUnavailable = false; threeD = true }, SegmentedButtonDefaults.itemShape(0,2), enabled = projection.hasBoundMachines, icon = {}) { Text("3D 洗衣房", maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -156,13 +162,24 @@ import kotlinx.coroutines.delay
     var contact by remember { mutableStateOf(false) }
     var favoriteConfirmation by remember { mutableStateOf<MachineActionSnapshot?>(null) }
     var registrationError by remember { mutableStateOf<String?>(null) }
+    var moreActions by remember(machine.id) { mutableStateOf(false) }
+    val owner = LocalLifecycleOwner.current
+    val now by produceState(System.currentTimeMillis(), owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) { value = System.currentTimeMillis(); delay(30_000) }
+        }
+    }
     val currentClose by rememberUpdatedState(close)
     var active by remember { mutableStateOf(true) }
     DisposableEffect(Unit) { onDispose { active = false } }
-    ModalBottomSheet(onDismissRequest = close) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) { Column(Modifier.weight(1f)) { Text(machine.name, style = MaterialTheme.typography.headlineSmall); Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary) }; IconButton(onClick = { if(state.profile == null) login() else favoriteConfirmation = frozen }, enabled = !state.busy && !session.busy) { Icon(if(machine.id in state.favorites) Icons.Outlined.Star else Icons.Outlined.StarOutline, "收藏机器") } }
-            machineBoardStatus(machine, System.currentTimeMillis()).detail?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
+    ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), sheetMaxWidth = 560.dp) {
+        MachineSheetFrame(machine, machine.id in state.favorites, !state.busy && !session.busy, close,
+            favoriteClick = { if(state.profile == null) login() else favoriteConfirmation = frozen },
+            register = { if(state.profile == null) login() else { registrationError = null; registering = true } }) {
+            session.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            session.feedback?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
+            state.boardWarning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            machineBoardStatus(machine, now).detail?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
             Text("设备状态以现场为准；预计时间归零后仍需确认是否结束。", style = MaterialTheme.typography.bodySmall)
             if(machine.note.isNotBlank()) Text("公开备注：${machine.note}")
             if(machine.disinfectant || machine.selfCleaned) Text(listOfNotNull("已使用消毒液".takeIf { machine.disinfectant }, "已做自清洁".takeIf { machine.selfCleaned }).joinToString(" · "))
@@ -172,8 +189,8 @@ import kotlinx.coroutines.delay
             if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
                 OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, enabled = !state.busy && !session.busy, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
             }
-            Button(onClick = { if(state.profile == null) login() else { registrationError = null; registering = true } }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy && !session.busy && machine.state != "faulty") { Text("登记我的${if(machine.kind == "dryer") "烘干" else "洗衣"}") }
-            MachineActions(machine, state, vm, session, login)
+            OutlinedButton(onClick = { moreActions = !moreActions }, modifier = Modifier.fillMaxWidth().testTag("machine-more-actions")) { Text(if (moreActions) "收起排队与现场反馈" else "排队预约与现场反馈") }
+            if (moreActions) MachineActions(machine, state, vm, session, login)
         }
     }
     if(registering) RegisterDialog(machine, state.busy || session.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
@@ -190,4 +207,23 @@ import kotlinx.coroutines.delay
     }) { Text("确认") } }, dismissButton = { TextButton(onClick = { favoriteConfirmation = null }) { Text("取消") } }) }
     if (contact && machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) key(machine.occupantId) { com.laoke.weshirt.ui.social.ContactUserDialog(machine.occupantId, machine.id, state, vm) { contact = false } }
     if (commentsVisible) MachineCommentsDialog(machine, state, vm) { commentsVisible = false }
+}
+
+/** Header and primary action stay reachable while the details scroll, including short landscape windows. */
+@Composable
+internal fun MachineSheetFrame(machine: Machine, favorite: Boolean, enabled: Boolean, close: () -> Unit, favoriteClick: () -> Unit = {}, register: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).imePadding().testTag("machine-sheet")) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).padding(end = 8.dp)) {
+                Text(machine.name, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+            }
+            IconButton(onClick = favoriteClick, enabled = enabled) { Icon(if (favorite) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (favorite) "取消收藏机器" else "收藏机器") }
+            IconButton(onClick = close, modifier = Modifier.testTag("machine-sheet-close")) { Icon(Icons.Outlined.Close, "关闭机器面板") }
+        }
+        HorizontalDivider(Modifier.padding(top = 12.dp))
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).testTag("machine-sheet-details").padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+        HorizontalDivider()
+        Button(onClick = register, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp).heightIn(min = 48.dp).testTag("machine-sheet-register"), enabled = enabled && machine.state != "faulty") { Text("登记我的${if (machine.kind == "dryer") "烘干" else "洗衣"}") }
+    }
 }

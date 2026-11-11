@@ -112,7 +112,7 @@ private data class PickupConfirmation(val title: String, val message: String, va
                 }
             }
             if (initialPickupTaskId != null) {
-                val task = state.tasks.find { it.id == initialPickupTaskId && !it.done }
+                val task = state.tasks.find { it.id == initialPickupTaskId && !it.done && !it.isArchived(now) && !it.isExpired(now) }
                 item { Text("请好友代取 · ${task?.name ?: "登记已更新"}", style = MaterialTheme.typography.titleMedium) }
                 if (task != null) {
                     item { Text("选择方便帮忙的好友，确认后会通知对方。请等机器结束后再取衣。", style = MaterialTheme.typography.bodySmall) }

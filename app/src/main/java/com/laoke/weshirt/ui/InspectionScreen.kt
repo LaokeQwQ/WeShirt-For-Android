@@ -10,7 +10,10 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -25,11 +28,9 @@ internal fun clientFailure(problem: Exception, fallback: String): String =
     if (problem is ApiException) problem.message.orEmpty()
     else "$fallback\n状态码 0 · 事件 client_${UUID.randomUUID().toString().replace("-", "")}"
 
-/** Account-scoped form. A failed submission retains the photo and note. */
 @Composable
 fun InspectionScreen(state: AppState, vm: AppViewModel, close: () -> Unit) {
-    val account = state.endpoint + "|" + state.profile?.id
-    key(account) { InspectionContent(state, vm, close) }
+    key(state.endpoint, state.profile?.id) { InspectionContent(state, vm, close) }
 }
 
 @Composable
@@ -40,18 +41,20 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
     fun current() = vm.state.value.let { it.endpoint + "|" + it.profile?.id == account && it.profile != null }
     var data by remember { mutableStateOf(JSONObject()) }
     var building by remember { mutableStateOf(state.building) }
-    var machineId by remember { mutableStateOf("") }
+    var issues by remember { mutableStateOf<Map<String, InspectionIssue>>(emptyMap()) }
     var note by remember { mutableStateOf("") }
-    var issue by remember { mutableStateOf(false) }
     var photo by remember { mutableStateOf("") }
     var preview by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var feedback by remember { mutableStateOf<String?>(null) }
     var confirmation by remember { mutableStateOf<JSONObject?>(null) }
+    var confirmedMachines by remember { mutableStateOf<Set<String>>(emptySet()) }
     val buildings = data.optJSONArray("buildings")?.objects().orEmpty()
     val machines = data.optJSONArray("machines")?.objects().orEmpty().filter { it.str("dormBuilding") == building }
+    val machineIds = machines.map { it.str("id") }.toSet()
     val history = data.optJSONArray("inspections")?.objects().orEmpty().filter { it.str("dormBuilding") == building }
+    fun draft() = InspectionRound.body(building, machineIds, machines.mapNotNull { issues[it.str("id")] }, note, photo)
     suspend fun load() {
         val next = vm.api.call("/api/inspections")
         if (!current()) throw CancellationException("Account changed")
@@ -69,58 +72,103 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
         }
     }
     LaunchedEffect(Unit) { action { load() } }
-    LaunchedEffect(building) { machineId = ""; photo = ""; note = ""; issue = false; confirmation = null }
-    LaunchedEffect(machineId) { photo = ""; confirmation = null }
+    LaunchedEffect(building) { issues = emptyMap(); photo = ""; note = ""; confirmation = null; feedback = null }
+    val staleSelection = issues.keys.any { it !in machineIds }
     Dialog(onDismissRequest = { if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
-            Scaffold(topBar = { TopAppBar(title = { Text("楼栋巡检") }, navigationIcon = { IconButton(onClick = close, enabled = !busy) { Icon(Icons.Outlined.Close, "关闭") } }, actions = { TextButton(onClick = { action { load() } }, enabled = !busy) { Text("刷新") } }) }) { padding ->
-                LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Scaffold(topBar = { TopAppBar(title = { Text("整轮巡检") }, navigationIcon = { IconButton(onClick = close, enabled = !busy) { Icon(Icons.Outlined.Close, "关闭") } }, actions = { TextButton(onClick = { action { load() } }, enabled = !busy) { Text("刷新") } }) }) { padding ->
+                LazyColumn(Modifier.fillMaxSize().padding(padding).imePadding().testTag("inspection-round"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     item { Text(data.optJSONObject("identity")?.str("label").orEmpty(), style = MaterialTheme.typography.labelLarge) }
                     item { ChoiceRow("巡检楼栋", buildings.map { it.str("code") to it.str("name") }, building, !busy) { building = it } }
-                    item { ChoiceRow("机器", machines.map { it.str("id") to it.str("name") }, machineId, !busy) { machineId = it } }
-                    item { Row { FilterChip(!issue, { issue = false }, label = { Text("正常") }, enabled = !busy); Spacer(Modifier.width(12.dp)); FilterChip(issue, { issue = true }, label = { Text("发现异常") }, enabled = !busy) } }
-                    item { OutlinedTextField(note, { note = it.take(500) }, label = { Text("现场情况与处理建议") }, enabled = !busy, modifier = Modifier.fillMaxWidth(), minLines = 3, supportingText = { Text("${note.length}/500") }) }
+                    item { Text("一次检查本楼全部 ${machines.size} 台机器，仅勾选异常机器。没有勾选时，本轮会登记为全部正常。", style = MaterialTheme.typography.bodyMedium) }
                     item {
-                        Row { NativeAttachmentActions(!busy && machineId.isNotBlank(), "$account|$building|$machineId", onMedia = { uri, cleanup ->
-                            val target = building
-                            val targetMachine = machineId
-                            action {
-                                try {
-                                    val image = withContext(Dispatchers.IO) { prepareMedia(context, uri) }
-                                    if (!current() || target != building || targetMachine != machineId) throw CancellationException("Inspection changed")
-                                    require(image.second.startsWith("image/"))
-                                    photo = "data:${image.second};base64," + Base64.encodeToString(image.first, Base64.NO_WRAP)
-                                } finally { cleanup() }
-                            }
-                        }, onError = { error = it }, imagesOnly = true); Text(if (photo.isBlank()) "添加现场照片（必填）" else "已添加现场照片") }
-                        if (photo.isNotBlank()) AsyncImage(photo, "巡检照片", Modifier.fillMaxWidth().height(180.dp))
+                        Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("洗衣房全景图（选填）", style = MaterialTheme.typography.titleSmall)
+                            Text("可拍摄整个洗衣房或选择已有全景照片，保持图片原比例。", style = MaterialTheme.typography.bodySmall)
+                            NativeAttachmentActions(!busy && building.isNotBlank(), "$account|$building", onMedia = { uri, cleanup ->
+                                val target = building
+                                action {
+                                    try {
+                                        val image = withContext(Dispatchers.IO) { compressPhoto(context, uri, 420_000, 2000) }
+                                        if (!current() || target != building) throw CancellationException("Inspection changed")
+                                        photo = "data:image/jpeg;base64," + Base64.encodeToString(image, Base64.NO_WRAP)
+                                    } finally { cleanup() }
+                                }
+                            }, onError = { error = it }, imagesOnly = true)
+                            if (photo.isNotBlank()) {
+                                AsyncImage(photo, "本轮全景照片预览", Modifier.fillMaxWidth().heightIn(max = 180.dp), contentScale = ContentScale.Fit)
+                                TextButton(onClick = { photo = "" }, enabled = !busy) { Text("移除全景图") }
+                            } else Text("未添加图片，可直接提交", style = MaterialTheme.typography.bodySmall)
+                        } }
                     }
-                    item { Button(onClick = { confirmation = JSONObject().put("machineId", machineId).put("dorm",building).put("status", if (issue) "issue" else "normal").put("note", note.trim()).put("photoData", photo) }, enabled = !busy && machines.any { it.str("id") == machineId } && note.isNotBlank() && photo.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "正在处理…" else "提交巡检") } }
+                    item { Text("异常机器 · 已勾选 ${issues.size} 台", style = MaterialTheme.typography.titleMedium) }
+                    if (machines.isEmpty()) item { Text("本楼暂无可巡检机器，请刷新或选择其他楼栋。") }
+                    items(machines, key = { it.str("id") }) { machine ->
+                        val id = machine.str("id")
+                        InspectionMachineRow(machine.str("name"), issues[id], !busy, { checked -> issues = if (checked) issues + (id to InspectionIssue(id)) else issues - id }, { value -> issues = issues + (id to value) })
+                    }
+                    if (staleSelection) item { Text("机器清单已变化，请重新选择楼栋并核对本轮异常。", color = MaterialTheme.colorScheme.error) }
+                    item { OutlinedTextField(note, { note = it.take(500) }, label = { Text("本轮备注（选填）") }, enabled = !busy, modifier = Modifier.fillMaxWidth(), minLines = 2, supportingText = { Text("${note.length}/500") }) }
+                    item { Button(onClick = { try { confirmation = draft(); confirmedMachines = machineIds } catch (problem: Exception) { error = clientFailure(problem, "请核对巡检内容") } }, enabled = !busy && !staleSelection && machineIds.isNotEmpty() && issues.values.all { it.reasons.isNotEmpty() }, modifier = Modifier.fillMaxWidth().testTag("inspection-submit")) { Text(if (busy) "正在处理…" else if (issues.isEmpty()) "提交本轮 · 全部正常" else "提交本轮 · ${issues.size} 台异常") } }
                     if (error != null) item { Text(error!!, color = MaterialTheme.colorScheme.error) }
                     if (feedback != null) item { Text(feedback!!, color = MaterialTheme.colorScheme.primary) }
-                    item { Text("本楼巡检记录", style = MaterialTheme.typography.titleLarge) }
+                    item { HorizontalDivider(); Text("本楼巡检记录", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleLarge) }
                     if (history.isEmpty()) item { Text("暂无巡检记录") }
-                    items(history, key = { it.str("id") }) { entry -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(entry.str("machineName") + if (entry.str("status") == "issue") " · 异常" else " · 正常", style = MaterialTheme.typography.titleMedium)
-                        Text(entry.str("note")); Text(entry.str("at") + " · " + entry.optJSONObject("inspector")?.str("nick").orEmpty(), style = MaterialTheme.typography.labelSmall)
-                        Text(inspectionDelivery(entry.optJSONObject("notification")), style = MaterialTheme.typography.bodySmall)
-                        if (entry.optBoolean("hasPhoto")) TextButton(onClick = { action { val result = vm.api.call("/api/inspections/${vm.api.encoded(entry.str("id"))}/photo"); if (current()) preview = result.str("photoData") } }, enabled = !busy) { Text("查看现场照片") }
-                    } } }
+                    items(history, key = { it.str("id") }) { entry -> InspectionHistoryCard(entry, !busy) { action { val result = vm.api.call("/api/inspections/${vm.api.encoded(entry.str("id"))}/photo"); if (current()) preview = result.str("photoData") } } }
                 }
             }
         }
     }
-    confirmation?.let { frozen -> AlertDialog(onDismissRequest = { if (!busy) confirmation = null }, title = { Text("确认提交巡检") }, text = { Text("${machines.find { it.str("id") == frozen.str("machineId") }?.str("name")}\n${if (issue) "发现异常，可能通知本楼指定群" else "现场正常"}\n${frozen.str("note")}\n已选择一张照片") }, confirmButton = { TextButton(enabled = !busy, onClick = {
-        action {
-            if (frozen.str("machineId") != machineId || frozen.str("dorm") != building || machines.none{it.str("id")==machineId} || frozen.str("note") != note.trim() || frozen.str("photoData") != photo || frozen.str("status") != if (issue) "issue" else "normal") throw ApiException(409, "form_changed", "client_" + UUID.randomUUID().toString().replace("-", ""), "巡检内容已变化，请重新确认")
-            val result = vm.api.call("/api/inspections", "POST", frozen)
-            if (!current()) throw CancellationException("Account changed")
-            note = ""; photo = ""; confirmation = null
-            feedback = inspectionDelivery(result.optJSONObject("inspection")?.optJSONObject("notification"))
-            load()
+    confirmation?.let { frozen ->
+        val count = frozen.optJSONArray("issues")?.length() ?: 0
+        AlertDialog(onDismissRequest = { if (!busy) confirmation = null }, title = { Text("确认提交整轮巡检") }, text = { Column(Modifier.heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("${buildings.find { it.str("code") == frozen.str("dormBuilding") }?.str("name").orEmpty()} · 共 ${machines.size} 台机器")
+            Text(if (count == 0) "没有勾选异常机器，将记录为全部正常。" else "本轮 $count 台异常，其余机器正常；异常摘要会尝试通知本楼指定群。")
+            Text(if (frozen.str("photoData").isBlank()) "未添加全景图" else "已添加全景图")
+        } }, confirmButton = { TextButton(enabled = !busy, onClick = {
+            action {
+                if (staleSelection || confirmedMachines != machineIds || frozen.toString() != draft().toString()) throw ApiException(409, "form_changed", "client_${UUID.randomUUID()}", "巡检内容已变化，请重新确认")
+                val result = vm.api.call("/api/inspections", "POST", frozen)
+                if (!current()) throw CancellationException("Account changed")
+                issues = emptyMap(); note = ""; photo = ""; confirmation = null
+                feedback = inspectionDelivery(result.optJSONObject("inspection")?.optJSONObject("notification"))
+                load()
+            }
+        }) { Text("确认上报") } }, dismissButton = { TextButton(onClick = { confirmation = null }, enabled = !busy) { Text("返回修改") } })
+    }
+    preview?.let { image -> AlertDialog(onDismissRequest = { preview = null }, title = { Text("巡检全景图") }, text = { AsyncImage(image, "巡检全景图", Modifier.fillMaxWidth().heightIn(max = 440.dp), contentScale = ContentScale.Fit) }, confirmButton = { TextButton(onClick = { preview = null }) { Text("关闭") } }) }
+}
+
+@Composable
+internal fun InspectionMachineRow(name: String, issue: InspectionIssue?, enabled: Boolean, select: (Boolean) -> Unit, update: (InspectionIssue) -> Unit) {
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(issue != null, select, enabled = enabled, modifier = Modifier.testTag("inspection-machine-select")); Text(name, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall); Text(if (issue == null) "正常" else "异常", color = if (issue == null) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error) }
+        if (issue != null) {
+            Text("勾选具体情况，可多选", style = MaterialTheme.typography.labelMedium)
+            InspectionRound.reasons.forEach { (code, label) ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Checkbox(code in issue.reasons, { selected -> update(issue.copy(reasons = if (selected) issue.reasons + code else issue.reasons - code)) }, enabled = enabled, modifier = Modifier.testTag("inspection-reason:$code")); Text(label, Modifier.weight(1f)) }
+            }
+            OutlinedTextField(issue.note, { update(issue.copy(note = it.take(500))) }, label = { Text("异常说明（选填）") }, enabled = enabled, modifier = Modifier.fillMaxWidth())
         }
-    }) { Text("确认上报") } }, dismissButton = { TextButton(onClick = { confirmation = null }, enabled = !busy) { Text("返回修改") } }) }
-    preview?.let { image -> AlertDialog(onDismissRequest = { preview = null }, title = { Text("现场照片") }, text = { AsyncImage(image, "巡检照片", Modifier.fillMaxWidth().heightIn(max = 440.dp)) }, confirmButton = { TextButton(onClick = { preview = null }) { Text("关闭") } }) }
+    } }
+}
+
+@Composable
+private fun InspectionHistoryCard(entry: JSONObject, enabled: Boolean, photo: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val round = entry.str("type") == "round"
+        Text(if (round) "整轮巡检 · ${entry.optInt("inspectedMachineCount")} 台" else entry.str("machineName"), style = MaterialTheme.typography.titleMedium)
+        Text(if (entry.str("status") == "issue") if (round) "${entry.optInt("issueCount")} 台异常" else "异常" else if (round) "全部正常" else "正常", color = if (entry.str("status") == "issue") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+        entry.optJSONArray("issues")?.objects().orEmpty().forEach { issue ->
+            val codes = issue.optJSONArray("reasons")
+            Text(issue.str("machineName", issue.str("machineId")) + " · " + (0 until (codes?.length() ?: 0)).joinToString("、") { InspectionRound.reasons[codes?.optString(it)] ?: "其他异常" })
+            if (issue.str("note").isNotBlank()) Text(issue.str("note"), style = MaterialTheme.typography.bodySmall)
+        }
+        if (entry.str("note").isNotBlank()) Text(entry.str("note"))
+        Text(entry.str("at") + " · " + entry.optJSONObject("inspector")?.str("nick").orEmpty(), style = MaterialTheme.typography.labelSmall)
+        Text(inspectionDelivery(entry.optJSONObject("notification")), style = MaterialTheme.typography.bodySmall)
+        if (entry.optBoolean("hasPhoto")) TextButton(onClick = photo, enabled = enabled) { Text(if (round) "查看全景图" else "查看现场照片") }
+    } }
 }
 
 @Composable
@@ -135,11 +183,11 @@ internal fun ChoiceRow(label: String, options: List<Pair<String, String>>, selec
 }
 
 private fun inspectionDelivery(value: JSONObject?) = when (value?.str("status")) {
-    "not_required" -> "正常巡检已保存，无需群通知"
+    "not_required" -> "本轮全部正常，巡检已保存，无需群通知"
     "sent" -> "巡检已保存，本楼群通知已送达"
     "sending" -> "巡检已保存，正在通知本楼群"
     "failed" -> "巡检已保存，群通知未确认送达，后台已记录"
-    "cooldown" -> "巡检已保存，同台异常短时间内不重复通知"
+    "cooldown" -> "巡检已保存，相同异常短时间内不重复通知"
     "unconfigured" -> "巡检已保存，本楼尚未指定通知群"
     else -> "巡检已保存"
 }

@@ -7,6 +7,8 @@ import com.laoke.weshirt.data.AppState
 import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.epoch
 import com.laoke.weshirt.data.str
+import com.laoke.weshirt.data.isArchived
+import com.laoke.weshirt.data.isExpired
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
 import com.laoke.weshirt.platform.notification.TaskProgress
@@ -77,7 +79,7 @@ class PlatformCoordinator(
         if (session.read() == null || state.profile == null) { clearLocal(); return }
         if (!PushRuntime.isSessionActive(app)) PushRuntime.onSessionAvailable(app)
         val active = LinkedHashMap<String, TaskProgress>()
-        state.tasks.filter { !it.done && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
+        state.tasks.filter { !it.done && !it.isArchived(System.currentTimeMillis()) && !it.isExpired(System.currentTimeMillis()) && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
             val finish = task.endAt ?: return@forEach
             active[task.id] = tracked(task.id, task.name, finish, task.startAt ?: 0L, state.profile.notifyLeadMin)
         }
