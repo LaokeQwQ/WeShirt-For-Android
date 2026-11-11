@@ -6,8 +6,6 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.laoke.weshirt.push-tls")
 }
-// The ignored deployment file supplies AGConnect resources; it never enables SDK startup.
-if (file("agconnect-services.json").isFile) apply(plugin = "com.huawei.agconnect")
 val privateConfig = Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use(::load) }
 fun config(name: String, default: String = "") = (System.getenv(name) ?: privateConfig.getProperty(name, default))
 fun literal(value: String) = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "") + "\""
@@ -18,13 +16,12 @@ android {
         applicationId = "com.laoke.weshirt"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
+        versionCode = 3
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["timeout_msec"] = "90000"
         buildConfigField("String", "API_BASE_URL", literal(config("WESHIRT_API_BASE_URL")))
-        listOf("PUSH_FCM_APP_ID", "PUSH_FCM_API_KEY", "PUSH_FCM_PROJECT_ID", "PUSH_FCM_SENDER_ID", "PUSH_UMENG_APP_KEY", "PUSH_UMENG_MESSAGE_SECRET", "PUSH_XIAOMI_APP_ID", "PUSH_XIAOMI_APP_KEY").forEach { name -> buildConfigField("String", name, literal(config("WESHIRT_$name"))) }
-        buildConfigField("boolean", "PUSH_HUAWEI_CONFIGURED", config("WESHIRT_PUSH_HUAWEI_CONFIGURED", "false").toBoolean().toString())
+        listOf("PUSH_FCM_APP_ID", "PUSH_FCM_API_KEY", "PUSH_FCM_PROJECT_ID", "PUSH_FCM_SENDER_ID", "PUSH_UMENG_APP_KEY", "PUSH_UMENG_MESSAGE_SECRET").forEach { name -> buildConfigField("String", name, literal(config("WESHIRT_$name"))) }
     }
     signingConfigs {
         if (config("WESHIRT_KEYSTORE").isNotBlank()) create("privateRelease") {
@@ -73,10 +70,6 @@ dependencies {
     implementation("com.umeng.umsdk:push:6.7.6")
     implementation("com.umeng.umsdk:common:10.0.1")
     implementation("com.umeng.umsdk:asms:1.8.7.2")
-    implementation("com.umeng.umsdk:xiaomi-umengaccs:2.3.0")
-    implementation("com.umeng.umsdk:xiaomi-push:7.12.4")
-    implementation("com.umeng.umsdk:huawei-umengaccs:2.3.0")
-    implementation("com.huawei.hms:push:6.13.0.301")
     implementation("com.google.zxing:core:3.5.3")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("io.noties.markwon:core:4.6.2")

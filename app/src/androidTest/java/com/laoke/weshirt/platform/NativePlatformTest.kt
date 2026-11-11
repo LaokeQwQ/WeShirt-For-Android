@@ -58,10 +58,6 @@ class NativePlatformTest {
             "com.google.firebase.iid.FirebaseInstanceIdReceiver",
             "com.umeng.message.component.UmengMessageProvider",
             "com.taobao.accs.data.MsgDistributeService",
-            "org.android.agoo.xiaomi.MiPushBroadcastReceiver",
-            "com.xiaomi.mipush.sdk.PushMessageHandler",
-            "com.huawei.hms.support.api.push.PushProvider",
-            "com.huawei.hms.support.api.push.PushReceiver",
         )
         components.forEach { name ->
             assertEquals(name, PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
@@ -71,11 +67,43 @@ class NativePlatformTest {
         assertFalse(notices.post(NativePushEvent("unsigned", 1, PushEventKind.ANNOUNCEMENT, "公告", "未登录不应展示")))
         assertTrue(manager.activeNotifications.isEmpty())
         assertMissingComponent("com.android.dingtalk.openauth.web.AuthWebviewActivity")
-        assertMissingComponent("com.huawei.hms.aaid.InitProvider")
-        assertMissingComponent("com.huawei.agconnect.core.provider.AGConnectInitializeProvider")
         val requested = app.packageManager.getPackageInfo(app.packageName, PackageManager.GET_PERMISSIONS).requestedPermissions.orEmpty()
         assertFalse(requested.contains("com.google.android.gms.permission.AD_ID"))
         assertFalse(requested.contains("freemme.permission.msa"))
+    }
+
+    @Test fun packagedAppContainsOnlyFcmAndBaseUpushWithoutIndependentOemEntryPoints() {
+        // Disabled is insufficient: removed integrations must not contribute SDKs or manifest entries.
+        listOf(
+            "org.android.agoo.xiaomi.MiPushBroadcastReceiver",
+            "com.xiaomi.push.service.receivers.PingReceiver",
+            "com.xiaomi.mipush.sdk.MessageHandleService",
+            "com.xiaomi.mipush.sdk.PushMessageHandler",
+            "com.xiaomi.push.service.XMPushService",
+            "com.xiaomi.push.service.XMJobService",
+            "com.xiaomi.push.service.UploadLogSDKService",
+            "com.xiaomi.push.service.logupload.LogUploadFileProvider",
+            "com.huawei.hms.aaid.InitProvider",
+            "com.huawei.agconnect.core.provider.AGConnectInitializeProvider",
+            "com.huawei.hms.support.api.push.PushProvider",
+            "org.android.agoo.huawei.HuaweiRcvService",
+            "com.huawei.hms.support.api.push.service.HmsMsgService",
+            "com.huawei.hms.support.api.push.PushMsgReceiver",
+            "com.huawei.hms.support.api.push.PushReceiver",
+        ).forEach(::assertMissingComponent)
+        listOf(
+            "com.xiaomi.mipush.sdk.MiPushClient",
+            "org.android.agoo.xiaomi.MiPushRegistar",
+            "com.huawei.hms.push.HmsMessaging",
+            "com.huawei.agconnect.AGConnectInstance",
+            "org.android.agoo.huawei.HuaWeiRegister",
+        ).forEach { name ->
+            val result = runCatching { Class.forName(name, false, app.classLoader) }
+            assertTrue("$name must be absent, rather than merely disabled", result.exceptionOrNull() is ClassNotFoundException)
+        }
+        // The two supported transports must remain in the actual installed application.
+        assertNotNull(Class.forName("com.google.firebase.messaging.FirebaseMessaging", false, app.classLoader))
+        assertNotNull(Class.forName("com.umeng.message.PushAgent", false, app.classLoader))
     }
 
     @Test fun realNotificationDeliveryRejectsReplaysAndOlderRevisions() {
@@ -219,7 +247,11 @@ class NativePlatformTest {
         val component = ComponentName(app.packageName, name)
         val info = runCatching { app.packageManager.getActivityInfo(component, PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
         val provider = runCatching { app.packageManager.getProviderInfo(component, PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
+        val service = runCatching { app.packageManager.getServiceInfo(component, PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
+        val receiver = runCatching { app.packageManager.getReceiverInfo(component, PackageManager.MATCH_DISABLED_COMPONENTS) }.getOrNull()
         assertNull(name, info)
         assertNull(name, provider)
+        assertNull(name, service)
+        assertNull(name, receiver)
     }
 }

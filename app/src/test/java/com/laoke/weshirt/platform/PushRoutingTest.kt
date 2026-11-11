@@ -25,6 +25,10 @@ class PushRoutingTest {
             PushAvailability(true, false, true, true)).provider)
         assertEquals(PushProvider.NONE, PushRouter.choose(PushRegion.GOOGLE,
             PushAvailability(true, false, true, true)).provider)
+        assertEquals(PushProvider.NONE, PushRouter.choose(PushRegion.AUTO,
+            PushAvailability(true, false, true, false)).provider)
+        assertEquals(PushProvider.UMENG, PushRouter.choose(PushRegion.AUTO,
+            PushAvailability(true, true, false, true)).provider)
     }
 
     @Test fun explicitDomesticNeverRegistersFcmInParallel() {
@@ -32,6 +36,8 @@ class PushRoutingTest {
             PushAvailability(true, true, true, true)).provider)
         assertEquals(PushProvider.NONE, PushRouter.choose(PushRegion.DOMESTIC,
             PushAvailability(true, true, true, false)).provider)
+        assertEquals("UMENG_CHANNEL", PushRouter.choose(PushRegion.DOMESTIC,
+            PushAvailability(true, false, false, true)).reason)
     }
 
     @Test fun sameEventOnlyAcceptsNewerRevisions() {
