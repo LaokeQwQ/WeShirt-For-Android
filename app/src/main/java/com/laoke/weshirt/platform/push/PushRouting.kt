@@ -12,18 +12,18 @@ data class PushAvailability(
 
 data class PushRoute(val provider: PushProvider, val reason: String)
 
-/** One installation has one primary delivery provider; OEM channels belong to UMeng. */
+/** One installation uses either Firebase FCM or the base U-Push channel. */
 object PushRouter {
     fun choose(region: PushRegion, available: PushAvailability): PushRoute {
         if (!available.consent) return PushRoute(PushProvider.NONE, "CONSENT_REQUIRED")
         return when (region) {
-            PushRegion.DOMESTIC -> if (available.umengConfigured) PushRoute(PushProvider.UMENG, "DOMESTIC_AGGREGATE")
+            PushRegion.DOMESTIC -> if (available.umengConfigured) PushRoute(PushProvider.UMENG, "UMENG_CHANNEL")
                 else PushRoute(PushProvider.NONE, "UMENG_NOT_CONFIGURED")
             PushRegion.GOOGLE -> if (available.firebaseConfigured && available.googleServicesAvailable)
                 PushRoute(PushProvider.FCM, "GOOGLE_SERVICES") else PushRoute(PushProvider.NONE, "FCM_UNAVAILABLE")
             PushRegion.AUTO -> when {
                 available.googleServicesAvailable && available.firebaseConfigured -> PushRoute(PushProvider.FCM, "GOOGLE_SERVICES")
-                available.umengConfigured -> PushRoute(PushProvider.UMENG, "DOMESTIC_AGGREGATE")
+                available.umengConfigured -> PushRoute(PushProvider.UMENG, "UMENG_CHANNEL")
                 else -> PushRoute(PushProvider.NONE, "NO_CONFIGURED_PROVIDER")
             }
         }

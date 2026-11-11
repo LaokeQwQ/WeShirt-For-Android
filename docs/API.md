@@ -27,7 +27,7 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 }
 ```
 
-`enabled=false` 表示管理员尚未配置原生应用凭据或原子会话存储。客户端应说明接入尚未完成，不生成临时账号或以网页授权代替原生授权。厂商推送也通过能力发现控制；登记令牌成功不能被当作真实消息投递成功。
+`enabled=false` 表示管理员尚未配置原生应用凭据或原子会话存储。客户端应说明接入尚未完成，不生成临时账号或以网页授权代替原生授权。FCM 与 U-Push 也通过能力发现控制；登记令牌成功不能被当作真实消息投递成功。
 
 ## 钉钉原生登录
 
@@ -79,9 +79,9 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 {"provider":"fcm","token":"provider-issued-device-token","notificationsEnabled":true,"appVersion":"0.1.1"}
 ```
 
-服务器支持 `fcm` 与 `upush` 两个互斥的主通道；小米、华为等经友盟聚合通道时不重复登记成 FCM。服务端按私有环境变量配置自动发现可用发送器，能力发现只公布已配置的通道。未接入返回 `503 mobile_push_not_configured`。关闭请求为 `{notificationsEnabled:false,appVersion:"0.1.1"}`，会删除推送令牌并取消该安装的待发消息。
+服务器支持 `fcm` 与 `upush` 两个互斥的主通道，客户端每台安装实例只使用其中一个。服务端按私有环境变量配置自动发现可用发送器，能力发现只公布已配置的通道。未接入返回 `503 mobile_push_not_configured`。关闭请求为 `{notificationsEnabled:false,appVersion:"0.1.1"}`，会删除推送令牌并取消该安装的待发消息。
 
-响应不包含令牌：`{installation:{installationId,provider,notificationsEnabled,appVersion,updatedAt}}`。原生会话只能操作登录时绑定的安装；访问其他安装返回 403，同时修改发生冲突返回 409。消息使用数据载荷 `{eventId,revision,kind,title,body,taskId,finishAt,serverConfirmed}`，由客户端按 `eventId` 及递增 `revision` 去重。登记接口不发送测试通知；没有厂商凭据时不能宣称投递链路已经验收。
+响应不包含令牌：`{installation:{installationId,provider,notificationsEnabled,appVersion,updatedAt}}`。原生会话只能操作登录时绑定的安装；访问其他安装返回 403，同时修改发生冲突返回 409。消息使用数据载荷 `{eventId,revision,kind,title,body,taskId,finishAt,serverConfirmed}`，由客户端按 `eventId` 及递增 `revision` 去重。登记接口不发送测试通知；没有发送凭据时不能宣称投递链路已经验收。
 
 ## 小组件与刷新
 
@@ -120,22 +120,19 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 | `UMENG_PUSH_APP_KEY` | 与 Android 发行配置相同的友盟 AppKey |
 | `UMENG_PUSH_MASTER_SECRET` | 友盟后台的服务端 Master Secret，不能使用客户端 Message Secret 代替，也不能打包到 APK |
 | `UMENG_PUSH_PRODUCTION` | 默认 `true`；调试可设 `false`，单播不受测试设备名单限制 |
-| `UMENG_PUSH_OEM_NOTIFICATIONS` | 可选，设 `true` 后按友盟官方 `message_3rd_notification` 协议把离线透传转换为厂商通知 |
-| `UMENG_PUSH_XIAOMI_CHANNEL_ID` | 可选，小米已申请的通知通道 |
-| `UMENG_PUSH_OPPO_CHANNEL_ID` | 可选，OPPO 已申请的通知通道 |
 
 FCM 使用 RS256 服务账号 JWT 换取一小时 OAuth 访问令牌，权限范围仅为 `firebase.messaging`，再调用 HTTP v1 `projects.messages:send`。仅发送 data payload，由原生客户端统一展示和去重。服务账号须获目标 Firebase 项目的 Cloud Messaging 发送权限，Android 使用同一项目的配置。
 
-友盟使用 `POST https://msgapi.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验。正常使用 `display_type=message` 自定义数据。若开启厂商离线转通知，需在友盟后台同时配置小米、华为等应用凭据及通知分类，`channel_activity` 为 `com.laoke.weshirt.MainActivity`，U-Push 的 FCM 通道固定关闭，防止同一安装双通道投递。厂商离线通知的展示与点击由厂商及友盟 SDK 处理，须逐机型验证，不能视为所有厂商已经验收。
+友盟使用 `POST https://msgapi.umeng.com/api/send`，对实际发送的 `POST + URL + JSON字节 + MasterSecret` 计算官方规定的 MD5 校验，使用 `display_type=message` 自定义数据。当前 Android 仅接入基础 U-Push；不配置厂商离线转通知，也不宣称杀进程后的厂商离线投递已接通。U-Push 的 FCM 通道固定关闭，避免与客户端原生 FCM 重复投递。
 
-社区 @、取衣、排队和代取提醒会加入原生独立待发队列；即使钉钉先成功，也不会取消原生通道自己的重试。每次同步开始会继续处理原生队列：同一安装和事件只由一个短期租约发送，失败最多四次并递增退避。每次同步最多并行发送八条，避免厂商串行超时拖慢上游状态查询。`eventId` 来自稳定业务事件标识，`revision` 默认 1；新版本会抑制旧版本重试，客户端继续去重，网络结果不确定时仍可能收到重复数据。消息过期一天后丢弃。排队取消、频道权限变化、任务取衣、账号禁用、关闭通知或退出登录都会阻止相关后续投递。
+社区 @、取衣、排队和代取提醒会加入原生独立待发队列；即使钉钉先成功，也不会取消原生通道自己的重试。每次同步开始会继续处理原生队列：同一安装和事件只由一个短期租约发送，失败最多四次并递增退避。每次同步最多并行发送八条，避免发送器串行超时拖慢上游状态查询。`eventId` 来自稳定业务事件标识，`revision` 默认 1；新版本会抑制旧版本重试，客户端继续去重，网络结果不确定时仍可能收到重复数据。消息过期一天后丢弃。排队取消、频道权限变化、任务取衣、账号禁用、关闭通知或退出登录都会阻止相关后续投递。
 
 FCM 明确返回 `UNREGISTERED` 时会原子删除该安装令牌并移除用户索引。普通参数错误、凭据错误或暂时网络错误不会误删设备。友盟单播失败不能一概等同卸载，不根据未知错误码删除令牌；App 退出或关闭系统提醒会主动注销。
 
 与本地提醒合并时，`taskId` 对本人任务为原任务编号，对排队为 `queue:<reservationId>`；`finishAt` 为 ISO 预计结束时间，没有可用时间则为空字符串。可用“任务编号 + 结束时间 + 提前/结束阶段”避免本地计时和服务端推送重复提醒；确认结束可覆盖预计结束，不能反向降级。旧排队记录没有稳定编号时 `taskId` 可为空，不应猜测关联。
 
-待发队列只在私有服务端保存短期通知内容；操作日志不记录消息正文、手机号、设备令牌、OAuth 返回正文或服务端私钥。桥接仅允许 `mobile:*` 内部命名空间，所有发送端点固定为厂商官方 HTTPS 地址并禁止重定向。
+待发队列只在私有服务端保存短期通知内容；操作日志不记录消息正文、手机号、设备令牌、OAuth 返回正文或服务端私钥。桥接仅允许 `mobile:*` 内部命名空间，所有发送端点固定为服务商官方 HTTPS 地址并禁止重定向。
 
-单元测试使用本地产生的 RSA 测试密钥、模拟厂商响应和测试原子存储，验证 JWT 签名、U-Push 字节校验、跨工作节点防重、失败重试、失效令牌清理和频道权限撤回。本轮没有向真实设备或群聊发送测试消息。提供凭据后还需验证一台 Google 设备及各厂商设备的前后台接收、通知点击、关闭提醒和卸载重装行为。
+单元测试使用本地产生的 RSA 测试密钥、模拟发送服务响应和测试原子存储，验证 JWT 签名、U-Push 字节校验、跨工作节点防重、失败重试、失效令牌清理和频道权限撤回。本轮没有向真实设备或群聊发送测试消息。提供凭据后还需验证FCM 和基础 U-Push 对应设备的前后台接收、通知点击、关闭提醒和卸载重装行为。
 
 参考：[FCM HTTP v1](https://firebase.google.com/docs/cloud-messaging/send/v1-api)、[Google 服务账号 OAuth](https://developers.google.com/identity/protocols/oauth2/service-account)、[友盟服务端消息格式](https://devs.umeng.com/docs/67966/detail/68343)、[友盟签名示例](https://devs.umeng.com/docs/67966/detail/149296)。

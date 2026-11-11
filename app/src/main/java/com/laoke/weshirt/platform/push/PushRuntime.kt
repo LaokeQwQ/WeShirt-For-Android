@@ -10,7 +10,6 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
-import com.huawei.agconnect.AGConnectInstance
 import com.laoke.weshirt.platform.login.DingTalkLoginBridge
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
@@ -26,8 +25,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
-import org.android.agoo.huawei.HuaWeiRegister
-import org.android.agoo.xiaomi.MiPushRegistar
 import org.json.JSONObject
 import java.util.UUID
 
@@ -37,10 +34,6 @@ data class FirebasePushConfig(val applicationId: String, val apiKey: String, val
 data class UmengPushConfig(
     val appKey: String,
     val messageSecret: String,
-    val xiaomiAppId: String = "",
-    val xiaomiAppKey: String = "",
-    /** Requires matching agconnect-services.json/manifest application ID and registered signing certificate. */
-    val huaweiConfigured: Boolean = false,
 ) { fun configured(): Boolean = appKey.isNotBlank() && messageSecret.isNotBlank() }
 
 data class PushConfiguration(
@@ -62,8 +55,6 @@ object PushRuntime {
     @Volatile var route: PushRoute = PushRoute(PushProvider.NONE, "NOT_INITIALIZED")
         private set
     @Volatile var registrationStatus: String = "DISABLED"
-        private set
-    @Volatile var vendorCapabilities: Map<String, String> = mapOf("xiaomi" to "NOT_CONFIGURED", "huawei" to "NOT_CONFIGURED")
         private set
 
     init { scope.launch { for (command in registrationQueue) runCatching { command() } } }
@@ -102,14 +93,8 @@ object PushRuntime {
         }
         route = chosen
         val umengEnabled = chosen.provider == PushProvider.UMENG
-        vendorCapabilities = mapOf(
-            "xiaomi" to if (umengEnabled && !configuration.umeng?.xiaomiAppId.isNullOrBlank() && !configuration.umeng?.xiaomiAppKey.isNullOrBlank()) "CONFIGURED_NOT_VERIFIED" else "DISABLED_NOT_CONFIGURED",
-            "huawei" to if (umengEnabled && configuration.umeng?.huaweiConfigured == true) "CONFIGURED_NOT_VERIFIED" else "DISABLED_NOT_CONFIGURED",
-        )
         setComponents(app, fcmComponents, chosen.provider == PushProvider.FCM)
         setComponents(app, umengComponents, umengEnabled)
-        setComponents(app, xiaomiComponents, umengEnabled && !configuration.umeng?.xiaomiAppId.isNullOrBlank() && !configuration.umeng?.xiaomiAppKey.isNullOrBlank())
-        setComponents(app, huaweiComponents, umengEnabled && configuration.umeng?.huaweiConfigured == true)
         prefs.edit().putBoolean("consent", configuration.consent).putString("provider", chosen.provider.name).commit()
         registrationStatus = if (chosen.provider == PushProvider.NONE) chosen.reason else "REGISTERING"
         if (chosen.provider != PushProvider.FCM && firebaseStarted) FirebaseMessaging.getInstance().isAutoInitEnabled = false
@@ -149,7 +134,6 @@ object PushRuntime {
         if (umengStarted) {
             PushAgent.getInstance(context).enable(settingCallback)
             PushAgent.getInstance(context).deviceToken?.takeIf { it.isNotBlank() }?.let { onToken(context, PushProvider.UMENG, it) }
-            configureVendors(context, config)
             return
         }
         UMConfigure.enableImeiCollection(false)
@@ -182,20 +166,6 @@ object PushRuntime {
             override fun onSuccess(token: String) { onToken(context, PushProvider.UMENG, token) }
             override fun onFailure(code: String?, message: String?) { registrationStatus = "UMENG_REGISTRATION_FAILED" }
         })
-        configureVendors(context, config)
-    }
-
-    private fun configureVendors(context: Context, config: UmengPushConfig) {
-        if (config.xiaomiAppId.isNotBlank() && config.xiaomiAppKey.isNotBlank())
-            MiPushRegistar.register(context, config.xiaomiAppId, config.xiaomiAppKey)
-        if (config.huaweiConfigured) {
-            AGConnectInstance.initialize(context)
-            if (!AGConnectInstance.getInstance()?.options?.getString("client/app_id").isNullOrBlank()) HuaWeiRegister.register(context)
-            else {
-                setComponents(context, huaweiComponents, false)
-                vendorCapabilities = vendorCapabilities + ("huawei" to "DISABLED_MISSING_APP_ID")
-            }
-        }
     }
 
     internal fun onToken(context: Context, provider: PushProvider, token: String) {
@@ -250,11 +220,9 @@ object PushRuntime {
         if (firebaseStarted) { FirebaseMessaging.getInstance().isAutoInitEnabled = false; FirebaseMessaging.getInstance().deleteToken() }
         if (umengStarted) {
             PushAgent.getInstance(context).disable(settingCallback)
-            MiPushRegistar.unregister(context)
-            HuaWeiRegister.unregister(context)
             umengStarted = false
         }
-        setComponents(context, fcmComponents + umengComponents + xiaomiComponents + huaweiComponents, false)
+        setComponents(context, fcmComponents + umengComponents, false)
         val removed = CompletableDeferred<Unit>()
         registrationQueue.send { runCatching { sink?.unregister(installationId(context)) }; removed.complete(Unit); Unit }
         removed.await()
@@ -263,7 +231,7 @@ object PushRuntime {
 
     fun clearLocalSession(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean("session", false).remove("token").commit()
-        setComponents(context, fcmComponents + umengComponents + xiaomiComponents + huaweiComponents, false)
+        setComponents(context, fcmComponents + umengComponents, false)
         LaundryReminders.cancelAll(context, clearConfirmed = true)
         LaundryWidgetStore.clear(context)
         LaundryNotifications(context).clear()
@@ -287,17 +255,6 @@ object PushRuntime {
         "com.taobao.accs.data.MsgDistributeService", "com.taobao.accs.internal.AccsJobService",
         "org.android.agoo.accs.AgooService", "com.taobao.accs.ServiceReceiver",
     )
-    private val xiaomiComponents = listOf(
-        "org.android.agoo.xiaomi.MiPushBroadcastReceiver", "com.xiaomi.push.service.receivers.PingReceiver",
-        "com.xiaomi.mipush.sdk.MessageHandleService", "com.xiaomi.mipush.sdk.PushMessageHandler",
-        "com.xiaomi.push.service.XMPushService", "com.xiaomi.push.service.XMJobService",
-    )
-    private val huaweiComponents = listOf(
-        "com.huawei.hms.support.api.push.PushProvider", "org.android.agoo.huawei.HuaweiRcvService",
-        "com.huawei.hms.support.api.push.service.HmsMsgService", "com.huawei.hms.support.api.push.PushMsgReceiver",
-        "com.huawei.hms.support.api.push.PushReceiver",
-    )
-
     private val settingCallback = object : UPushSettingCallback {
         override fun onSuccess() = Unit
         override fun onFailure(code: String?, message: String?) = Unit

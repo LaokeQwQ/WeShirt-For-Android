@@ -131,8 +131,7 @@ class PlatformCoordinator(
             return PushConfiguration(consent = consent && sessionActive && capabilities.permissionGranted && capabilities.notificationsEnabled,
                 firebase = FirebasePushConfig(BuildConfig.PUSH_FCM_APP_ID, BuildConfig.PUSH_FCM_API_KEY,
                     BuildConfig.PUSH_FCM_PROJECT_ID, BuildConfig.PUSH_FCM_SENDER_ID),
-                umeng = UmengPushConfig(BuildConfig.PUSH_UMENG_APP_KEY, BuildConfig.PUSH_UMENG_MESSAGE_SECRET,
-                    BuildConfig.PUSH_XIAOMI_APP_ID, BuildConfig.PUSH_XIAOMI_APP_KEY, BuildConfig.PUSH_HUAWEI_CONFIGURED))
+                umeng = UmengPushConfig(BuildConfig.PUSH_UMENG_APP_KEY, BuildConfig.PUSH_UMENG_MESSAGE_SECRET))
         }
     }
 }

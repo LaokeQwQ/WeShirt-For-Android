@@ -14,9 +14,9 @@ Registration supports wash programs, custom durations and public notes, disinfec
 
 Requires Android 10 or later. Package: `com.laoke.weshirt`. Releases are privately distributed with a self-signed certificate. Enter your service URL and choose your building on first launch.
 
-Native DingTalk login and push providers require separate application registration and private configuration. Unconfigured providers are reported as unavailable. Estimated timers never replace confirmed machine status.
+Native DingTalk login, FCM and basic U-Push require application registration and private configuration. Unconfigured providers are reported as unavailable. Estimated timers never replace confirmed machine status.
 
-See [login prerequisites](docs/LOGIN.md) and [push setup](docs/PUSH.md) before distributing a configured build. Real DingTalk authorization and vendor message delivery require registered applications and device acceptance; the public source includes no credentials.
+See [login prerequisites](docs/LOGIN.md) and [push setup](docs/PUSH.md) before distributing a configured build. Real DingTalk authorization and message delivery require registered applications and device acceptance; the public source includes no credentials.
 
 Thanks to [PA733 / Laundry-Status-Monitor](https://github.com/PA733/Laundry-Status-Monitor) for the original foundation.
 
