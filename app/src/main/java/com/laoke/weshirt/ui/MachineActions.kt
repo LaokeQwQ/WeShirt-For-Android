@@ -92,8 +92,6 @@ private fun queueTime(value:String)=runCatching{DateTimeFormatter.ofPattern("HH:
         if(state.profile==null){login();return}
         confirmation=MachineConfirmation(frozen,action,title,message,minutes,mine?.str("id").orEmpty())
     }
-    session.error?.let{Text(it,color=MaterialTheme.colorScheme.error)}
-    session.feedback?.let{Text(it,color=MaterialTheme.colorScheme.primary)}
     if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id && (machine.state=="abnormal" || machine.suspectedUncollected)) {
         OutlinedButton(onClick={ask("urge","确认提醒取衣","${machine.name}\n请先现场确认程序已结束且衣物仍在。每台机器 5 分钟最多提醒一次。")},enabled=!busy && (state.profile==null || boardAllowed),modifier=Modifier.fillMaxWidth()){Text("提醒登记人取衣")}
     }

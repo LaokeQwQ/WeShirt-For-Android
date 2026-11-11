@@ -30,12 +30,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val announcementIntent = java.util.concurrent.atomic.AtomicLong(0)
     private data class CachedMetadata(val value: JSONObject, val generation: Int, val until: Long)
     private val metadata = mutableMapOf<String, CachedMetadata>()
-    private suspend fun metadata(path: String, auth: Boolean = true): JSONObject {
+    private suspend fun metadata(path: String, auth: Boolean = true, ttlMs: Long = 300_000): JSONObject {
         val version = generation.get()
         val now = android.os.SystemClock.elapsedRealtime()
         metadata[path]?.takeIf { it.generation == version && now < it.until }?.let { return it.value }
         val value = api.call(path, auth = auth)
-        if(version == generation.get()) metadata[path] = CachedMetadata(value, version, now + 300_000)
+        if(version == generation.get()) metadata[path] = CachedMetadata(value, version, now + ttlMs)
         return value
     }
     private val telemetryBuffer = ArrayDeque<JSONObject>()
@@ -103,44 +103,59 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val version = generation.get()
         _state.update { it.copy(loading = true) }
         try {
-            val site = metadata("/api/site", auth = false)
+            val site = metadata("/api/site", auth = false, ttlMs = 30_000)
             if(version != generation.get()) return@launch
             val buildings = site.optJSONArray("buildings")?.objects().orEmpty().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
             val signedIn = session.read() != null
-            val profile = if(signedIn) Profile.parse(metadata("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
+            val profile = if(signedIn) Profile.parse(api.call("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
             // Permission revocation takes effect on the next refresh; never reuse metadata cache here.
             val access = if(signedIn) api.call("/api/user/permissions") else JSONObject()
             val building = profile?.building?.takeIf { b -> buildings.any { it.code == b } } ?: _state.value.building.takeIf { b -> buildings.any { it.code == b } }.orEmpty()
-            val result = coroutineScope {
-                val board = async { if (building.isNotBlank()) api.call("/api/machines?dorm=${api.encoded(building)}", auth = false) else JSONObject() }
-                val tasks = async { if (signedIn) api.call("/api/tasks") else JSONObject() }
-                val favorites = async { if (signedIn) metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }
-                Triple(board.await(), tasks.await(), favorites.await())
+            val incoming = if (building.isNotBlank()) parseBoardSnapshot(api.call("/api/machines?dorm=${api.encoded(building)}", auth = false), building) else BoardSnapshot(emptyList(), null)
+            if(version != generation.get()) return@launch
+            val before = _state.value
+            val board = preferLatestBoard(incoming, building, before.building, before.machines, before.updatedAt)
+            // Publish the board immediately. A queue, profile-preference or notification outage
+            // must not leave a successful machine response invisible until every request succeeds.
+            _state.update { it.copy(buildings = buildings, building = building, profile = profile, access = access, machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, error = null) }
+            val problems = mutableListOf<Throwable>()
+            fun <T> Result<T>.readOr(previous: T): T = getOrElse { problems += it; previous }
+            val p = access.optJSONObject("permissions")
+            val mayReadTasks = signedIn && p?.optJSONObject("tasks")?.optBoolean("view", true) != false
+            val mayReadQueue = signedIn && building.isNotBlank() && p?.optJSONObject("queue")?.optBoolean("view", true) != false
+            val extra = coroutineScope {
+                val tasks = async { optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) } }
+                val occupancy = async { optionalRefresh { if (building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false) else JSONObject() } }
+                val queue = async { optionalRefresh { if (mayReadQueue) api.call("/api/queue?dorm=${api.encoded(building)}") else JSONObject().put("queue", JSONArray()) } }
+                Triple(tasks.await(), occupancy.await(), queue.await())
             }
             if(version != generation.get()) return@launch
-            val occupancy = if(building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") else null
-            val machines = result.first.optJSONObject("board")?.optJSONArray("floors")?.objects().orEmpty().flatMap { floor ->
-                floor.optJSONArray("machines")?.objects().orEmpty().map { value ->
-                    Machine.parse(value).let { machine -> machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") }, floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }) }
+            val tasks = extra.first.map { it.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse) }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
+            val queues = extra.third.map { it.optJSONArray("queue")?.objects().orEmpty() }.readOr(if (mayReadQueue) _state.value.queues else emptyList())
+            val occupancy = extra.second.getOrNull()?.optJSONObject("occupancy")
+            extra.second.exceptionOrNull()?.let { problems += it }
+            val machines = board.machines.map { machine ->
+                if (occupancy == null) machine else {
+                    val o = occupancy.optJSONObject(machine.id); val care = o?.optJSONObject("care")
+                    machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = machine.suspectedUncollected || o?.optBoolean("suspectedUncollected") == true)
                 }
-            }.map { machine ->
-                val o = occupancy?.optJSONObject(machine.id); val care = o?.optJSONObject("care")
-                machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = machine.suspectedUncollected || o?.optBoolean("suspectedUncollected") == true)
             }
-            val tasks = result.second.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse)
-            val queues = if(signedIn && building.isNotBlank()) api.call("/api/queue?dorm=${api.encoded(building)}").optJSONArray("queue")?.objects().orEmpty() else emptyList()
-            val announcementPrefs = if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
-            val favs = result.third.optJSONArray("favorites") ?: JSONArray()
             if(version != generation.get()) return@launch
-            _state.update { it.copy(buildings = buildings, building = building, profile = profile, access = access, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
-            if(signedIn) loadNoticesNow(version)
-            if(_state.value.tab == 2 && signedIn) loadChannelsNow(version)
-            if(_state.value.tab == 1 && signedIn) loadSocialNow(version)
+            _state.update { it.copy(machines = machines, tasks = tasks, queues = queues) }
+            val laundryPrefs = optionalRefresh { if(signedIn) metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }.readOr(JSONObject().put("favorites", JSONArray(_state.value.favorites.toList())).put("enabled", _state.value.favoriteRemindersOn).put("timeWindows", JSONArray().put(JSONObject().put("start", _state.value.reminderStart).put("end", _state.value.reminderEnd))))
+            val announcementPrefs = optionalRefresh { if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true)) }.readOr(JSONObject().put("enabled", _state.value.announcementsOn))
+            val favs = laundryPrefs.optJSONArray("favorites") ?: JSONArray()
+            if(version != generation.get()) return@launch
+            _state.update { it.copy(announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), favoriteRemindersOn = laundryPrefs.optBoolean("enabled"), reminderStart = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
+            if(signedIn) optionalRefresh { loadNoticesNow(version) }.exceptionOrNull()?.let { problems += it }
+            if(_state.value.tab == 2 && signedIn) optionalRefresh { loadChannelsNow(version) }.exceptionOrNull()?.let { problems += it }
+            if(_state.value.tab == 1 && signedIn) optionalRefresh { loadSocialNow(version) }.exceptionOrNull()?.let { problems += it }
             if (version == generation.get()) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
                 val announcements = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
                 if(version == generation.get()) _state.update { it.copy(announcements = if (it.announcementsOn && prefs.getBoolean("announcements", true)) announcements else emptyList()) }
             }
+            if (version == generation.get() && problems.isNotEmpty()) _state.update { it.copy(error = "机器状态已更新，部分附加信息暂未刷新。\n" + problems.first().message.orEmpty()) }
         } catch (e: CancellationException) { throw e } catch (e: Exception) { if (version == generation.get()) _state.update { it.copy(error = e.message ?: "加载失败") } }
         finally { _state.update { it.copy(loading = false) }; refreshMutex.unlock(); flushTelemetry(); if(refreshPending) { refreshPending = false; refresh() } }
     }

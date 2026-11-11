@@ -10,12 +10,14 @@ import androidx.compose.ui.unit.dp
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.AppState
 import com.laoke.weshirt.data.LaundryTask
+import com.laoke.weshirt.data.isArchived
+import com.laoke.weshirt.data.isExpired
 import com.laoke.weshirt.ui.user.FeatureError
 import com.laoke.weshirt.ui.user.rememberUserFeatureSession
 
 /** Match the Web opening prompt: the latest expired registration within three hours. */
 internal fun overdueCollectionCandidate(tasks: List<LaundryTask>, now: Long): LaundryTask? = tasks
-    .filter { !it.done && it.endAt?.let { end -> (now - end) / 60_000 in 1L..180L } == true }
+    .filter { !it.done && !it.isArchived(now) && !it.isExpired(now) && it.endAt?.let { end -> (now - end) / 60_000 in 1L..180L } == true }
     .maxByOrNull { it.endAt ?: Long.MIN_VALUE }
 
 @Composable

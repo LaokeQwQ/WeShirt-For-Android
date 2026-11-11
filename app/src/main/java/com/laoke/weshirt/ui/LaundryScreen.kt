@@ -62,8 +62,9 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     }
     LaunchedEffect(session, state.tasks) { loadDetails() }
     LaunchedEffect(owner) { owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { while (true) { now = System.currentTimeMillis(); delay(30_000) } } }
-    val active = state.tasks.filterNot { it.done }
-    val done = state.tasks.filter { it.done }.sortedByDescending { it.startAt ?: 0 }
+    val records = laundryRecords(state.tasks, now)
+    val active = records.current
+    val done = records.history
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -78,7 +79,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
         if (tasksView) {
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("正在洗衣", style = MaterialTheme.typography.titleLarge)
+                    Text("我的洗衣", style = MaterialTheme.typography.titleLarge)
                     TextButton(onClick = { picker = true }, enabled = !busy && tasksOperate && state.machines.isNotEmpty()) { Text("登记洗衣") }
                 }
             }
@@ -91,8 +92,8 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                     Text(laundryTimeLabel(task, now), style = MaterialTheme.typography.titleLarge, color = if (finished) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary)
                     TaskDetailText(task, raw)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (finished) Button(onClick = { confirm = TaskConfirmation(task, false) }, enabled = !busy && tasksOperate) { Text("我已取衣") }
-                        if (socialView) OutlinedButton(onClick = { pickupTaskId = task.id }, enabled = !busy) { Text("请 TA 代取") }
+                        if (finished && !task.done) Button(onClick = { confirm = TaskConfirmation(task, false) }, enabled = !busy && tasksOperate) { Text("我已取衣") }
+                        if (socialView && !task.done) OutlinedButton(onClick = { pickupTaskId = task.id }, enabled = !busy) { Text("请 TA 代取") }
                     }
                     TextButton(onClick = { confirm = TaskConfirmation(task, true) }, enabled = !busy && tasksOperate) { Text("删除登记", color = MaterialTheme.colorScheme.error) }
                 } }
@@ -120,26 +121,27 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 Text("查看剩余时间并处理请求", color = MaterialTheme.colorScheme.primary)
             } }
         }
+        if (inspectionView) item {
+            Card(onClick = { inspections = true }, modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Outlined.FactCheck, null)
+                Column { Text("楼栋巡检", style = MaterialTheme.typography.titleMedium); Text("整轮检查，仅记录异常；全景照片选填", style = MaterialTheme.typography.bodySmall) }
+            } }
+        }
         if (tasksView) {
-            item { TextButton(onClick = { history = !history }, modifier = Modifier.fillMaxWidth()) { Text(if (history) "收起洗衣历史（${done.size}）" else "查看洗衣历史（${done.size}）") } }
+            item { Text("登记满 72 小时自动归档，满 336 小时自动清除。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { TextButton(onClick = { history = !history }, modifier = Modifier.fillMaxWidth()) { Text(if (history) "收起历史洗衣记录（${done.size}）" else "历史洗衣记录（${done.size}）") } }
             if (history) {
                 item { OutlinedTextField(historyQuery, { historyQuery = it.take(100) }, label = { Text("按机器名称或备注搜索") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
                 val filtered = done.filter { historyQuery.isBlank() || it.name.contains(historyQuery, true) || it.note.contains(historyQuery, true) }
-                if (filtered.isEmpty()) item { Text(if (done.isEmpty()) "暂时没有已完成的登记。" else "没有匹配的洗衣记录。") }
+                if (filtered.isEmpty()) item { Text(if (done.isEmpty()) "暂时没有归档的洗衣记录。" else "没有匹配的洗衣记录。") }
                 items(filtered, key = { "done.${it.id}" }) { task -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(task.name, style = MaterialTheme.typography.titleMedium)
-                    Text("已确认取衣", color = MaterialTheme.colorScheme.primary)
+                    Text(if (task.done) "已取衣 · 已归档" else "已归档 · 未确认取衣", color = MaterialTheme.colorScheme.primary)
                     task.startAt?.let { Text(java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")), style = MaterialTheme.typography.bodySmall) }
                     TaskDetailText(task, taskDetails[task.id])
                     TextButton(onClick = { confirm = TaskConfirmation(task, true) }, enabled = !busy && tasksOperate) { Text("删除记录", color = MaterialTheme.colorScheme.error) }
                 } } }
             }
-        }
-        if (inspectionView) item {
-            Card(onClick = { inspections = true }, modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(Icons.Outlined.FactCheck, null)
-                Column { Text("楼栋巡检", style = MaterialTheme.typography.titleMedium); Text("检查机器、拍照备注并上报情况", style = MaterialTheme.typography.bodySmall) }
-            } }
         }
     }
     if (picker) AlertDialog(onDismissRequest = { picker = false }, title = { Text("选择机器") }, text = {
