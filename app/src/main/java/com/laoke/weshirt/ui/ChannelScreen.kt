@@ -31,6 +31,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.laoke.weshirt.AppViewModel
@@ -44,47 +45,77 @@ import java.io.File
 import java.util.UUID
 
 @Composable fun ChannelScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
-    val scope = ChatScope(state.endpoint, state.profile?.id, state.channel)
+    var directory by remember(state.endpoint, state.profile?.id) { mutableStateOf(state.discussionMachine.isBlank()) }
+    LaunchedEffect(state.discussionMachine) { if (state.discussionMachine.isNotBlank()) directory = false }
+    var connected by remember { mutableStateOf(false) }
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(state.endpoint, state.profile?.id, state.channel, directory, owner) {
+        if (state.profile != null && !directory) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            ChannelRealtime(vm.api).run(state.channel, { vm.refreshMessages() }, { connected = it; vm.channelConnection(it) })
+        }
+    }
+    DisposableEffect(Unit) { onDispose { vm.channelConnection(false) } }
+    if (state.profile == null) { EmptyPanel("和楼里的朋友聊聊", "登录后可查看公共频道和自己的住宿楼频道。", Icons.Outlined.ChatBubbleOutline, "钉钉登录", login); return }
+    if (directory) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { Text("选择频道", style = MaterialTheme.typography.headlineSmall); Text("公共频道和你的住宿楼优先显示", style = MaterialTheme.typography.bodySmall) }
+            items(state.channels.sortedBy { when (it.code) { "public" -> 0; state.profile.building -> 1; else -> 2 } }, key = { it.code }) { channel ->
+                Card(onClick = { vm.channel(channel.code); directory = false }, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (channel.avatar.isNotBlank()) AsyncImage(channel.avatar, null, Modifier.size(48.dp).clip(CircleShape)) else Icon(Icons.Outlined.Forum, null, Modifier.size(40.dp))
+                        Column(Modifier.weight(1f)) { Text(channel.name, style = MaterialTheme.typography.titleMedium)
+                            if (state.messageNotices.any { it.str("channel") == channel.code && it.str("readAt").isBlank() }) Text("有人 @ 你", color = androidx.compose.ui.graphics.Color(0xFFD87717), style = MaterialTheme.typography.labelMedium)
+                        }
+                        Icon(Icons.Outlined.ChevronRight, null)
+                    }
+                }
+            }
+        }; return
+    }
+    val scope = ChatScope(state.endpoint, state.profile?.id, state.channel, state.discussionMachine)
     val draft = remember(scope) { Any() }
     val currentDraft by rememberUpdatedState(draft)
     var input by remember(scope) { mutableStateOf("") }; var reply by remember(scope) { mutableStateOf<Message?>(null) }
     var mentions by remember(scope) { mutableStateOf(setOf<String>()) }; var all by remember(scope) { mutableStateOf(false) }
     var menu by remember(scope) { mutableStateOf<Message?>(null) }; var media by remember(scope) { mutableStateOf<Message?>(null) }
     var attached by remember(scope) { mutableStateOf<String?>(null) }
-    var pickerTarget by remember { mutableStateOf<Pair<ChatScope, Any>?>(null) }
+    var announcement by remember(scope) { mutableStateOf(false) }
+    var channelAvatar by remember(scope) { mutableStateOf(false) }
     val context = LocalContext.current
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val target = pickerTarget
-        pickerTarget = null
-        if (uri != null && target != null) {
-            if (target.first != scope || target.second !== currentDraft || !target.first.matches(vm.state.value)) {
-                vm.message("频道或账号已切换，请重新选择附件")
-            } else vm.mutate(null) {
-                if (!target.first.matches(vm.state.value) || target.second !== currentDraft) throw CancellationException("Chat changed")
-                val pair = withContext(Dispatchers.IO) { prepareMedia(context, uri) }
-                if (!target.first.matches(vm.state.value) || target.second !== currentDraft) throw CancellationException("Chat changed")
-                val result = vm.api.upload("/api/messages/media?channel=${vm.api.encoded(target.first.channel)}", pair.first, pair.second)
-                if (target.first.matches(vm.state.value) && target.second === currentDraft) {
-                    attached = result.optJSONObject("media")?.str("id")?.takeIf { it.isNotBlank() }
-                        ?: throw ApiException(502, "missing_media_id", "client_" + UUID.randomUUID().toString().replace("-", ""), "附件上传结果异常")
-                    vm.message("附件已准备好，点击发送发布")
-                }
-            }
-        }
-    }
     Column(Modifier.fillMaxSize()) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { directory = true; vm.channelConnection(false) }) { Text("所有频道") }
+            Text(if (connected) "实时连接" else "定期同步", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
+            if (state.channels.find { it.code == state.channel }?.canManageAvatar == true) TextButton(onClick = { channelAvatar = !channelAvatar }) { Text("频道头像") }
+        }
+        if (channelAvatar) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            NativeAttachmentActions(!state.busy, "avatar|${scope.endpoint}|${scope.profileId}|${scope.channel}", onMedia = { uri, cleanup ->
+                vm.mutate("频道头像已更新", wait = true) { try {
+                    if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
+                    val image = withContext(Dispatchers.IO) { compressPhoto(context, uri, 64 * 1024, 256) }
+                    if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
+                    vm.api.upload("/api/messages/channels/${vm.api.encoded(scope.channel)}/avatar", image, "image/jpeg")
+                    channelAvatar = false
+                } finally { cleanup() } }
+            }, onError = vm::message, imagesOnly = true)
+            Text("选择或拍摄频道头像", style = MaterialTheme.typography.bodySmall)
+        }
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(state.channels, key = { it.code }) { channel -> FilterChip(selected = channel.code == state.channel, onClick = { vm.channel(channel.code) }, label = { Text(channel.name) }) } }
-        if(state.profile == null) { EmptyPanel("和楼里的朋友聊聊", "登录后可查看公共频道和自己的住宿楼频道。", Icons.Outlined.ChatBubbleOutline, "钉钉登录", login); return }
+        if (state.discussionMachine.isNotBlank()) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("仅看 ${state.machines.find { it.id == state.discussionMachine }?.name ?: "这台机器"} 的留言", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = { vm.channel(state.channel) }) { Text("查看全频道") }
+        }
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), reverseLayout = true) {
             if(state.messages.isEmpty()) item { Text("还没有消息，来打个招呼吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(state.messages, key = { it.id }) { message ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(Modifier.size(40.dp).combinedClickable(onClick = {}, onLongClick = { if(!state.busy && message.mentionRef.isNotBlank()) { mentions = mentions + message.mentionRef; input = (input + "@${message.nick} ").take(500) } }), shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Box(contentAlignment = Alignment.Center) { if(message.avatar.isNotBlank()) AsyncImage(ImageRequest.Builder(context).data(message.avatar).memoryCacheKey("avatar|${scope.endpoint}|${scope.profileId}|${message.avatar}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(), "${message.nick}的头像", Modifier.fillMaxSize()) else Text(message.nick.take(1)) } }
+                    Surface(Modifier.size(40.dp).combinedClickable(onClick = {}, onLongClick = { if(!state.busy && message.mentionRef.isNotBlank()) { mentions = mentions + message.mentionRef; input = (input + "@${message.nick} ").take(200) } }), shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Box(contentAlignment = Alignment.Center) { if(message.avatar.isNotBlank()) AsyncImage(ImageRequest.Builder(context).data(message.avatar).memoryCacheKey("avatar|${scope.endpoint}|${scope.profileId}|${message.avatar}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(), "${message.nick}的头像", Modifier.fillMaxSize()) else Text(message.nick.take(1)) } }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { Text(message.nick, style = MaterialTheme.typography.labelLarge); if(message.building.isNotBlank()) Text(message.building, style = MaterialTheme.typography.labelSmall); if(message.role.isNotBlank() && message.role != "用户") SuggestionChip(onClick = {}, label = { Text(message.role) }, modifier = Modifier.height(22.dp)) }
                         Surface(Modifier.combinedClickable(onClick = { if(message.mediaId.isNotBlank()) media = message }, onLongClick = { menu = message }), shape = RoundedCornerShape(18.dp), color = if(message.mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if(message.pinned) Text("置顶", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                                if(message.announcement) Text("频道公告", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
                                 if(message.mentioned) Text("有人 @ 你", color = androidx.compose.ui.graphics.Color(0xFFD87717), style = MaterialTheme.typography.labelMedium)
                                 if(message.reply.isNotBlank()) Text(message.reply, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if(message.text.isNotBlank()) Text(message.text)
@@ -94,21 +125,40 @@ import java.util.UUID
                     }
                 }
             }
+            if (state.messagesHasMore) item { TextButton(onClick = { vm.moreMessages() }, enabled = !state.busy) { Text("加载更早的消息") } }
         }
+        if (state.messageNotices.any { it.str("channel") == state.channel && it.str("readAt").isBlank() }) TextButton(onClick = { vm.readChannelNotices() }, enabled = !state.busy) { Text("有人 @ 你 · 标为已读", color = androidx.compose.ui.graphics.Color(0xFFD87717)) }
+        if (state.channels.find { it.code == state.channel }?.canAnnounce == true) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(announcement, { announcement = it }, enabled = !state.busy); Text("作为频道公告发送", style = MaterialTheme.typography.bodySmall) }
         if(reply != null || attached != null) Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) { Text(if(attached != null) "已添加附件" else "回复 ${reply?.nick}：${reply?.text?.take(20)}", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall); IconButton(onClick = { reply = null; attached = null }) { Icon(Icons.Outlined.Close, "取消引用或附件") } }
         Surface(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 8.dp), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
             Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { pickerTarget = scope to draft; photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }, enabled = !state.busy && pickerTarget == null) { Icon(Icons.Outlined.Add, "发送图片或30秒内视频") }
-                TextField(input, { input = it.take(500) }, enabled = !state.busy, placeholder = { Text("聊点什么 · 长按头像 @") }, modifier = Modifier.weight(1f), maxLines = 4, shape = RoundedCornerShape(24.dp), colors = TextFieldDefaults.colors(focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent, unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
+                NativeAttachmentActions(!state.busy, "${scope.endpoint}|${scope.profileId}|${scope.channel}|${scope.machineId}", onMedia = { uri, cleanup ->
+                    val target = scope
+                    val sentDraft = draft
+                    vm.mutate(null, wait = true) {
+                        try {
+                            if (!target.matches(vm.state.value) || sentDraft !== currentDraft) throw CancellationException("Chat changed")
+                            val pair = withContext(Dispatchers.IO) { prepareMedia(context, uri) }
+                            if (!target.matches(vm.state.value) || sentDraft !== currentDraft) throw CancellationException("Chat changed")
+                            val result = vm.api.upload("/api/messages/media?channel=${vm.api.encoded(target.channel)}", pair.first, pair.second)
+                            if (target.matches(vm.state.value) && sentDraft === currentDraft) {
+                                attached = result.optJSONObject("media")?.str("id")?.takeIf { it.isNotBlank() }
+                                    ?: throw ApiException(502, "missing_media_id", "client_" + UUID.randomUUID().toString().replace("-", ""), "附件上传结果异常")
+                                vm.message("附件已准备好，点击发送发布")
+                            }
+                        } finally { cleanup() }
+                    }
+                }, onError = vm::message)
+                TextField(input, { input = it.take(200) }, enabled = !state.busy, placeholder = { Text("聊点什么 · 长按头像 @") }, modifier = Modifier.weight(1f), maxLines = 4, shape = RoundedCornerShape(24.dp), colors = TextFieldDefaults.colors(focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent, unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
                 IconButton(onClick = {
-                    val text = input; val ref = reply?.id; val refs = mentions.toList(); val mentionAll = all; val mediaId = attached
+                    val text = input; val ref = reply?.id; val refs = mentions.toList(); val mentionAll = all; val mediaId = attached; val asAnnouncement = announcement
                     val sentDraft = draft
                     vm.mutate(null) {
                         if (!scope.matches(vm.state.value) || sentDraft !== currentDraft) throw CancellationException("Chat changed")
-                        vm.api.call("/api/messages", "POST", JSONObject().put("channel", scope.channel).put("text", text).put("replyTo", ref).put("mentions", org.json.JSONArray(refs)).put("mentionAll", mentionAll).put("mediaId", mediaId))
+                        vm.api.call("/api/messages", "POST", JSONObject().put("channel", scope.channel).put("text", text).put("replyTo", ref).put("mentions", org.json.JSONArray(refs)).put("mentionAll", mentionAll).put("mediaId", mediaId).put("type", if (asAnnouncement) "announcement" else "message").also { if (scope.machineId.isNotBlank()) it.put("machineId", scope.machineId) })
                         // Keep the draft after a failed request or if another conversation replaced it.
                         if (scope.matches(vm.state.value) && sentDraft === currentDraft && input == text && reply?.id == ref &&
-                            mentions == refs.toSet() && all == mentionAll && attached == mediaId) {
+                            mentions == refs.toSet() && all == mentionAll && attached == mediaId && announcement == asAnnouncement) {
                             input = ""; reply = null; mentions = emptySet(); all = false; attached = null
                         }
                     }
@@ -118,20 +168,25 @@ import java.util.UUID
     }
     menu?.let { message -> AlertDialog(onDismissRequest = { menu = null }, title = { Text("消息操作") }, text = { Column {
         TextButton(onClick = { reply = message; menu = null }, enabled = !state.busy) { Text("回复") }
-        TextButton(onClick = { vm.report(message); menu = null }, enabled = !state.busy) { Text("举报") }
+        TextButton(onClick = { vm.mutate("举报已提交管理员") {
+            if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
+            vm.api.call("/api/messages/${vm.api.encoded(message.id)}/report","POST",JSONObject().put("reason","other").put("detail","用户通过原生客户端举报"))
+        }; menu = null }, enabled = !state.busy) { Text("举报") }
         if(state.channels.find { it.code == state.channel }?.mentionAll == true) {
-            TextButton(onClick = { all = true; input = (input + "@全体成员 ").take(500); menu = null }, enabled = !state.busy) { Text("@ 全体成员") }
-            TextButton(onClick = { vm.mutate { vm.api.call("/api/messages/${vm.api.encoded(message.id)}/pin", "POST", JSONObject().put("pinned", !message.pinned)) }; menu = null }, enabled = !state.busy) { Text(if(message.pinned) "取消置顶" else "置顶消息") }
+            TextButton(onClick = { all = true; input = (input + "@全体成员 ").take(200); menu = null }, enabled = !state.busy) { Text("@ 全体成员") }
         }
-        if(message.mine) TextButton(onClick = { vm.mutate { vm.api.call("/api/messages/${vm.api.encoded(message.id)}", "DELETE") }; menu = null }, enabled = !state.busy) { Text("删除消息") }
+        if(message.canPin) {
+            TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}/pin", "POST", JSONObject().put("pinned", !message.pinned)) }; menu = null }, enabled = !state.busy) { Text(if(message.pinned) "取消置顶" else "置顶消息") }
+        }
+        if(message.canDelete) TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}", "DELETE") }; menu = null }, enabled = !state.busy) { Text("删除消息") }
     } }, confirmButton = { TextButton(onClick = { menu = null }) { Text("取消") } }) }
     media?.let { message -> key(scope.endpoint, scope.profileId, message.mediaId) { MediaDialog(message, scope, vm) { media = null } } }
 }
 
-private data class ChatScope(val endpoint: String, val profileId: String?, val channel: String) {
-    fun matches(state: AppState) = profileId != null && endpoint == state.endpoint && profileId == state.profile?.id && channel == state.channel
+private data class ChatScope(val endpoint: String, val profileId: String?, val channel: String, val machineId: String = "") {
+    fun matches(state: AppState) = profileId != null && endpoint == state.endpoint && profileId == state.profile?.id && channel == state.channel && machineId == state.discussionMachine
 }
-private fun prepareMedia(context: android.content.Context, uri: Uri): Pair<ByteArray, String> {
+internal fun prepareMedia(context: android.content.Context, uri: Uri): Pair<ByteArray, String> {
     try { return decodeMedia(context, uri) }
     catch(problem: Exception) {
         if(problem is CancellationException || problem is ApiException) throw problem
@@ -147,7 +202,14 @@ private fun decodeMedia(context: android.content.Context, uri: Uri): Pair<ByteAr
         context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, options) }
         require(options.outWidth > 0 && options.outHeight > 0) { "无法读取图片" }
         var sample = 1; while(options.outWidth / sample > 1600 || options.outHeight / sample > 1600) sample *= 2
-        val bitmap = context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: error("无法读取图片")
+        var bitmap = context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: error("无法读取图片")
+        val orientation = runCatching { context.contentResolver.openInputStream(uri).use { android.media.ExifInterface(requireNotNull(it)).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION, 1) } }.getOrDefault(1)
+        val matrix = android.graphics.Matrix().apply { when (orientation) {
+            2 -> setScale(-1f, 1f); 3 -> setRotate(180f); 4 -> setScale(1f, -1f)
+            5 -> { setRotate(90f); postScale(-1f, 1f) }; 6 -> setRotate(90f)
+            7 -> { setRotate(270f); postScale(-1f, 1f) }; 8 -> setRotate(270f)
+        } }
+        if (orientation in 2..8) { val oriented = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true); if (oriented !== bitmap) bitmap.recycle(); bitmap = oriented }
         val output = ByteArrayOutputStream(); var quality = 85
         do { output.reset(); bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output); quality -= 10 } while(output.size() > 490_000 && quality > 20)
         bitmap.recycle(); require(output.size() <= 500_000) { "图片过大，请裁剪后重试" }; return output.toByteArray() to "image/jpeg"
@@ -177,7 +239,7 @@ private fun decodeMedia(context: android.content.Context, uri: Uri): Pair<ByteAr
         try {
             if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
             val downloaded = vm.api.downloadMedia(message.mediaId, if(message.mediaKind == "video") 8L * 1024 * 1024 else 1024L * 1024)
-            if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
+            if (!scope.matches(vm.state.value)) { downloaded.delete(); throw CancellationException("Chat changed") }
             file = downloaded
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) { error = if(problem is ApiException) problem.message else failure }

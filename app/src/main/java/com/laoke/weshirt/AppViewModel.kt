@@ -55,7 +55,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             generation.incrementAndGet()
             platform.clearLocal()
             coil.Coil.imageLoader(app).memoryCache?.clear()
-            _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), social = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = false) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = false) }
         }
         platform.initialize()
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
@@ -108,6 +108,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val buildings = site.optJSONArray("buildings")?.objects().orEmpty().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
             val signedIn = session.read() != null
             val profile = if(signedIn) Profile.parse(metadata("/api/auth/me").optJSONObject("user") ?: JSONObject()) else null
+            // Permission revocation takes effect on the next refresh; never reuse metadata cache here.
+            val access = if(signedIn) api.call("/api/user/permissions") else JSONObject()
             val building = profile?.building?.takeIf { b -> buildings.any { it.code == b } } ?: _state.value.building.takeIf { b -> buildings.any { it.code == b } }.orEmpty()
             val result = coroutineScope {
                 val board = async { if (building.isNotBlank()) api.call("/api/machines?dorm=${api.encoded(building)}", auth = false) else JSONObject() }
@@ -117,7 +119,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
             if(version != generation.get()) return@launch
             val occupancy = if(building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") else null
-            val machines = result.first.optJSONObject("board")?.optJSONArray("floors")?.objects().orEmpty().flatMap { it.optJSONArray("machines")?.objects().orEmpty() }.map(Machine::parse).map { machine ->
+            val machines = result.first.optJSONObject("board")?.optJSONArray("floors")?.objects().orEmpty().flatMap { floor ->
+                floor.optJSONArray("machines")?.objects().orEmpty().map { value ->
+                    Machine.parse(value).let { machine -> machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") }, floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }) }
+                }
+            }.map { machine ->
                 val o = occupancy?.optJSONObject(machine.id); val care = o?.optJSONObject("care")
                 machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = machine.suspectedUncollected || o?.optBoolean("suspectedUncollected") == true)
             }
@@ -126,8 +132,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val announcementPrefs = if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true))
             val favs = result.third.optJSONArray("favorites") ?: JSONArray()
             if(version != generation.get()) return@launch
-            _state.update { it.copy(buildings = buildings, building = building, profile = profile, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
-            if(_state.value.tab == 2) loadChannelsNow(version)
+            _state.update { it.copy(buildings = buildings, building = building, profile = profile, access = access, machines = machines, tasks = tasks, queues = queues, announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), updatedAt = epoch(result.first.optJSONObject("board")?.str("updatedAt").orEmpty()), favoriteRemindersOn = result.third.optBoolean("enabled"), reminderStart = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = result.third.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
+            if(signedIn) loadNoticesNow(version)
+            if(_state.value.tab == 2 && signedIn) loadChannelsNow(version)
             if(_state.value.tab == 1 && signedIn) loadSocialNow(version)
             if (version == generation.get()) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
@@ -205,19 +212,56 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     fun saveReminders(enabled: Boolean, start: String, end: String) = mutate { api.call("/api/user/laundry-preferences", "PATCH", JSONObject().put("enabled", enabled).put("favorites", JSONArray(_state.value.favorites.toList())).put("timeWindows", JSONArray().put(JSONObject().put("start", start).put("end", end).put("days", JSONArray(listOf(1,2,3,4,5,6,7)))))) }
-    fun channel(code: String) { _state.update { it.copy(channel = code, messages = emptyList()) }; viewModelScope.launch { try { loadMessagesNow(generation.get()) } catch(e: Exception) { message(e.message.orEmpty()) } } }
+    fun channel(code: String, machineId: String? = null) { _state.update { it.copy(channel = code, discussionMachine = machineId.orEmpty(), messages = emptyList(), messagesPage = 1, messagesHasMore = false) }; refreshMessages() }
+    private val messagesLock = Mutex()
+    private var messagesPending = false
+    fun channelConnection(connected: Boolean) { _state.update { it.copy(channelConnected = connected) } }
+    fun receiveShare(raw: String) {
+        val share = parseIncomingShare(raw, _state.value.endpoint)
+        if (share == null) message("邀请链接无效或来自其他服务，请在对应服务中打开")
+        else _state.update { it.copy(pendingShare = share) }
+    }
+    fun dismissShare() { _state.update { it.copy(pendingShare = null) } }
+    fun refreshMessages(): kotlinx.coroutines.Job = viewModelScope.launch {
+        if (!messagesLock.tryLock()) { messagesPending = true; return@launch }
+        try { val version = generation.get(); loadMessagesNow(version); loadNoticesNow(version) }
+        catch(cancel: CancellationException) { throw cancel }
+        catch(problem: Exception) { message(problem.message.orEmpty()) }
+        finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
+    }
+    fun moreMessages() = viewModelScope.launch {
+        if (!messagesLock.tryLock()) return@launch
+        try { if (_state.value.messagesHasMore) loadMessagesNow(generation.get(), _state.value.messagesPage + 1) }
+        catch(cancel: CancellationException) { throw cancel }
+        catch(problem: Exception) { message(problem.message.orEmpty()) }
+        finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
+    }
+    private suspend fun loadNoticesNow(version: Int) {
+        val (notices, queueNotices) = coroutineScope {
+            val messages = async { api.call("/api/messages/notices").optJSONArray("notices")?.objects().orEmpty() }
+            val queue = async { api.call("/api/queue/notices").optJSONArray("notices")?.objects().orEmpty().take(30) }
+            messages.await() to queue.await()
+        }
+        if (version == generation.get()) _state.update { it.copy(messageNotices = notices, queueNotices = queueNotices) }
+    }
+    fun readChannelNotices() = mutate(null) {
+        val selected = _state.value.channel
+        api.call("/api/messages/notices/read", "POST", JSONObject().put("channel", selected))
+    }
     private suspend fun loadChannelsNow(version: Int) {
         val j = api.call("/api/messages/channels")
-        val channels = j.optJSONArray("channels")?.objects().orEmpty().map { Channel(it.str("code"), it.str("name"), it.str("avatarData"), it.optJSONObject("permissions")?.optBoolean("canMentionAll") == true) }
+        val channels = j.optJSONArray("channels")?.objects().orEmpty().map { Channel(it.str("code"), it.str("name"), it.str("avatarData"), it.optJSONObject("permissions")?.optBoolean("canMentionAll") == true, it.optJSONObject("permissions")?.optBoolean("canAnnounce") == true, it.optJSONObject("permissions")?.optBoolean("canManageAvatar") == true) }
         if(version != generation.get()) return
         _state.update { it.copy(channels = channels, channel = it.channel.takeIf { c -> channels.any { ch -> ch.code == c } } ?: "public") }
         loadMessagesNow(version)
     }
-    private suspend fun loadMessagesNow(version: Int) {
+    private suspend fun loadMessagesNow(version: Int, page: Int = 1) {
         val channel = _state.value.channel
-        val j = api.call("/api/messages?channel=${api.encoded(channel)}&limit=50")
+        val machineId = _state.value.discussionMachine
+        val filter = if (machineId.isNotBlank()) "&machineId=${api.encoded(machineId)}" else ""
+        val j = api.call("/api/messages?channel=${api.encoded(channel)}&limit=50&page=$page$filter")
         val rows = j.optJSONArray("messages")?.objects().orEmpty().map(Message::parse)
-        if(version == generation.get() && channel == _state.value.channel) _state.update { it.copy(messages = rows) }
+        if(version == generation.get() && channel == _state.value.channel && machineId == _state.value.discussionMachine) _state.update { it.copy(messages = (if(page == 1) rows else it.messages + rows).distinctBy { m -> m.id }, messagesPage = page, messagesHasMore = j.optJSONObject("pagination")?.optBoolean("hasMore") == true) }
     }
     fun sendMessage(text: String, reply: String?, mentions: List<String>, all: Boolean) = mutate(null) {
         api.call("/api/messages", "POST", JSONObject().put("channel", _state.value.channel).put("text", text).put("replyTo", reply).put("mentions", JSONArray(mentions)).put("mentionAll", all)); loadMessagesNow(generation.get())
@@ -240,7 +284,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), messages = emptyList(), favorites = emptySet(), notificationsOn = false) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = false) }
         }
     }
 }

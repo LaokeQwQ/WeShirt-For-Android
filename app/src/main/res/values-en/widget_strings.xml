@@ -1,0 +1,30 @@
+<resources>
+    <string name="widget_name">WeShirt · Laundry</string>
+    <string name="widget_description">Building availability and your laundry</string>
+    <string name="widget_brand">WeShirt</string>
+    <string name="widget_current_building">Your building</string>
+    <string name="widget_building_overview">Machines</string>
+    <string name="widget_my_laundry">My laundry</string>
+    <string name="widget_idle_label">available</string>
+    <string name="widget_idle_accessibility">%1$d machines available</string>
+    <string name="widget_counts">Busy %1$d · Unknown %2$d</string>
+    <string name="widget_counts_all">Available %1$d · Busy %2$d · Unknown %3$d</string>
+    <string name="widget_usage_label">Busy</string>
+    <string name="widget_unknown_label">Unknown</string>
+    <string name="widget_sign_in">Sign in to view</string>
+    <string name="widget_sign_in_detail">Sign in and select your building</string>
+    <string name="widget_last_sync">Synced at %1$s</string>
+    <string name="widget_old_data">Past data · synced at %1$s</string>
+    <string name="widget_time_unknown">Sync time unknown · open to refresh</string>
+    <string name="widget_open_refresh">Open app to refresh</string>
+    <string name="widget_expected_at">Expected at %1$s</string>
+    <string name="widget_expected_label">Estimated finish</string>
+    <string name="widget_expected_disclaimer">An estimate; check device status</string>
+    <string name="widget_awaiting">Estimate reached; awaiting confirmation</string>
+    <string name="widget_unverified">Open to check your task</string>
+    <string name="widget_no_task">No laundry in progress</string>
+    <string name="widget_stale_hint">Status may have changed · open to refresh</string>
+    <string name="widget_board_accessibility">%1$s, %2$s. %3$s. Open building machines</string>
+    <string name="widget_task_accessibility">%1$s. %2$s. Open my laundry</string>
+    <string name="widget_current_time">Current time</string>
+</resources>

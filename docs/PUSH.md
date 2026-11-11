@@ -4,6 +4,10 @@
 
 客户端仅使用 FCM 和基础 U-Push，每个 installation 仅绑定一个主通道。`PushRouter` 在 Google 模式选择 FCM，在 U-Push 模式选择友盟基础通道，自动模式根据可用的 Google Play 服务与已配置通道选择。不会同时给同一安装实例登记 FCM 和 U-Push，也不按设备所在地判断路由。
 
+自动模式优先 FCM。没有 Play 服务、初始化失败、取 token 失败或 30 秒未取得 token 时，回退基础 U-Push；失败记录保留六小时，避免每次打开都重复等待。切换通道时使旧回调失效并注销旧登记，不重复投递。此判断检验客户端注册能力，不把取得 token 当作真机送达证明。
+
+登录后以一次说明主动引导系统通知授权；开启提醒后再提供一次省电白名单说明，由用户点击后进入系统授权。拒绝后不反复弹窗，设置仍可手动打开。后台限制和基础 U-Push 的实际到达时间由设备系统及网络决定。
+
 FCM 使用 `FirebaseMessagingService.onNewToken/onMessageReceived`；友盟使用 `UPushRegisterCallback/UPushMessageHandler`。SDK 不可用或配置缺失会显示 `NO_CONFIGURED_PROVIDER` 等状态，收到 token 后仍须后端登记成功才能显示 `REGISTERED`。没有发送凭据时不展示“已送达”。基础 U-Push 不等同于设备厂商的离线推送，后台或进程被回收后的实际接收情况仍需真机验证。
 
 客户端配置通过 `PushConfiguration` 注入，默认没有凭据、没有同意状态。`initialize` 只能在读取隐私选择后调用；没有同意时不初始化第三方 SDK。FCM 的默认 Provider 自动初始化及 Messaging auto-init 在 Manifest 中关闭，配置齐全后才手动初始化。友盟关闭应用列表与电话标识采集、SDK 日志、拉活、额外心跳、前台常驻服务，业务不启动保活服务。
@@ -56,7 +60,7 @@ kind 支持 `QUEUE_THREE_MINUTES`、`ESTIMATED_END`、`TASK_FINISHED`、`CHAT_ME
 
 Android 13+ 在用户明确开启通知时申请 `POST_NOTIFICATIONS`。拒绝权限不影响查询与登记功能。用户还可在系统设置中独立禁用消息频道。
 
-`LaundryReminders.schedule` 按当前剩余时间安排结束前 3 分钟与预计结束提醒。任务修订会替换旧工作，取消、取衣、服务端确认结束或退出登录会撤销工作。使用 WorkManager，不申请精确闹钟或后台保活；省电与系统调度可能延后本地提醒，文案明确为预计。服务端设备确认后的消息才称“已结束”。
+`LaundryReminders.schedule` 按当前剩余时间安排提醒：本人任务遵循设置中的提前 0/3/5/10 分钟（0 关闭提前提醒），排队固定提前 3 分钟，预计结束提醒另行保留。修改提前时间只替换提前任务，关闭时取消旧任务，已送达的阶段不会重复发送。任务修订会替换旧工作，取消、取衣、服务端确认结束或退出登录会撤销工作。使用 WorkManager，不申请精确闹钟或后台保活；省电与系统调度可能延后本地提醒，文案明确为预计。服务端设备确认后的消息才称“已结束”。
 
 `LaundryNotifications.updateProgress` 提供原生进度通知及系统 Chronometer 倒计时，没有逐秒联网轮询。Android 16/API 36+ 会在用户主动跟踪本次任务、任务仍在进行且 `canPostPromotedNotifications()` 返回允许时请求 Live Update。是否实际晋升由系统决定。用户划掉后不会持续重弹同一任务。
 

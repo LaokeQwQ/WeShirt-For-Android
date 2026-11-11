@@ -8,9 +8,12 @@ data class RoomMachine(
     val state: RoomMachineState,
     val finishAt: Long? = null,
     val kind: String = "washer",
+    val queueCount: Int = 0,
 )
 
-enum class RoomMachineState { IDLE, RUNNING, FINISHING, AWAITING_PICKUP, FAULT, UNKNOWN }
+enum class RoomFacility { BOILER, WASHER_NOTICE, DRYER_NOTICE }
+
+enum class RoomMachineState { IDLE, RUNNING, FINISHING, REVIEW, AWAITING_PICKUP, FAULT, UNKNOWN }
 
 enum class PerformanceMode { AUTO, BATTERY, SMOOTH, HIGH }
 

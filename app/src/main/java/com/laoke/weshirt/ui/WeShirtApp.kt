@@ -32,25 +32,39 @@ import com.laoke.weshirt.data.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@Composable fun WeShirtApp(vm: AppViewModel, onLogin: () -> Unit, onRequestNotifications: () -> Unit) {
+@Composable fun WeShirtApp(vm: AppViewModel, onLogin: () -> Unit, onRequestNotifications: () -> Unit, onRequestBackground: () -> Unit = {}) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val latest by rememberUpdatedState(state)
     WeShirtTheme(state.appearance, state.palette) {
         val snackbar = remember { SnackbarHostState() }
         val lifecycle = LocalLifecycleOwner.current
         var configure by remember { mutableStateOf(false) }
         var buildingPicker by remember { mutableStateOf(false) }
         var selected by remember { mutableStateOf<Machine?>(null) }
+        var backgroundSettings by remember { mutableStateOf(false) }
+        var display by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
+        var queueInbox by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
+        val seenQueueNotices = remember(state.endpoint, state.profile?.id) { mutableSetOf<String>() }
         LaunchedEffect(state.endpoint, state.profile?.id, state.building) { selected = null }
-        LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh(); delay(45_000) } } }
+        LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh(); delay(if (latest.tab == 2 && latest.channelConnected) 120_000 else 45_000) } } }
         LaunchedEffect(state.error, state.info) { (state.error ?: state.info)?.let { snackbar.showSnackbar(it, withDismissAction = true); vm.clearFeedback() } }
+        LaunchedEffect(state.endpoint, state.profile?.id, state.queueNotices) {
+            val fresh = state.queueNotices.filter { it.optBoolean("active") && it.str("readAt").isBlank() && it.str("id") !in seenQueueNotices }
+            fresh.forEach { seenQueueNotices.add(it.str("id")) }
+            if (state.profile?.notifyOn != false && fresh.isNotEmpty() && !display) {
+                val newest = fresh.first()
+                if (snackbar.showSnackbar(newest.str("title", "预约提醒") + " · " + newest.str("machineName"), "查看", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) queueInbox = true
+            }
+        }
         Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
             TopAppBar(title = { Column { Text(if(state.tab == 0) "WeShirt" else listOf("洗衣房", "我的洗衣", "频道", "我的")[state.tab], style = MaterialTheme.typography.titleLarge); if(state.tab == 0) Text("把等衣的时间，留给生活", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
                 if(state.tab == 0) FilledTonalButton(onClick = { buildingPicker = true }, contentPadding = PaddingValues(horizontal = 12.dp)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(state.buildings.find { it.code == state.building }?.name ?: "选择楼栋") }
+                if (state.tab == 0) IconButton(onClick = { display = true }, enabled = state.building.isNotBlank()) { Icon(Icons.Outlined.Fullscreen, "大屏看板") }
                 IconButton(onClick = { vm.refresh(forceMetadata = true) }, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "刷新") }
             })
         }, bottomBar = {
             NavigationBar { listOf(Triple("洗衣房", Icons.Outlined.LocalLaundryService, 0), Triple("我的洗衣", Icons.Outlined.Schedule, 1), Triple("频道", Icons.Outlined.ChatBubbleOutline, 2), Triple("我的", Icons.Outlined.PersonOutline, 3)).forEach { (label, icon, index) ->
-                NavigationBarItem(selected = state.tab == index, onClick = { vm.tab(index) }, icon = { BadgedBox(badge = { if(index == 2 && state.messages.any { it.mentioned }) Badge { Text("@") } }) { Icon(icon, label) } }, label = { Text(label) })
+                NavigationBarItem(selected = state.tab == index, onClick = { vm.tab(index) }, icon = { BadgedBox(badge = { if(index == 2 && state.messageNotices.any { it.str("readAt").isBlank() }) Badge(containerColor = androidx.compose.ui.graphics.Color(0xFFD87717)) { Text("@") }; if (index == 1 && state.queueNotices.any { it.optBoolean("active") && it.str("readAt").isBlank() }) Badge { Text("!") } }) { Icon(icon, label) } }, label = { Text(label) })
             } }
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
@@ -61,7 +75,7 @@ import kotlinx.coroutines.launch
                         0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message, allow3D = state.building.equals("guiyuan", ignoreCase = true))
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
-                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { configure = true }, { buildingPicker = true })
+                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { configure = true }, { buildingPicker = true }, { backgroundSettings = true })
                     }
                 }
             }
@@ -74,6 +88,15 @@ import kotlinx.coroutines.launch
             }
         }, confirmButton = { TextButton(onClick = { buildingPicker = false }) { Text("返回") } })
         selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
+        if (state.announcements.isEmpty()) ReminderPermissionGuidance(state, backgroundSettings, { backgroundSettings = false }, onRequestNotifications, onRequestBackground)
+        OverdueCollectionPrompt(state, vm, enabled = !display && selected == null && state.pendingShare == null && !configure && !buildingPicker && !backgroundSettings && !queueInbox)
+        if (display) DisplayScreen(state) { display = false }
+        if (queueInbox && state.profile != null) com.laoke.weshirt.ui.social.QueueNoticeDialog(state, vm) { queueInbox = false }
+        state.pendingShare?.takeIf { it.origin == state.endpoint }?.let { share ->
+            if (state.profile == null) AlertDialog(onDismissRequest = vm::dismissShare, title = { Text(if (share.kind == "skill") "导入洗衣助手 Skill" else "朋友邀请") }, text = { Text("登录当前服务后可以查看邀请；确认后才会添加。") }, confirmButton = { TextButton(onClick = onLogin, enabled = !state.busy) { Text("钉钉登录") } }, dismissButton = { TextButton(onClick = vm::dismissShare) { Text("取消") } })
+            else if (share.kind == "skill") com.laoke.weshirt.ui.assistant.AssistantDialog(state, vm, initialSkill = share.ticket, close = vm::dismissShare)
+            else com.laoke.weshirt.ui.social.SocialDialog(state, vm, close = vm::dismissShare, initialInvite = share.ticket)
+        }
         state.announcements.firstOrNull()?.let { announcement -> AlertDialog(onDismissRequest = { vm.dismissAnnouncement(false) }, title = { Text(announcement.str("title", "公告")) }, text = { LazyColumn { item { NativeMarkdown(announcement.str("markdown", announcement.str("content"))) } } }, dismissButton = { TextButton(onClick = { vm.dismissAnnouncement(false) }, enabled = !state.busy) { Text("退出") } }, confirmButton = { TextButton(onClick = { vm.dismissAnnouncement(true) }, enabled = !state.busy) { Text("不再提醒并退出") } }) }
     }
 }
@@ -92,7 +115,25 @@ import kotlinx.coroutines.launch
     val context = LocalContext.current
     val color = MaterialTheme.colorScheme.onSurface
     val markwon = remember(context) { io.noties.markwon.Markwon.builder(context).usePlugin(io.noties.markwon.ext.tables.TablePlugin.create(context)).usePlugin(io.noties.markwon.ext.strikethrough.StrikethroughPlugin.create()).usePlugin(object : io.noties.markwon.AbstractMarkwonPlugin() {
-        override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) { builder.linkResolver { view, link -> if(Uri.parse(link).scheme == "https") context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) } }
+        override fun configureConfiguration(builder: io.noties.markwon.MarkwonConfiguration.Builder) { builder.linkResolver { _, link -> if(Uri.parse(link).scheme == "https") runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) }; Unit } }
     }).build() }
-    androidx.compose.ui.viewinterop.AndroidView(factory = { android.widget.TextView(it).apply { textSize = 16f; setLineSpacing(6f, 1.1f) } }, update = { view -> view.setTextColor(android.graphics.Color.argb(255, (color.red*255).toInt(), (color.green*255).toInt(), (color.blue*255).toInt())); markwon.setMarkdown(view, text) })
+    val parsed = remember(text, markwon) { markwon.parse(text) }
+    val images = remember(parsed) {
+        val found = mutableListOf<String>()
+        val nodes = java.util.ArrayDeque<org.commonmark.node.Node>().apply { add(parsed) }
+        while (nodes.isNotEmpty() && found.size < 12) {
+            val node = nodes.removeFirst()
+            if (node is org.commonmark.node.Image) {
+                val uri = runCatching { java.net.URI(node.destination) }.getOrNull()
+                if (uri?.scheme == "https" && uri.userInfo == null && !uri.host.isNullOrBlank() && node.destination.length <= 2000) found.add(node.destination)
+            }
+            var child = node.firstChild
+            while (child != null) { nodes.addLast(child); child = child.next }
+        }
+        found.distinct()
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        androidx.compose.ui.viewinterop.AndroidView(factory = { android.widget.TextView(it).apply { textSize = 16f; setLineSpacing(6f, 1.1f) } }, update = { view -> view.setTextColor(android.graphics.Color.argb(255, (color.red*255).toInt(), (color.green*255).toInt(), (color.blue*255).toInt())); markwon.setParsedMarkdown(view, markwon.render(parsed)) })
+        images.forEach { address -> coil.compose.AsyncImage(coil.request.ImageRequest.Builder(context).data(address).size(1200).build(), "Markdown 图片", Modifier.fillMaxWidth().heightIn(max = 420.dp)) }
+    }
 }

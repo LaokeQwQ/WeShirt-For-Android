@@ -95,7 +95,7 @@ internal fun MachineCommentsDialog(machine: Machine, state: AppState, vm: AppVie
                     supportingText = { Text("${input.length}/200 · 请勿填写手机号等个人信息") }, maxLines = 3, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                     TextButton(onClick = { page = 1; refreshKey++ }, enabled = !loading && !sending) { Text("刷新留言") }
-                    TextButton(onClick = { vm.channel(scope.building); vm.tab(2); close() }, enabled = !sending) { Text("进入楼栋频道") }
+                    TextButton(onClick = { vm.channel(scope.building, machine.id); vm.tab(2); close() }, enabled = !sending) { Text("打开完整机器留言") }
                 }
             }
         },

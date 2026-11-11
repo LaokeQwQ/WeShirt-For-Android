@@ -1,170 +1,193 @@
 package com.laoke.weshirt.ui
 
-import android.content.Intent
-import android.graphics.Bitmap
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.google.zxing.BarcodeFormat
-import com.google.zxing.MultiFormatWriter
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
-import com.laoke.weshirt.AppViewModel
-import com.laoke.weshirt.data.*
-import org.json.JSONObject
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
+import com.laoke.weshirt.AppViewModel
+import com.laoke.weshirt.data.*
+import com.laoke.weshirt.ui.assistant.AssistantDialog
+import com.laoke.weshirt.ui.social.SocialDialog
+import com.laoke.weshirt.ui.social.QueueNoticeDialog
+import com.laoke.weshirt.ui.user.*
+import kotlinx.coroutines.delay
+import org.json.JSONObject
+
+private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
 
 @Composable fun LaundryScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
-    val account = state.endpoint to state.profile?.id
-    val screen = remember(account) { Any() }
-    val currentScreen by rememberUpdatedState(screen)
-    var invite by remember(account) { mutableStateOf<String?>(null) }
-    var assistant by remember(account) { mutableStateOf(false) }
-    var pickupFor by remember(account) { mutableStateOf<LaundryTask?>(null) }
-    var thread by remember(account) { mutableStateOf<JSONObject?>(null) }
-    val context = LocalContext.current
+    if (state.profile == null) {
+        EmptyPanel("你的洗衣，一目了然", "登录后查看登记、排队和好友代取。", Icons.Outlined.LocalLaundryService, "钉钉登录", login)
+        return
+    }
+    key(state.endpoint, state.profile.id) { SignedInLaundryScreen(state, vm) }
+}
+
+@Composable private fun SignedInLaundryScreen(state: AppState, vm: AppViewModel) {
+    val session = rememberUserFeatureSession(state, vm)
+    var social by remember { mutableStateOf(false) }
+    var assistant by remember { mutableStateOf(false) }
+    var inspections by remember { mutableStateOf(false) }
+    var queueNotices by remember { mutableStateOf(false) }
+    var pickupTaskId by remember { mutableStateOf<String?>(null) }
+    var picker by remember { mutableStateOf(false) }
+    var registerId by remember { mutableStateOf<String?>(null) }
+    var confirm by remember { mutableStateOf<TaskConfirmation?>(null) }
+    var history by rememberSaveable { mutableStateOf(false) }
+    var historyQuery by rememberSaveable { mutableStateOf("") }
+    var taskDetails by remember { mutableStateOf<Map<String, JSONObject>>(emptyMap()) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val owner = LocalLifecycleOwner.current
-    val now by produceState(System.currentTimeMillis(), owner) { owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { while(true) { value = System.currentTimeMillis(); delay(30_000) } } }
-    var scannerAccount by remember { mutableStateOf<Pair<String, String?>?>(null) }
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val target = scannerAccount
-        scannerAccount = null
-        result.contents?.let {
-            if(target == account && target?.second != null && target == (vm.state.value.endpoint to vm.state.value.profile?.id)) {
-                val ticket = runCatching { android.net.Uri.parse(it).getQueryParameter("ticket") }.getOrNull() ?: it
-                vm.acceptInvite(ticket)
-            }
-            else vm.message("账号已切换，请重新扫描朋友二维码")
+    val busy = session.busy || state.busy
+    val permissions = state.access.optJSONObject("permissions")
+    val tasksView = permissions?.optJSONObject("tasks")?.optBoolean("view", true) != false
+    val tasksOperate = permissions?.optJSONObject("tasks")?.optBoolean("operate", true) != false
+    val socialView = permissions?.optJSONObject("social")?.optBoolean("view", true) != false
+    val assistantView = permissions?.optJSONObject("assistant")?.optBoolean("view", true) != false
+    val role = state.access.optJSONObject("identity")?.str("role", state.profile?.role ?: "user") ?: state.profile?.role.orEmpty()
+    val inspectionView = permissions?.optJSONObject("inspections")?.optBoolean("view", role in setOf("super", "admin", "volunteer")) ?: (role in setOf("super", "admin", "volunteer"))
+    fun loadDetails() {
+        if (tasksView) session.run(silent = true) {
+            taskDetails = request("/api/tasks").optJSONArray("tasks")?.objects().orEmpty().associateBy { it.str("id") }
         }
     }
-    if(state.profile == null) { EmptyPanel("你的洗衣，一目了然", "登录后查看登记、排队和好友代取。", Icons.Outlined.LocalLaundryService, "钉钉登录", login); return }
+    LaunchedEffect(session, state.tasks) { loadDetails() }
+    LaunchedEffect(owner) { owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { while (true) { now = System.currentTimeMillis(); delay(30_000) } } }
+    val active = state.tasks.filterNot { it.done }
+    val done = state.tasks.filter { it.done }.sortedByDescending { it.startAt ?: 0 }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = { val requested = screen; vm.invite { if(requested === currentScreen) invite = it } }, enabled = !state.busy, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.QrCode2, null, Modifier.size(18.dp)); Text("添加朋友") }
-            FilledTonalButton(onClick = { assistant = true }, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(18.dp)); Text("洗衣助手") }
-        } }
-        item { Text("正在洗衣", style = MaterialTheme.typography.titleLarge) }
-        if(state.tasks.none { !it.done }) item { Text("还没有进行中的登记，去洗衣房选一台机器吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        items(state.tasks.filter { !it.done }, key = { it.id }) { task ->
-            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(task.name, style = MaterialTheme.typography.titleMedium)
-                val min = task.endAt?.let { ((it - now + 59999) / 60000).coerceAtLeast(0) }
-                Text(if(min == null) "等待设备更新时间" else if(min == 0L) "预计时间已到 · 请确认设备状态" else "预计剩余 $min 分钟", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.primary)
-                if(task.note.isNotBlank()) Text("公开备注：${task.note}")
-                Text(listOfNotNull("使用消毒液".takeIf { task.disinfectant }, "已自清洁".takeIf { task.selfCleaned }).joinToString(" · "), style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Button(onClick = { vm.take(task) }, enabled = !state.busy) { Text("我已取衣") }; OutlinedButton(onClick = { pickupFor = task }, enabled = !state.busy) { Text("请 TA 代取") } }
-            } }
-        }
-        if(state.queues.isNotEmpty()) item { Text("洗衣排队", style = MaterialTheme.typography.titleLarge) }
-        items(state.queues, key = { "queue." + it.str("id", it.str("machineId")) }) { q -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(q.str("machineName", "机器排队")); Text("预计开始：${q.str("estimatedStartAt", q.str("startAt", "以机器剩余时间为准"))}"); if(q.optBoolean("mine")) TextButton(onClick = { vm.cancelQueue(q.str("machineId")) }, enabled = !state.busy) { Text("取消排队") } } } }
-        item { Text("朋友与代取", style = MaterialTheme.typography.titleLarge) }
-        val friends = state.social.optJSONArray("friends")?.objects().orEmpty()
-        if(friends.isEmpty()) item { Text("扫描朋友的个人二维码绑定，代取请求会同步通知对方。") }
-        items(friends, key = { "friend." + it.str("id") }) { friend -> ListItem(headlineContent = { Text(friend.str("nick")) }, leadingContent = { Icon(Icons.Outlined.PersonOutline, null) }, supportingContent = { Text("已绑定的朋友") }) }
-        item { OutlinedButton(onClick = { scannerAccount = account; scanner.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt("扫描 WeShirt 个人二维码").setBeepEnabled(false).setOrientationLocked(false)) }, enabled = !state.busy && scannerAccount == null, modifier = Modifier.fillMaxWidth()) { Text("扫描个人二维码") } }
-        val received = state.social.optJSONArray("receivedPickups")?.objects().orEmpty()
-        items(received, key = { "pickup.received." + it.str("id") }) { request ->
-            val status = request.str("state")
-            val task = request.optJSONObject("task")
-            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${request.optJSONObject("peer")?.str("nick", "朋友")} 请你代取", style = MaterialTheme.typography.titleMedium)
-                Text(task?.str("machineName", "机器信息待更新").orEmpty())
-                val remaining = task?.str("endAt")?.let(::epoch)?.let { ((it - now + 59_999) / 60_000).coerceAtLeast(0) }
-                if(remaining != null) Text(if(remaining > 0) "预计剩余 $remaining 分钟" else "预计时间已到，请确认设备状态")
-                when(status) {
-                    "pending" -> Row {
-                        TextButton(onClick = { vm.respondPickup(request.str("id"), "accept") }, enabled = !state.busy && task?.optBoolean("unavailable") != true) { Text("接受") }
-                        TextButton(onClick = { vm.respondPickup(request.str("id"), "reject") }, enabled = !state.busy) { Text("暂不方便") }
-                    }
-                    "accepted" -> { Text("已接受代取"); TextButton(onClick = { vm.respondPickup(request.str("id"), "complete") }, enabled = !state.busy) { Text("确认已代取") } }
-                    "completed" -> Text("已完成代取")
-                    "rejected" -> Text("已婉拒")
-                    else -> Text("请求已更新，请刷新查看")
-                }
-            } }
-        }
-        val sent = state.social.optJSONArray("sentPickups")?.objects().orEmpty()
-        items(sent, key = { "pickup.sent." + it.str("id") }) { request ->
-            ListItem(headlineContent = { Text("请 ${request.optJSONObject("peer")?.str("nick", "朋友")} 代取") },
-                supportingContent = { Text(request.optJSONObject("task")?.str("machineName").orEmpty() + " · " + when(request.str("state")) { "pending" -> "等待接受"; "accepted" -> "对方已接受"; "completed" -> "已完成代取"; "rejected" -> "对方暂不方便"; else -> "状态已更新" }) })
-        }
-        val threads = state.social.optJSONArray("threads")?.objects().orEmpty()
-        if(threads.isNotEmpty()) item { Text("衣物联系", style = MaterialTheme.typography.titleLarge) }
-        items(threads, key = { "thread." + it.str("id") }) { t -> Card(onClick = { thread = t }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(t.optJSONObject("peer")?.str("nick").orEmpty()); Text(if(t.str("state") == "accepted") t.str("lastMessage", "双向聊天已开启") else t.str("requestText", "等待对方确认")) } } }
-        if(state.tasks.any { it.done }) item { Text("已完成", style = MaterialTheme.typography.titleLarge) }
-        items(state.tasks.filter { it.done }.take(10), key = { "done." + it.id }) { task -> ListItem(headlineContent = { Text(task.name) }, supportingContent = { Text("已确认取衣") }, leadingContent = { Icon(Icons.Outlined.CheckCircleOutline, null) }) }
-    }
-    if(pickupFor != null) AlertDialog(onDismissRequest = { pickupFor = null }, title = { Text("请哪位朋友帮忙？") }, text = { Column { val friends = state.social.optJSONArray("friends")?.objects().orEmpty(); if(friends.isEmpty()) Text("先扫描二维码添加朋友，再发送代取请求。"); friends.forEach { friend -> TextButton(onClick = { vm.pickup(friend.str("id"), pickupFor!!.id); pickupFor = null }, enabled = !state.busy) { Text(friend.str("nick")) } } } }, confirmButton = { TextButton(onClick = { pickupFor = null }) { Text("返回") } })
-    if(invite != null) AlertDialog(onDismissRequest = { invite = null }, title = { Text("让朋友扫一扫") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { val bitmap = remember(invite) { qr(invite!!) }; Image(bitmap.asImageBitmap(), "个人邀请二维码", Modifier.fillMaxWidth().aspectRatio(1f)); Text("二维码仅用于朋友邀请，不包含登录凭证。") } }, confirmButton = { TextButton(onClick = { context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, invite), "分享邀请")) }) { Text("分享") } }, dismissButton = { TextButton(onClick = { invite = null }) { Text("关闭") } })
-    if(assistant) key(account) { AssistantDialog(state, vm) { assistant = false } }
-    thread?.let { key(account, it.str("id")) { PrivateThreadDialog(it, state, vm) { thread = null } } }
-}
-private fun qr(text: String): Bitmap { val matrix = MultiFormatWriter().encode(text, BarcodeFormat.QR_CODE, 600,600); return Bitmap.createBitmap(600,600,Bitmap.Config.ARGB_8888).apply { val pixels = IntArray(360000) { i -> if(matrix[i % 600, i / 600]) android.graphics.Color.BLACK else android.graphics.Color.WHITE }; setPixels(pixels,0,600,0,0,600,600) } }
-@Composable private fun AssistantDialog(state: AppState, vm: AppViewModel, close: () -> Unit) {
-    var input by remember { mutableStateOf("") }; var reply by remember { mutableStateOf("可以询问当前楼栋空闲机器、洗衣建议或你的洗衣记录。") }
-    var active by remember { mutableStateOf(true) }
-    DisposableEffect(Unit) { onDispose { active = false } }
-    AlertDialog(onDismissRequest = close, title = { Text("洗衣助手") }, text = { Column(verticalArrangement = Arrangement.spacedBy(14.dp)) { Text(reply); OutlinedTextField(input, { input = it.take(1000) }, enabled = !state.busy, label = { Text("想问什么？") }, modifier = Modifier.fillMaxWidth()) } }, confirmButton = { TextButton(onClick = {
-        val submitted = input
-        vm.assistant(submitted) { response -> if(active) { reply = response; if(input == submitted) input = "" } }
-    }, enabled = !state.busy && input.isNotBlank()) { Text("发送") } }, dismissButton = { TextButton(onClick = close) { Text("关闭") } })
-}
-@Composable private fun PrivateThreadDialog(initial: JSONObject, state: AppState, vm: AppViewModel, close: () -> Unit) {
-    val account = state.endpoint to state.profile?.id
-    val id = initial.str("id")
-    var active by remember { mutableStateOf(true) }
-    var current by remember { mutableStateOf(initial) }; var text by remember { mutableStateOf("") }
-    fun stillCurrent() = active && account.first == vm.state.value.endpoint && account.second != null && account.second == vm.state.value.profile?.id
-    DisposableEffect(Unit) { onDispose { active = false } }
-    LaunchedEffect(id) {
-        try {
-            val value = vm.api.call("/api/social/threads/${vm.api.encoded(id)}").optJSONObject("thread") ?: initial
-            if(stillCurrent()) current = value
-        } catch(cancel: CancellationException) { throw cancel }
-        catch(problem: Exception) { if(stillCurrent()) vm.message(problem.message ?: "会话加载失败") }
-    }
-    AlertDialog(onDismissRequest = close, title = { Text(current.optJSONObject("peer")?.str("nick", "衣物联系") ?: "衣物联系") }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        if(current.str("state") != "accepted") Text(when(current.str("state")) { "rejected" -> "此联系请求已拒绝"; "blocked" -> "会话已屏蔽"; else -> current.str("requestText", "对方确认后开启完整聊天") })
-        else { current.optJSONArray("messages")?.objects()?.takeLast(10)?.forEach { Text((if(it.str("sender") == "me") "我：" else "对方：") + it.str("text")) }; OutlinedTextField(text, { text = it.take(500) }, enabled = !state.busy, label = { Text("消息") }) }
-    } }, confirmButton = { TextButton(onClick = {
-        val submitted = text
-        val accepted = current.str("state") == "accepted"
-        vm.mutate(null) {
-            if(!stillCurrent()) throw CancellationException("Account changed")
-            val result = if(accepted) vm.api.call("/api/social/threads/${vm.api.encoded(id)}/messages", "POST", JSONObject().put("text", submitted))
-                else vm.api.call("/api/social/threads/${vm.api.encoded(id)}/accept", "POST", JSONObject().put("action", "accept"))
-            if(stillCurrent()) {
-                if(text == submitted) text = ""
-                result.optJSONObject("thread")?.let { current = it }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (socialView) FilledTonalButton(onClick = { social = true }, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.PeopleOutline, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("朋友与代取") }
+                if (assistantView) FilledTonalButton(onClick = { assistant = true }, modifier = Modifier.weight(1f)) { Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("洗衣助手") }
             }
-            val updated = vm.api.call("/api/social/threads/${vm.api.encoded(id)}").optJSONObject("thread")
-            if(stillCurrent() && updated != null) current = updated
         }
-    }, enabled = !state.busy && (current.str("state") == "accepted" && text.isNotBlank() || current.str("state") == "pending" && current.optBoolean("incoming"))) { Text(if(current.str("state") == "accepted") "发送" else "同意聊天") } }, dismissButton = {
-        Row {
-            if(current.str("state") == "pending" && current.optBoolean("incoming")) TextButton(onClick = {
-                vm.mutate(null) {
-                    if(!stillCurrent()) throw CancellationException("Account changed")
-                    val result = vm.api.call("/api/social/threads/${vm.api.encoded(id)}/accept", "POST", JSONObject().put("action", "reject"))
-                    if(stillCurrent()) { result.optJSONObject("thread")?.let { current = it }; close() }
+        item { FeatureError(session) }
+        if (permissions?.optJSONObject("queue")?.optBoolean("view", true) != false) item {
+            OutlinedButton(onClick = { queueNotices = true }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.NotificationsNone, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("预约提醒收件箱") }
+        }
+        if (tasksView) {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("正在洗衣", style = MaterialTheme.typography.titleLarge)
+                    TextButton(onClick = { picker = true }, enabled = !busy && tasksOperate && state.machines.isNotEmpty()) { Text("登记洗衣") }
                 }
-            }, enabled = !state.busy) { Text("拒绝") }
-            TextButton(onClick = close) { Text("关闭") }
+            }
+            if (active.isEmpty()) item { Text("还没有进行中的登记，选一台机器开始吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            items(active, key = { it.id }) { task ->
+                val raw = taskDetails[task.id]
+                val finished = task.endAt?.let { it <= now } == true || raw?.str("takeState") == "pending"
+                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(task.name, style = MaterialTheme.typography.titleMedium)
+                    Text(laundryTimeLabel(task, now), style = MaterialTheme.typography.titleLarge, color = if (finished) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary)
+                    TaskDetailText(task, raw)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (finished) Button(onClick = { confirm = TaskConfirmation(task, false) }, enabled = !busy && tasksOperate) { Text("我已取衣") }
+                        if (socialView) OutlinedButton(onClick = { pickupTaskId = task.id }, enabled = !busy) { Text("请 TA 代取") }
+                    }
+                    TextButton(onClick = { confirm = TaskConfirmation(task, true) }, enabled = !busy && tasksOperate) { Text("删除登记", color = MaterialTheme.colorScheme.error) }
+                } }
+            }
         }
-    })
+        if (state.queues.isNotEmpty()) item { Text("洗衣排队", style = MaterialTheme.typography.titleLarge) }
+        items(state.queues, key = { "queue." + it.str("id", it.str("machineId")) }) { queue ->
+            Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(state.machines.find { it.id == queue.str("machineId") }?.name ?: "机器 ${queue.str("machineId")}", style = MaterialTheme.typography.titleMedium)
+                Text("${if (queue.optBoolean("mine")) "我的" else queue.str("nick", "同学") + "的"}排位 · 第 ${queue.optInt("position")} 位 · 预计使用 ${queue.optInt("durationMin")} 分钟", style = MaterialTheme.typography.bodySmall)
+                val start = epoch(queue.str("startAt"))
+                Text(if (start == null) "预计开始时间以机器剩余时间为准" else if (start > now) "预计 ${((start - now + 59_999) / 60_000)} 分钟后可用" else "预计等待时间已到，请核对机器现场状态")
+                if (queue.optBoolean("uncertain")) Text("设备结束时间暂不明确，已按完整周期保守估算。", style = MaterialTheme.typography.bodySmall)
+                Text("排到队首后，机器结束前 3 分钟及结束时会提醒；到场后请核对设备和衣物。", style = MaterialTheme.typography.bodySmall)
+                if (queue.optBoolean("mine")) TextButton(onClick = {
+                    session.run(refresh = true) { request("/api/queue?machineId=${vm.api.encoded(queue.str("machineId"))}", "DELETE"); vm.message("已取消排队") }
+                }, enabled = !busy && permissions?.optJSONObject("queue")?.optBoolean("operate", true) != false) { Text("取消排队") }
+            } }
+        }
+        val received = state.social.optJSONArray("receivedPickups")?.objects().orEmpty().filter { it.str("state") in setOf("pending", "accepted") }
+        if (socialView && received.isNotEmpty()) item {
+            Card(onClick = { social = true }, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("朋友请我代取 · ${received.size} 条", style = MaterialTheme.typography.titleMedium)
+                received.forEach { request -> Text(request.optJSONObject("task")?.str("machineName", "朋友的洗衣任务").orEmpty() + " · " + if (request.str("state") == "pending") "待确认" else "已接受") }
+                Text("查看剩余时间并处理请求", color = MaterialTheme.colorScheme.primary)
+            } }
+        }
+        if (tasksView) {
+            item { TextButton(onClick = { history = !history }, modifier = Modifier.fillMaxWidth()) { Text(if (history) "收起洗衣历史（${done.size}）" else "查看洗衣历史（${done.size}）") } }
+            if (history) {
+                item { OutlinedTextField(historyQuery, { historyQuery = it.take(100) }, label = { Text("按机器名称或备注搜索") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+                val filtered = done.filter { historyQuery.isBlank() || it.name.contains(historyQuery, true) || it.note.contains(historyQuery, true) }
+                if (filtered.isEmpty()) item { Text(if (done.isEmpty()) "暂时没有已完成的登记。" else "没有匹配的洗衣记录。") }
+                items(filtered, key = { "done.${it.id}" }) { task -> Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(task.name, style = MaterialTheme.typography.titleMedium)
+                    Text("已确认取衣", color = MaterialTheme.colorScheme.primary)
+                    task.startAt?.let { Text(java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")), style = MaterialTheme.typography.bodySmall) }
+                    TaskDetailText(task, taskDetails[task.id])
+                    TextButton(onClick = { confirm = TaskConfirmation(task, true) }, enabled = !busy && tasksOperate) { Text("删除记录", color = MaterialTheme.colorScheme.error) }
+                } } }
+            }
+        }
+        if (inspectionView) item {
+            Card(onClick = { inspections = true }, modifier = Modifier.fillMaxWidth()) { Row(Modifier.padding(20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Outlined.FactCheck, null)
+                Column { Text("楼栋巡检", style = MaterialTheme.typography.titleMedium); Text("检查机器、拍照备注并上报情况", style = MaterialTheme.typography.bodySmall) }
+            } }
+        }
+    }
+    if (picker) AlertDialog(onDismissRequest = { picker = false }, title = { Text("选择机器") }, text = {
+        LazyColumn(Modifier.heightIn(max = 420.dp)) { items(state.machines.sortedBy { it.availability(now) }, key = { it.id }) { machine -> TextButton(onClick = { registerId = machine.id; picker = false; session.error = null }, modifier = Modifier.fillMaxWidth()) { Text("${machine.name} · ${machine.stateLabel}") } } }
+    }, confirmButton = { TextButton(onClick = { picker = false }) { Text("返回") } })
+    registerId?.let { id ->
+        val machine = state.machines.find { it.id == id }
+        if (machine != null) RegisterDialog(machine, busy, session.error, { registerId = null }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
+            session.run(refresh = true) {
+                val currentMachine = vm.state.value.machines.find { it.id == machine.id } ?: throw IllegalStateException("机器信息已变化，请重新选择")
+                if (currentMachine != machine) throw IllegalStateException("机器信息已变化，请重新核对并确认登记")
+                request("/api/tasks", "POST", TaskRegistration.body(currentMachine, minutes, note, disinfectant, cleaned, useMachine, selfClean))
+                registerId = null; vm.message("登记成功")
+            }
+        }
+    }
+    confirm?.let { ask -> AlertDialog(onDismissRequest = { confirm = null }, title = { Text(if (ask.delete) "删除登记？" else "确认已取衣？") }, text = { Text(ask.task.name + if (ask.delete) "\n删除这条记录并释放登记占用，机器远端状态不会随登记删除改变。" else "\n请确认已经取走自己的衣物。确认后会结束这条登记并释放登记占用。") }, dismissButton = { TextButton(onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
+        TextButton(enabled = !busy, onClick = {
+            session.run(refresh = true) {
+                val currentTask = vm.state.value.tasks.find { it.id == ask.task.id } ?: throw IllegalStateException("登记状态已变化，请刷新后重试")
+                if (!ask.delete && currentTask.done) throw IllegalStateException("此登记已经确认取衣，请刷新查看")
+                request("/api/tasks/${vm.api.encoded(ask.task.id)}" + if (ask.delete) "" else "/take", if (ask.delete) "DELETE" else "POST")
+                confirm = null; vm.message(if (ask.delete) "登记已删除" else "已确认取衣")
+            }
+        }) { Text(if (ask.delete) "确认删除" else "已取走衣物") }
+    }) }
+    if (social || pickupTaskId != null) SocialDialog(state, vm, { social = false; pickupTaskId = null }, pickupTaskId)
+    if (assistant) AssistantDialog(state, vm) { assistant = false }
+    if (inspections) InspectionScreen(state, vm) { inspections = false }
+    if (queueNotices) QueueNoticeDialog(state, vm) { queueNotices = false }
+}
+
+@Composable private fun TaskDetailText(task: LaundryTask, raw: JSONObject?) {
+    raw?.let {
+        Text(when {
+            it.str("mode") == "machine" -> if (task.estimated) "按估算时间提醒，请核对现场状态" else "按机器时间提醒 · 程序未提供"
+            it.str("program") == "self_clean" -> "桶自洁 · 6 分钟提醒"
+            else -> "自行设置 ${it.optInt("minutes")} 分钟提醒，不代表机器远端状态"
+        }, style = MaterialTheme.typography.bodySmall)
+    }
+    if (task.note.isNotBlank()) Text("公开备注：${task.note}")
+    if (task.kind != "dryer") Text("消毒液：${if (task.disinfectant) "使用" else "未使用"} · 自清洁：${if (task.selfCleaned) "已记录" else "未记录"}", style = MaterialTheme.typography.bodySmall)
+}
+
+internal fun laundryTimeLabel(task: LaundryTask, now: Long): String {
+    if (task.done) return "已确认取衣"
+    val end = task.endAt ?: return "结束时间待确认"
+    if (end > now) return "登记计时剩余 ${((end - now + 59_999) / 60_000).coerceAtLeast(1)} 分钟"
+    val overdue = ((now - end) / 60_000).coerceAtLeast(0)
+    return if (overdue == 0L) "登记计时已到 · 请现场确认" else "登记计时结束${when { overdue < 60 -> "$overdue 分钟"; overdue < 1440 -> "${overdue / 60} 小时"; else -> "${overdue / 1440} 天" }} · 请确认机器和衣物"
 }

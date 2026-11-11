@@ -93,7 +93,9 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 任务包含 `id,machineId,kind,status,finishAt,note,useDisinfectant,selfCleaned`；机器包含 `id,name,kind,state,status,finishAt` 等公开状态。只返回当前启用住宿楼及该用户获准查看的范围，最多 20 个未取任务，不包含他人的身份、手机号或联系方式。
 
-原生首版不复用浏览器 WebSocket 的 Origin 校验，也不伪造 Origin。前台恢复、主动刷新、推送到达时更新；页面聚焦期间刷新间隔至少 30 秒，小组件建议 5 分钟并遵守系统调度限制。倒计时每秒只在本地计算，不发送每秒网络请求。原生长连接需要另外实现一次性、限定频道的握手票据后再开放。
+频道通过原生登录 Bearer 会话访问 `GET /api/messages/realtime?channel=...`，取得限定账号、频道及约两分钟有效期的签名票据。OkHttp 仅连接该接口返回的无查询参数 WSS 地址，使用 `weshirt.channel.v1` 子协议，并声明当前服务 Origin 以满足网关来源名单；Origin 不是身份凭证。握手不携带账号 Bearer，票据只进入首个 `authenticate` 消息，不进入 URL 或日志。服务端仍复核用户、频道权限和连接租约。
+
+连接仅在频道可见且页面恢复时运行，25 秒本地心跳、到期换票、断线指数退避。WS 只传变更信号，正文和媒体仍通过已鉴权 HTTP 补拉。未配置或不可连接时继续前台约 45 秒刷新；已连接时周期完整刷新放宽到两分钟。切换频道、账号、服务或进入后台会取消旧连接，旧会话消息不回填。倒计时只在本地计算。
 
 ## CloudBase 原子存储部署
 

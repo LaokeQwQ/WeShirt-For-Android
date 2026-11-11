@@ -79,13 +79,13 @@ class PlatformCoordinator(
         val active = LinkedHashMap<String, TaskProgress>()
         state.tasks.filter { !it.done && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
             val finish = task.endAt ?: return@forEach
-            active[task.id] = tracked(task.id, task.name, finish, task.startAt ?: 0L)
+            active[task.id] = tracked(task.id, task.name, finish, task.startAt ?: 0L, state.profile.notifyLeadMin)
         }
         state.queues.filter { it.optBoolean("mine") && it.optInt("position") == 1 && !it.optBoolean("uncertain") }.forEach { queue ->
             val machine = state.machines.find { it.id == queue.str("machineId") }
             val finish = machine?.finishAt ?: epoch(queue.str("eta")) ?: return@forEach
             val id = "queue:${queue.str("id")}"
-            active[id] = tracked(id, "等候 · ${machine?.name ?: "预约机器"}", finish, 0L)
+            active[id] = tracked(id, "等候 · ${machine?.name ?: "预约机器"}", finish, 0L, 3)
         }
         val previous = taskPrefs.getString("activeIds", "")!!.split('|').filter { it.isNotBlank() }.toSet()
         (previous - active.keys).forEach { LaundryReminders.cancel(app, it); LaundryNotifications(app).cancelProgress(it); taskPrefs.edit().remove(it).apply() }
@@ -104,12 +104,12 @@ class PlatformCoordinator(
             current?.machineName, current?.estimatedFinishAtMillis))
     }
 
-    private fun tracked(id: String, machine: String, finish: Long, start: Long): TaskProgress {
+    private fun tracked(id: String, machine: String, finish: Long, start: Long, leadMinutes: Int): TaskProgress {
         val previous = runCatching { JSONObject(taskPrefs.getString(id, "{}")!!) }.getOrDefault(JSONObject())
         val changed = previous.optLong("finish", -1) != finish
         val revision = previous.optLong("revision", 0) + if (changed) 1 else 0
         taskPrefs.edit().putString(id, JSONObject().put("finish", finish).put("revision", revision).toString()).apply()
-        return TaskProgress(id, revision, machine, start, finish, userRequestedTracking = true)
+        return TaskProgress(id, revision, machine, start, finish, userRequestedTracking = true, leadMinutes = leadMinutes)
     }
 
     suspend fun beforeSessionCleared() { PushRuntime.logout(app); taskPrefs.edit().clear().commit(); lastState = null }

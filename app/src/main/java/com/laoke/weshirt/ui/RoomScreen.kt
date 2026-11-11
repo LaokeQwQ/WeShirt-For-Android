@@ -15,6 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -33,6 +34,7 @@ import kotlinx.coroutines.delay
     var onlyFavorites by rememberSaveable { mutableStateOf(false) }
     var renderer by remember { mutableStateOf<LaundryRoomView?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
+    var facility by remember { mutableStateOf<RoomFacility?>(null) }
     val owner = LocalLifecycleOwner.current
     val currentMachines by rememberUpdatedState(state.machines)
     val currentOnMachine by rememberUpdatedState(onMachine)
@@ -46,7 +48,10 @@ import kotlinx.coroutines.delay
         state.machines.filter { !onlyFavorites || it.id in state.favorites }
             .sortedWith(compareBy<Machine> { it.availability(now) }.thenBy { it.slot.toIntOrNull() ?: Int.MAX_VALUE }.thenBy { it.slot }.thenBy { it.id })
     }
-    val projection = remember(state.machines, now / 30_000) { projectWebRoom(state.machines, now) }
+    val projection = remember(state.machines, state.queues, now / 30_000) {
+        val counts = state.queues.groupingBy { it.str("machineId") }.eachCount()
+        projectWebRoom(state.machines, now).let { room -> room.copy(machines = room.machines.map { it.copy(queueCount = counts[it.id] ?: 0) }) }
+    }
     val showing3D = allow3D && threeD && !rendererUnavailable && projection.hasBoundMachines
     DisposableEffect(owner, renderer) {
         val room = renderer
@@ -69,6 +74,7 @@ import kotlinx.coroutines.delay
                 AndroidView(factory = { context -> LaundryRoomView(context).also { view ->
                     renderer = view
                     view.onMachineSelected = { id -> currentMachines.find { it.id == id }?.let(currentOnMachine) ?: currentOnQuality("该机位尚未绑定设备，请在机器列表选择") }
+                    view.onFacilitySelected = { facility = it }
                     view.onQualityChanged = { quality -> if(quality.showDowngradeNotice) notice = "为保持流畅，已自动调整画质 · ${quality.targetFps} 帧" }
                     view.onRendererError = { _ ->
                         // Scene setup is optional. The list remains the source of truth
@@ -80,15 +86,26 @@ import kotlinx.coroutines.delay
                     released.dispose()
                     if(renderer === released) renderer = null
                 }, update = { it.setMachines(projection.machines); it.setPerformanceMode(runCatching { PerformanceMode.valueOf(state.quality) }.getOrDefault(PerformanceMode.AUTO)) })
+                FilledTonalIconButton(onClick = { renderer?.resetCamera() }, modifier = Modifier.align(Alignment.TopEnd).padding(12.dp)) {
+                    Icon(Icons.Outlined.RestartAlt, "返回房间全景")
+                }
+                Surface(Modifier.align(Alignment.BottomStart).padding(12.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .94f), shape = RoundedCornerShape(12.dp)) {
+                    Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        listOf("空闲" to Color(0xFF16803D), "使用中" to Color(0xFFB46909), "故障" to Color(0xFFDC2626)).forEach { (label, color) ->
+                            Text(label, color = color, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
                 if(machines.isEmpty()) Surface(Modifier.align(Alignment.Center).padding(24.dp), shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = .95f)) {
                     Text(if(onlyFavorites) "还没有收藏机器" else "当前楼栋暂无机器数据", Modifier.padding(20.dp))
                 }
                 if(notice != null) Surface(Modifier.align(Alignment.TopCenter).padding(16.dp), color = MaterialTheme.colorScheme.inverseSurface, shape = RoundedCornerShape(16.dp)) { Text(notice!!, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.bodySmall) }
             }
-            Text("拖动环视 · 双指缩放 · 轻点机器查看", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("拖动环视 · 双指缩放 · 双击全景 · 轻点机器查看", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item("room-facilities") { AssistChip(onClick = { facility = RoomFacility.BOILER }, label = { Text("设施须知") }, leadingIcon = { Icon(Icons.Outlined.Info, null, Modifier.size(18.dp)) }) }
                 items(machines, key = { it.id }) { machine ->
-                    AssistChip(onClick = { onMachine(machine) }, label = { Text("${machine.name} · ${machine.stateLabel}") }, leadingIcon = {
+                    AssistChip(onClick = { renderer?.focusMachine(machine.id); onMachine(machine) }, label = { Text("${machine.name} · ${machine.stateLabel}") }, leadingIcon = {
                         Icon(if(machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService, null, Modifier.size(18.dp))
                     })
                 }
@@ -98,6 +115,7 @@ import kotlinx.coroutines.delay
             machines = state.machines,
             favorites = state.favorites,
             now = now,
+            updatedAt = state.updatedAt,
             onMachine = onMachine,
             modifier = Modifier.weight(1f),
             header = if(rendererUnavailable) ({
@@ -114,17 +132,36 @@ import kotlinx.coroutines.delay
         }
         Spacer(Modifier.height(2.dp))
     }
+    facility?.let { selected ->
+        val rules = when (selected) {
+            RoomFacility.BOILER -> listOf("刷卡后接水，接满即关", "暖瓶放进接水区，不要手持对嘴", "开水很烫，接水时站在侧面", "接完把接水盘的水沥干")
+            RoomFacility.WASHER_NOTICE -> listOf("先在这台机器上登记，再按启动", "洗完及时取衣，疑似未取状态需要现场确认", "故障先看现场，再在机器上留言", "地面有水先拖干，再开始下一筒")
+            RoomFacility.DRYER_NOTICE -> listOf("衣物先脱水，再放进烘干机", "到时及时取出，避免回潮", "滤网有毛絮就清掉", "烘干中途开门，先等滚筒停稳")
+        }
+        AlertDialog(onDismissRequest = { facility = null }, title = { Text(when(selected) { RoomFacility.BOILER -> "开水机使用须知"; RoomFacility.WASHER_NOTICE -> "洗衣机使用须知"; RoomFacility.DRYER_NOTICE -> "烘干机使用须知" }) }, text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    RoomFacility.entries.forEach { option -> FilterChip(selected == option, { facility = option }, label = { Text(when(option) { RoomFacility.BOILER -> "开水机"; RoomFacility.WASHER_NOTICE -> "洗衣机"; RoomFacility.DRYER_NOTICE -> "烘干机" }, maxLines = 1) }) }
+                }
+                rules.forEachIndexed { index, line -> Text("${index + 1}. $line", style = MaterialTheme.typography.bodyMedium) }
+            }
+        }, confirmButton = { TextButton(onClick = { facility = null }) { Text("知道了") } })
+    }
 }
 @Composable fun MachineSheet(machine: Machine, state: AppState, vm: AppViewModel, close: () -> Unit, login: () -> Unit) {
+    val session = rememberMachineActionSession(state, vm)
+    val frozen = MachineActionSnapshot(state.endpoint, state.profile?.id, state.building, machine)
     var registering by remember { mutableStateOf(false) }
     var commentsVisible by remember { mutableStateOf(false) }
+    var contact by remember { mutableStateOf(false) }
+    var favoriteConfirmation by remember { mutableStateOf<MachineActionSnapshot?>(null) }
     var registrationError by remember { mutableStateOf<String?>(null) }
     val currentClose by rememberUpdatedState(close)
     var active by remember { mutableStateOf(true) }
     DisposableEffect(Unit) { onDispose { active = false } }
     ModalBottomSheet(onDismissRequest = close) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) { Column(Modifier.weight(1f)) { Text(machine.name, style = MaterialTheme.typography.headlineSmall); Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary) }; IconButton(onClick = { if(state.profile == null) login() else vm.favorite(machine) }, enabled = !state.busy) { Icon(if(machine.id in state.favorites) Icons.Outlined.Star else Icons.Outlined.StarOutline, "收藏机器") } }
+            Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) { Column(Modifier.weight(1f)) { Text(machine.name, style = MaterialTheme.typography.headlineSmall); Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary) }; IconButton(onClick = { if(state.profile == null) login() else favoriteConfirmation = frozen }, enabled = !state.busy && !session.busy) { Icon(if(machine.id in state.favorites) Icons.Outlined.Star else Icons.Outlined.StarOutline, "收藏机器") } }
             machineBoardStatus(machine, System.currentTimeMillis()).detail?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
             Text("设备状态以现场为准；预计时间归零后仍需确认是否结束。", style = MaterialTheme.typography.bodySmall)
             if(machine.note.isNotBlank()) Text("公开备注：${machine.note}")
@@ -133,22 +170,24 @@ import kotlinx.coroutines.delay
             if(machine.suspectedUncollected) Text("疑似未取衣 · 请先确认现场情况", color = MaterialTheme.colorScheme.tertiary)
             OutlinedButton(onClick = { if(state.profile == null) login() else commentsVisible = true }, modifier = Modifier.fillMaxWidth()) { Text("查看这台机器的留言") }
             if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
-                var contact by remember { mutableStateOf(false) }
-                OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
-                if(contact) AlertDialog(onDismissRequest = { contact = false }, title = { Text("发送一条衣物提醒") }, text = { Column {
-                    Text("对方确认前仅允许发送一条固定模板，确认后才能完整聊天。", style = MaterialTheme.typography.bodySmall)
-                    listOf("forgot" to "衣服可能忘拿", "misplaced" to "衣服可能放错", "taken_wrong" to "衣服可能错拿", "left_behind" to "衣物可能漏拿").forEach { (code,label) -> TextButton(onClick = { vm.mutate("联系请求已发送") { vm.api.call("/api/social/contact", "POST", org.json.JSONObject().put("toUserId", machine.occupantId).put("machineId", machine.id).put("template", code)) }; contact = false }, enabled = !state.busy) { Text(label) } }
-                } }, confirmButton = { TextButton(onClick = { contact = false }) { Text("取消") } })
+                OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, enabled = !state.busy && !session.busy, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
             }
-            Button(onClick = { if(state.profile == null) login() else { registrationError = null; registering = true } }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy && machine.state != "faulty") { Text("登记我的${if(machine.kind == "dryer") "烘干" else "洗衣"}") }
-            OutlinedButton(onClick = { if(state.profile == null) login() else vm.queue(machine) }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy && machine.state != "faulty") { Text("等这台 · 加入排队") }
-            Text("排队按当前剩余时间估算，结束前约 3 分钟和确认结束时提醒。", style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { if(state.profile == null) login() else { registrationError = null; registering = true } }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy && !session.busy && machine.state != "faulty") { Text("登记我的${if(machine.kind == "dryer") "烘干" else "洗衣"}") }
+            MachineActions(machine, state, vm, session, login)
         }
     }
-    if(registering) RegisterDialog(machine, state.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
+    if(registering) RegisterDialog(machine, state.busy || session.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
         registrationError = null
-        vm.register(machine, minutes, note, disinfectant, cleaned, useMachine, selfClean,
-            onSuccess = { if (active) { registering = false; currentClose() } }, onFailure = { if (active) registrationError = it })
+        try {
+            session.validate(frozen, "tasks")
+            vm.register(machine, minutes, note, disinfectant, cleaned, useMachine, selfClean,
+                onSuccess = { if (active) { registering = false; currentClose() } }, onFailure = { if (active) registrationError = it })
+        } catch (problem: Exception) { registrationError = clientFailure(problem, "机器已变化，请重新核对") }
     }
+    favoriteConfirmation?.let { target -> AlertDialog(onDismissRequest = { favoriteConfirmation = null }, title = { Text(if (machine.id in state.favorites) "取消收藏机器？" else "收藏这台机器？") }, text = { Text(target.machine.name) }, confirmButton = { TextButton(enabled = !state.busy && !session.busy, onClick = {
+        favoriteConfirmation = null
+        session.run(target, "") { request(target, "/api/user/favorites/toggle", org.json.JSONObject().put("machineId", target.machine.id), resource = ""); feedback = "常用机器已更新" }
+    }) { Text("确认") } }, dismissButton = { TextButton(onClick = { favoriteConfirmation = null }) { Text("取消") } }) }
+    if (contact && machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) key(machine.occupantId) { com.laoke.weshirt.ui.social.ContactUserDialog(machine.occupantId, machine.id, state, vm) { contact = false } }
     if (commentsVisible) MachineCommentsDialog(machine, state, vm) { commentsVisible = false }
 }

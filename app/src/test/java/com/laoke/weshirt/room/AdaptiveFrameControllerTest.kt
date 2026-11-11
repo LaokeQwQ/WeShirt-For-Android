@@ -20,23 +20,26 @@ class AdaptiveFrameControllerTest {
 
     @Test fun oneStutterDoesNotMakeTheRoomPermanentlyBlurry() {
         val controller = activeController()
-        controller.observeFrame(0, 90_000_000, 2_000_000, BUDGET)
-        feed(controller, 16_666_667, 5, work = 3_000_000)
+        feed(controller, 0, 9, work = 3_000_000)
+        controller.observeFrame(9_000_000_000, 90_000_000, 2_000_000, BUDGET)
+        feed(controller, 9_016_666_667, 5, work = 3_000_000)
         assertEquals(0, controller.state().adaptiveLevel)
         assertEquals(1f, controller.state().resolutionScale)
     }
 
     @Test fun sustainedGpuPressureReducesFpsBeforeResolutionAndHonorsCooldown() {
         val controller = activeController(120f)
-        feed(controller, 0, 3, work = 25_000_000)
+        feed(controller, 0, 14, work = 25_000_000)
+        assertEquals(0, controller.state().adaptiveLevel)
+        feed(controller, 14_000_000_000, 1, work = 25_000_000)
         assertEquals(1, controller.state().adaptiveLevel)
         assertEquals(90, controller.state().targetFps)
         assertEquals(1f, controller.state().resolutionScale)
         assertTrue(controller.state(consumeNotice = true).showDowngradeNotice)
         assertFalse(controller.state().showDowngradeNotice)
-        feed(controller, 3_000_000_000, 4, work = 25_000_000)
+        feed(controller, 15_000_000_000, 28, work = 25_000_000)
         assertEquals(1, controller.state().adaptiveLevel)
-        feed(controller, 7_000_000_000, 5, work = 25_000_000)
+        feed(controller, 43_000_000_000, 3, work = 25_000_000)
         assertEquals(2, controller.state().adaptiveLevel)
         assertEquals(60, controller.state().targetFps)
         assertEquals(.9f, controller.state().resolutionScale)
@@ -55,11 +58,11 @@ class AdaptiveFrameControllerTest {
 
     @Test fun recoveredDeviceMustStayHealthyBeforeQualityReturns() {
         val controller = activeController(90f)
-        feed(controller, 0, 3, work = 25_000_000)
+        feed(controller, 0, 15, work = 25_000_000)
         assertEquals(1, controller.state().adaptiveLevel)
-        feed(controller, 3_000_000_000, 10, work = 3_000_000)
+        feed(controller, 15_000_000_000, 20, work = 3_000_000)
         assertEquals(1, controller.state().adaptiveLevel)
-        feed(controller, 13_000_000_000, 12, work = 3_000_000)
+        feed(controller, 35_000_000_000, 12, work = 3_000_000)
         assertEquals(0, controller.state().adaptiveLevel)
         assertEquals(90, controller.state().targetFps)
     }
@@ -94,7 +97,7 @@ class AdaptiveFrameControllerTest {
 
     @Test fun rendererBackpressureIsARealPressureSignalEvenWithoutGpuTimestamps() {
         val controller = activeController()
-        for (frame in 0..180) controller.observeFrame(frame * BUDGET, null, 1_000_000, BUDGET, rendererBusy = true)
+        for (frame in 0..900) controller.observeFrame(frame * BUDGET, null, 1_000_000, BUDGET, rendererBusy = true)
         assertTrue(controller.state().adaptiveLevel > 0)
     }
 
@@ -111,13 +114,22 @@ class AdaptiveFrameControllerTest {
 
     @Test fun healthyThirtyFpsDoesNotBounceBackToAnUnsustainableSixtyFps() {
         val controller = activeController()
-        feed(controller, 0, 3, work = 20_000_000)
+        feed(controller, 0, 15, work = 20_000_000)
         assertEquals(1, controller.state().adaptiveLevel)
         for(frame in 0 until 30 * 30) controller.observeFrame(
-            3_000_000_000L + frame * 33_333_333L, 20_000_000, 1_000_000, 33_333_333,
+            15_000_000_000L + frame * 33_333_333L, 20_000_000, 1_000_000, 33_333_333,
         )
         assertEquals(1, controller.state().adaptiveLevel)
         assertEquals(30, controller.state().targetFps)
+    }
+
+    @Test fun initialShaderCompilationAndTwoBadWindowsKeepFullQuality() {
+        val controller = activeController(120f)
+        feed(controller, 0, 8, work = 90_000_000)
+        assertEquals(0, controller.state().adaptiveLevel)
+        feed(controller, 8_000_000_000, 5, work = 90_000_000)
+        assertEquals(0, controller.state().adaptiveLevel)
+        assertFalse(controller.state().showDowngradeNotice)
     }
 
     private fun activeController(refreshRate: Float = 60f) = AdaptiveFrameController(refreshRate).apply {

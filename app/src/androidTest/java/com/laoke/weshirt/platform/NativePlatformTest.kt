@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.service.notification.StatusBarNotification
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -43,11 +44,13 @@ class NativePlatformTest {
 
     @Before fun prepare() {
         runBlocking { PushRuntime.logout(app) }
+        awaitNotifications("Notifications from the previous session must be cancelled") { it.isEmpty() }
         PushRuntime.initialize(app, PushConfiguration(consent = false))
     }
 
     @After fun cleanup() {
         runBlocking { PushRuntime.logout(app) }
+        awaitNotifications("Notifications must be cancelled after the test") { it.isEmpty() }
         app.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().remove("nativePushConsent").commit()
     }
 
@@ -116,7 +119,10 @@ class NativePlatformTest {
         assertFalse(notices.post(event))
         assertFalse(notices.post(event.copy(revision = 2, title = "旧修订")))
         assertTrue(notices.post(event.copy(revision = 4, title = "修订 4")))
-        val posted = manager.activeNotifications.single { it.tag == "event:$id" }
+        val posted = awaitNotifications("The newer notification revision must replace the previous title") { active ->
+            active.singleOrNull { it.tag == "event:$id" }?.notification?.extras
+                ?.getCharSequence(Notification.EXTRA_TITLE)?.toString() == "修订 4"
+        }.single { it.tag == "event:$id" }
         assertEquals("修订 4", posted.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         // Persistence matters: a newly constructed delivery facade must also reject the replay.
         assertFalse(LaundryNotifications(app).post(event.copy(revision = 4)))
@@ -129,6 +135,9 @@ class NativePlatformTest {
         val task = TaskProgress("instrumented-task", 1, "测试洗衣机", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)
         LaundryReminders.schedule(app, task)
         assertTrue(notices.updateProgress(task))
+        awaitNotifications("The progress notification must be visible before testing logout") { active ->
+            active.count { it.tag == "progress:${task.taskId}" } == 1
+        }
         LaundryWidgetStore.update(app, LaundryWidgetSnapshot("测试楼", 2, 3, 0, System.currentTimeMillis(), "测试洗衣机", task.estimatedFinishAtMillis))
         DingTalkLoginBridge.createRequest(app, "instrumented-installation")
         assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).contains("snapshot"))
@@ -137,7 +146,7 @@ class NativePlatformTest {
         PushRuntime.logout(app)
 
         assertFalse(PushRuntime.isSessionActive(app))
-        assertTrue(manager.activeNotifications.isEmpty())
+        assertTrue(awaitNotifications("Logout must cancel all visible notifications") { it.isEmpty() }.isEmpty())
         assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).all.isEmpty())
         assertTrue(app.getSharedPreferences("native_login_pending", Context.MODE_PRIVATE).all.isEmpty())
         assertTrue(app.getSharedPreferences("laundry_reminder_state", Context.MODE_PRIVATE).all.isEmpty())
@@ -159,13 +168,18 @@ class NativePlatformTest {
         val remote = local.copy(eventId = "remote-$taskId", revision = 1)
         assertFalse(notices.post(remote))
         assertTrue(notices.wasHandled(remote))
-        assertEquals(1, manager.activeNotifications.count { it.tag == "taskPhase:$taskId:lead" })
+        assertEquals(1, awaitNotifications("The two reminder transports must produce a single lead card") { active ->
+            active.count { it.tag == "taskPhase:$taskId:lead" } == 1
+        }.count { it.tag == "taskPhase:$taskId:lead" })
         val estimate = local.copy(eventId = "estimate-$taskId", kind = PushEventKind.ESTIMATED_END)
         assertTrue(notices.post(estimate))
         assertTrue(notices.post(estimate.copy(eventId = "confirmed-$taskId", revision = 1,
             kind = PushEventKind.TASK_FINISHED, serverConfirmed = true, title = "设备确认结束")))
         assertFalse(notices.post(estimate.copy(revision = 8)))
-        val end = manager.activeNotifications.single { it.tag == "taskPhase:$taskId:end" }
+        val end = awaitNotifications("The device-confirmed title must replace the estimated title") { active ->
+            active.singleOrNull { it.tag == "taskPhase:$taskId:end" }?.notification?.extras
+                ?.getCharSequence(Notification.EXTRA_TITLE)?.toString() == "设备确认结束"
+        }.single { it.tag == "taskPhase:$taskId:end" }
         assertEquals("设备确认结束", end.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         assertFalse(notices.post(local.copy(eventId = "expired-$taskId", finishAtMillis = System.currentTimeMillis() - 1)))
     }
@@ -231,6 +245,21 @@ class NativePlatformTest {
                 .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText() }
         }
         assertTrue("The emulator must allow notification permission", notices.capabilities().permissionGranted)
+    }
+
+    /** NotificationManager enqueues notify/cancel work in the system process asynchronously. */
+    private fun awaitNotifications(
+        description: String,
+        condition: (Array<StatusBarNotification>) -> Boolean,
+    ): Array<StatusBarNotification> {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        var active = manager.activeNotifications
+        while (!condition(active) && System.nanoTime() < deadline) {
+            Thread.sleep(25)
+            active = manager.activeNotifications
+        }
+        assertTrue(description, condition(active))
+        return active
     }
 
     private fun awaitActivity(scenario: ActivityScenario<MainActivity>, condition: (MainActivity) -> Boolean) {
