@@ -132,6 +132,11 @@ class NativePreferencePrivacyTest {
                     val body = when (request.url.encodedPath) {
                         "/api/site" -> "{\"buildings\":[{\"code\":\"test\",\"name\":\"测试楼\"}]}"
                         "/api/auth/me" -> "{\"user\":{\"id\":\"privacy-test\",\"nick\":\"测试用户\",\"dormBuilding\":\"test\"}}"
+                        "/api/machines" -> "{\"board\":{\"dormBuilding\":\"test\",\"updatedAt\":\"2030-01-01T00:00:00Z\",\"floors\":[]},\"freshness\":{\"syncFailed\":false,\"stale\":false}}"
+                        "/api/tasks" -> "{\"tasks\":[],\"activeTasks\":[],\"history\":[]}"
+                        "/api/occupancy" -> "{\"occupancy\":{}}"
+                        "/api/queue" -> "{\"queue\":[]}"
+                        "/api/user/laundry-preferences" -> "{\"preferences\":{\"enabled\":false,\"favorites\":[],\"timeWindows\":[]}}"
                         "/api/user/announcements" -> JSONObject().put("enabled", announcementsEnabled).toString()
                         "/api/announcements" -> "{\"announcements\":[{\"id\":\"late\",\"version\":\"1\",\"title\":\"晚到公告\"}]}"
                         else -> "{}"
