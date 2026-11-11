@@ -1,7 +1,6 @@
 package com.laoke.weshirt.room
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,11 +9,26 @@ import kotlin.math.abs
 class RoomGeometryTest {
     @Test fun eachMachineRetainsItsBusinessSlotThroughRayPicking() {
         RoomLayout.slots.forEach { slot ->
-            val ray = Ray(Vec3(slot.x.toDouble(), .8, 6.0), Vec3(0.0, 0.0, -1.0))
+            val origin = slot.point(0f, .53f, 1.2f)
+            val ray = Ray(origin, (slot.doorCenter - origin).normalized())
             assertEquals(slot.slot, RoomLayout.pick(ray))
             assertNull(RoomLayout.pick(ray, emptySet()))
         }
-        assertEquals(listOf("D1", "1", "2", "3", "4", "5", "6", "7", "D2"), RoomLayout.slots.map { it.slot })
+        assertEquals(listOf("D1", "1", "2", "3", "4", "D2", "7", "6", "5"), RoomLayout.slots.map { it.slot })
+    }
+
+    @Test fun originalRoomMatchesTheWebsOpposingRowsAndDoorFacing() {
+        val right = RoomLayout.slots.filter { it.x > 0 }
+        val left = RoomLayout.slots.filter { it.x < 0 }
+        assertEquals(listOf("D1", "1", "2", "3", "4"), right.map { it.slot })
+        assertEquals(listOf("D2", "7", "6", "5"), left.map { it.slot })
+        assertEquals(listOf(2.7f, 1.65f, .6f, -.45f, -1.5f), right.map { it.z })
+        assertEquals(listOf(2.7f, 1.65f, .6f, -.45f), left.map { it.z })
+        RoomLayout.slots.forEach { position ->
+            assertEquals(1.42f, abs(position.x), 0f)
+            assertTrue("All machine doors must face the same central aisle", abs(position.doorCenter.x) < abs(position.x))
+        }
+        assertTrue(RoomLayout.isSurveyedLayout(RoomLayout.slots))
     }
 
     @Test fun repeatedOrUnknownSlotsAcrossFloorsDoNotDropAnyMachine() {
@@ -39,6 +53,7 @@ class RoomGeometryTest {
             assertEquals(original.x, position.x)
             assertEquals(original.z, position.z)
             assertEquals(original.slot, position.label)
+            assertEquals(original.yaw, position.yaw)
         }
     }
 
@@ -56,7 +71,6 @@ class RoomGeometryTest {
         for ((width,height) in listOf(400 to 800, 1600 to 800)) {
             val ray = RoomLayout.screenRay(width / 2f, height / 2f, width, height, eye, target, 45.0)
             assertEquals(1.0, ray.direction.dot(expected), 1e-9)
-            assertNotNull(RoomLayout.pick(ray))
         }
     }
 

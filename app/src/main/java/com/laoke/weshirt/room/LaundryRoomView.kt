@@ -20,7 +20,6 @@ import android.view.Surface
 import android.view.SurfaceView
 import android.view.View as AndroidView
 import android.widget.FrameLayout
-import android.widget.TextView
 import com.google.android.filament.Box
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
@@ -116,8 +115,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var rendererFailure: String? = null
     private var layoutVersion = 0L
     private var gestureLayoutVersion = -1L
-    private var yaw = .18
-    private var pitch = .46
+    private var yaw = 0.0
+    private var pitch = .17325
     private var zoom = 1.0
     private var yawVelocity = 0.0
     private var touching = false
@@ -126,7 +125,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private var viewportHeight = 0
     private var displayPeriodNanos = 16_666_667L
     private var eye = Vec3(0.0, 6.0, 12.0)
-    private var target = Vec3(0.0, .8, -.15)
+    private var target = Vec3(0.0, .74, -1.3)
+    private var fieldOfView = 72.0
     private val transform = FloatArray(16)
 
     private val powerReceiver = object : BroadcastReceiver() {
@@ -167,7 +167,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
             if (!canRender() || gestureLayoutVersion != layoutVersion || SystemClock.uptimeMillis() - lastScaleAt < 300L) return false
             performClick()
-            val ray = RoomLayout.screenRay(event.x, event.y, surfaceView.width, surfaceView.height, eye, target, FOV)
+            val ray = RoomLayout.screenRay(event.x, event.y, surfaceView.width, surfaceView.height, eye, target, fieldOfView)
             val slot = RoomLayout.pick(ray, positions) ?: return true
             machines[slot]?.let { onMachineSelected?.invoke(it.id) }
             return true
@@ -190,15 +190,11 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
             requestFrame()
             true
         }
-        runCatching { initializeRenderer() }.onFailure { error ->
-            failRenderer(error)
-            addView(TextView(context).apply {
-                text = "当前设备暂时无法开启三维场景，请切换列表查看机器。"
-                gravity = android.view.Gravity.CENTER
-                setPadding(32, 32, 32, 32)
-                contentDescription = text
-            }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-        }
+        // A renderer failure is reported to the Compose host, which switches to the
+        // machine list. Do not add an error overlay here: the room may fail before the
+        // host has installed its callback, and an overlay would leave a misleading
+        // "scene unavailable" page on top of the usable 2D fallback.
+        runCatching { initializeRenderer() }.onFailure(::failRenderer)
     }
 
     fun onMachineSelected(listener: (String) -> Unit) { onMachineSelected = listener }
@@ -210,10 +206,10 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         val forward = (target - eye).normalized()
         val right = forward.cross(Vec3(0.0, 1.0, 0.0)).normalized()
         val up = right.cross(forward).normalized()
-        val relative = Vec3(position.x.toDouble(), .8, position.z + .58) - eye
+        val relative = position.doorCenter - eye
         val depth = relative.dot(forward)
         if(depth <= 0) return null
-        val halfHeight = tan(Math.toRadians(FOV) / 2)
+        val halfHeight = tan(Math.toRadians(fieldOfView) / 2)
         val aspect = viewportWidth.toDouble() / viewportHeight
         val x = (relative.dot(right) / (depth * halfHeight * aspect) + 1) / 2 * surfaceView.width
         val y = (1 - relative.dot(up) / (depth * halfHeight)) / 2 * surfaceView.height
@@ -235,12 +231,12 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
                 statusMeshes.values.toList().forEach(::destroyMesh); statusMeshes.clear()
                 garmentMeshes.values.toList().forEach(::destroyMesh); garmentMeshes.clear()
                 positions = nextPositions
-                val depth = (positions.maxOfOrNull { it.z } ?: -1f) + 1f
+                val depth = ((positions.maxOfOrNull { it.z } ?: 2.7f) - 2.7f).coerceAtLeast(0f)
                 if (depth != extraDepth) {
                     extraDepth = depth
                     environmentMeshes.toList().forEach(::destroyMesh); environmentMeshes.clear()
                     RoomGeometry.environment(extraDepth).forEach { (kind, geometry) -> environmentMeshes += createMesh(geometry, kind) }
-                    target = Vec3(0.0, .8, -.15 + extraDepth / 2)
+
                 }
                 if (positions.isNotEmpty()) RoomGeometry.machineBodies(positions).forEach { (kind, geometry) -> bodyMeshes += createMesh(geometry, kind) }
             }
@@ -267,7 +263,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     fun resetCamera() {
-        yaw = .18; pitch = .46; zoom = 1.0; yawVelocity = 0.0
+        yaw = 0.0; pitch = .17325; zoom = 1.0; yawVelocity = 0.0
         requestFrame(immediate = true)
     }
 
@@ -415,7 +411,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         cameraEntity = EntityManager.get().create()
         camera = e.createCamera(cameraEntity).apply { setExposure(16f, 1f / 125f, 100f) }
         view?.camera = camera
-        skybox = Skybox.Builder().color(.79f, .86f, .83f, 1f).build(e)
+        skybox = Skybox.Builder().color(.039f, .067f, .098f, 1f).build(e)
         scene?.skybox = skybox
         indirectLight = IndirectLight.Builder().irradiance(1, floatArrayOf(.8f, .9f, 1f)).intensity(25_000f).build(e)
         scene?.indirectLight = indirectLight
@@ -533,11 +529,17 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private fun updateGarmentTransform(slot: RoomSlot, angle: Float) {
         val e = engine ?: return
         val mesh = garmentMeshes[slot.slot] ?: return
+        // Rotate cloth within the door plane, then rotate the whole drum toward
+        // the aisle. Both opposing rows keep their contents inside their doors.
+        val cy = cos(slot.yaw); val sy = sin(slot.yaw)
+        val ca = cos(angle); val sa = sin(angle); val scale = .64f
+        val center = slot.point(0f, .53f, .375f)
         transform.fill(0f)
-        transform[0] = cos(angle); transform[1] = sin(angle)
-        transform[4] = -sin(angle); transform[5] = cos(angle)
-        transform[10] = 1f; transform[12] = slot.x; transform[13] = .80f
-        transform[14] = slot.z + .51f; transform[15] = 1f
+        transform[0] = cy * ca * scale; transform[1] = sa * scale; transform[2] = -sy * ca * scale
+        transform[4] = -cy * sa * scale; transform[5] = ca * scale; transform[6] = sy * sa * scale
+        transform[8] = sy * scale; transform[10] = cy * scale
+        transform[12] = center.x.toFloat(); transform[13] = center.y.toFloat()
+        transform[14] = center.z.toFloat(); transform[15] = 1f
         val manager = e.transformManager
         manager.setTransform(manager.getInstance(mesh.entity), transform)
     }
@@ -545,11 +547,25 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private fun updateCamera() {
         if (viewportWidth <= 0 || viewportHeight <= 0) return
         val aspect = viewportWidth.toDouble() / viewportHeight
-        val halfWidth = positions.maxOfOrNull { abs(it.x) + .7f }?.toDouble() ?: 6.2
-        val horizontalFit = halfWidth / (tan(Math.toRadians(FOV) / 2) * aspect) * 1.12
-        val distance = (max(max(10.2, horizontalFit), (6.7 + extraDepth) * 1.25) * zoom).coerceIn(5.0, 120.0)
+        val surveyed = RoomLayout.isSurveyedLayout(positions)
+        fieldOfView = if (surveyed) { if (aspect < .85) 72.0 else 58.0 } else 45.0
+        target = if (surveyed) {
+            if (aspect < .85) Vec3(0.0, .74, -1.3) else Vec3(0.0, .8, -.8)
+        } else Vec3(0.0, .8, -.15 + extraDepth / 2)
+        val distance = if (surveyed) {
+            // Match the Web doorway camera, retreating just enough on very tall
+            // screens to keep the near pair of doors selectable inside the viewport.
+            val nearDoorZ = positions.maxOfOrNull { it.z }?.toDouble() ?: 2.7
+            val horizontalFit = 1.16 / (tan(Math.toRadians(fieldOfView) / 2) * aspect) +
+                (nearDoorZ - target.z) * cos(pitch) - (target.y - .53) * sin(pitch)
+            max(if (aspect < .85) 5.685 else 5.12, horizontalFit) * zoom
+        } else {
+            val halfWidth = positions.maxOfOrNull { abs(it.x) + .7f }?.toDouble() ?: 6.2
+            val horizontalFit = halfWidth / (tan(Math.toRadians(fieldOfView) / 2) * aspect) * 1.12
+            max(max(10.2, horizontalFit), (6.7 + extraDepth) * 1.25) * zoom
+        }.coerceIn(if (surveyed) 1.9 else 5.0, 120.0)
         eye = target + Vec3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch)) * distance
-        camera?.setProjection(FOV, aspect, .1, 240.0, Camera.Fov.VERTICAL)
+        camera?.setProjection(fieldOfView, aspect, .1, 240.0, Camera.Fov.VERTICAL)
         camera?.lookAt(eye.x, eye.y, eye.z, target.x, target.y, target.z, 0.0, 1.0, 0.0)
     }
 
@@ -714,7 +730,6 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     private data class NativeMesh(val entity: Int, val vertices: VertexBuffer, val indices: IndexBuffer)
 
     companion object {
-        private const val FOV = 45.0
         private val LIT_VARIANTS = Material.UserVariantFilterBit.DIRECTIONAL_LIGHTING or Material.UserVariantFilterBit.SHADOW_RECEIVER
         private val ANIMATED_STATES = setOf(RoomMachineState.RUNNING, RoomMachineState.FINISHING)
         private val CONTENT_STATES = ANIMATED_STATES + RoomMachineState.AWAITING_PICKUP

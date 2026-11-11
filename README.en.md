@@ -8,7 +8,9 @@ A native Android companion for the laundry room downstairs. Find an available ma
 
 Built with Kotlin, Jetpack Compose Material 3 and Filament. Both the interface and the interactive 3D room are native. WeShirt uses public machine-status data from 海乐生活, with a backend on Tencent CloudBase and EdgeOne Pages.
 
-Features include building-specific machine lists, favorites, laundry registration and queues, community channels, media attachments, friend invitations, pickup requests, native notifications and a home screen widget. Themes support light, dark and custom colors. The 3D renderer adapts to measured frame cost, thermal conditions and battery saver.
+Machines are grouped into washers and dryers, with available machines first. The 2D board opens as a list and can switch to cards. Supported buildings also have a native 3D room matching the Web layout; unavailable scenes fall back to the board without a startup error.
+
+Registration supports wash programs, custom durations and public notes, disinfectant and pre-wash self-cleaning records. Machine discussions are shared with the Web app. Other features include favorites, queues, community channels, media attachments, friend invitations, pickup requests, native notifications and a home screen widget. Themes support light, dark and custom colors. The 3D renderer adapts to measured frame cost, thermal conditions and battery saver.
 
 Requires Android 10 or later. Package: `com.laoke.weshirt`. Releases are privately distributed with a self-signed certificate. Enter your service URL and choose your building on first launch.
 

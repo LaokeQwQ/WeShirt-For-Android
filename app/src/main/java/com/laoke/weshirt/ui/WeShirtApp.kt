@@ -40,7 +40,7 @@ import kotlinx.coroutines.launch
         var configure by remember { mutableStateOf(false) }
         var buildingPicker by remember { mutableStateOf(false) }
         var selected by remember { mutableStateOf<Machine?>(null) }
-        LaunchedEffect(state.endpoint, state.profile?.id) { selected = null }
+        LaunchedEffect(state.endpoint, state.profile?.id, state.building) { selected = null }
         LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh(); delay(45_000) } } }
         LaunchedEffect(state.error, state.info) { (state.error ?: state.info)?.let { snackbar.showSnackbar(it, withDismissAction = true); vm.clearFeedback() } }
         Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
@@ -54,12 +54,11 @@ import kotlinx.coroutines.launch
             } }
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if(state.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 if(state.endpoint.isBlank()) EmptyPanel("连接你的洗衣房", "先填写已部署的 WeShirt 服务地址。账号、楼栋和洗衣数据由该服务管理。", Icons.Outlined.CloudQueue, "设置服务地址") { configure = true }
                 else if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
                 else AnimatedContent(targetState = state.tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(100)) }, label = "page") { tab ->
                     when(tab) {
-                        0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message)
+                        0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message, allow3D = state.building.equals("guiyuan", ignoreCase = true))
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
                         else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { configure = true }, { buildingPicker = true })
@@ -74,7 +73,7 @@ import kotlinx.coroutines.launch
                 if(state.profile != null) Text("每人仅可自行修改一次，之后请联系管理员。", style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = { TextButton(onClick = { buildingPicker = false }) { Text("返回") } })
-        selected?.let { machine -> MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) }
+        selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
         state.announcements.firstOrNull()?.let { announcement -> AlertDialog(onDismissRequest = { vm.dismissAnnouncement(false) }, title = { Text(announcement.str("title", "公告")) }, text = { LazyColumn { item { NativeMarkdown(announcement.str("markdown", announcement.str("content"))) } } }, dismissButton = { TextButton(onClick = { vm.dismissAnnouncement(false) }, enabled = !state.busy) { Text("退出") } }, confirmButton = { TextButton(onClick = { vm.dismissAnnouncement(true) }, enabled = !state.busy) { Text("不再提醒并退出") } }) }
     }
 }

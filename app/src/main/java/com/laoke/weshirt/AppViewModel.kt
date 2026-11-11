@@ -119,7 +119,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val occupancy = if(building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") else null
             val machines = result.first.optJSONObject("board")?.optJSONArray("floors")?.objects().orEmpty().flatMap { it.optJSONArray("machines")?.objects().orEmpty() }.map(Machine::parse).map { machine ->
                 val o = occupancy?.optJSONObject(machine.id); val care = o?.optJSONObject("care")
-                machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = o?.optBoolean("suspectedUncollected") == true)
+                machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = machine.suspectedUncollected || o?.optBoolean("suspectedUncollected") == true)
             }
             val tasks = result.second.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse)
             val queues = if(signedIn && building.isNotBlank()) api.call("/api/queue?dorm=${api.encoded(building)}").optJSONArray("queue")?.objects().orEmpty() else emptyList()
@@ -153,8 +153,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }
-    fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean, useMachine: Boolean, selfCleanProgram: Boolean) = mutate("登记成功") {
-        api.call("/api/tasks", "POST", JSONObject().put("machineId", machine.id).put("minutes", minutes).put("mode", if(useMachine) "machine" else "duration").put("note", note).put("useDisinfectant", disinfectant).put("selfCleaned", cleaned).apply { if(selfCleanProgram) put("program", "self_clean") })
+    fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
+                 useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = mutate("登记成功") {
+        try {
+            api.call("/api/tasks", "POST", TaskRegistration.body(machine, minutes, note, disinfectant, cleaned, useMachine, selfCleanProgram))
+            onSuccess()
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) { onFailure(problem.message ?: "登记未完成，请重试"); throw problem }
     }
     fun favorite(machine: Machine) = mutate(null) { api.call("/api/user/favorites/toggle", "POST", JSONObject().put("machineId", machine.id)) }
     fun queue(machine: Machine) = mutate("已加入队列；提醒以设备实际状态为准") { api.call("/api/queue", "POST", JSONObject().put("machineId", machine.id).put("dorm", _state.value.building).put("durationMin", if(machine.kind == "dryer") 60 else 30)) }
@@ -211,7 +216,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadMessagesNow(version: Int) {
         val channel = _state.value.channel
         val j = api.call("/api/messages?channel=${api.encoded(channel)}&limit=50")
-        val rows = j.optJSONArray("messages")?.objects().orEmpty().map { Message(it.str("id"), it.str("nick"), it.str("text"), it.str("avatarUrl"), it.str("authorBuildingName"), it.optJSONObject("identity")?.str("label").orEmpty(), it.str("mentionRef"), it.optBoolean("mine"), it.optBoolean("pinned"), it.optBoolean("mentionedMe"), it.optJSONObject("reply")?.let { r -> r.str("nick") + ": " + r.str("text") }.orEmpty(), it.optJSONObject("media")?.str("id").orEmpty(), it.optJSONObject("media")?.str("kind").orEmpty()) }
+        val rows = j.optJSONArray("messages")?.objects().orEmpty().map(Message::parse)
         if(version == generation.get() && channel == _state.value.channel) _state.update { it.copy(messages = rows) }
     }
     fun sendMessage(text: String, reply: String?, mentions: List<String>, all: Boolean) = mutate(null) {
