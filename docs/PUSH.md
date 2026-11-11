@@ -4,6 +4,10 @@
 
 客户端仅使用 FCM 和基础 U-Push，每个 installation 仅绑定一个主通道。`PushRouter` 在 Google 模式选择 FCM，在 U-Push 模式选择友盟基础通道，自动模式根据可用的 Google Play 服务与已配置通道选择。不会同时给同一安装实例登记 FCM 和 U-Push，也不按设备所在地判断路由。
 
+自动模式优先 FCM。没有 Play 服务、初始化失败、取 token 失败或 30 秒未取得 token 时，回退基础 U-Push；失败记录保留六小时，避免每次打开都重复等待。切换通道时使旧回调失效并注销旧登记，不重复投递。此判断检验客户端注册能力，不把取得 token 当作真机送达证明。
+
+登录后以一次说明主动引导系统通知授权；开启提醒后再提供一次省电白名单说明，由用户点击后进入系统授权。拒绝后不反复弹窗，设置仍可手动打开。后台限制和基础 U-Push 的实际到达时间由设备系统及网络决定。
+
 FCM 使用 `FirebaseMessagingService.onNewToken/onMessageReceived`；友盟使用 `UPushRegisterCallback/UPushMessageHandler`。SDK 不可用或配置缺失会显示 `NO_CONFIGURED_PROVIDER` 等状态，收到 token 后仍须后端登记成功才能显示 `REGISTERED`。没有发送凭据时不展示“已送达”。基础 U-Push 不等同于设备厂商的离线推送，后台或进程被回收后的实际接收情况仍需真机验证。
 
 客户端配置通过 `PushConfiguration` 注入，默认没有凭据、没有同意状态。`initialize` 只能在读取隐私选择后调用；没有同意时不初始化第三方 SDK。FCM 的默认 Provider 自动初始化及 Messaging auto-init 在 Manifest 中关闭，配置齐全后才手动初始化。友盟关闭应用列表与电话标识采集、SDK 日志、拉活、额外心跳、前台常驻服务，业务不启动保活服务。

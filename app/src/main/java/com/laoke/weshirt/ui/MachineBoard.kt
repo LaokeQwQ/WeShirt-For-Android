@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +51,20 @@ import com.laoke.weshirt.data.MachineBoardState
 import com.laoke.weshirt.data.MachineBoardStatus
 import com.laoke.weshirt.data.machineBoardStatus
 import com.laoke.weshirt.data.sortMachinesByAvailability
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+internal data class MachineBoardSummary(val total: Int, val available: Int, val occupied: Int, val faulty: Int)
+
+internal fun machineBoardSummary(machines: List<Machine>) = MachineBoardSummary(
+    machines.size,
+    machines.count { it.state == "idle" && !it.suspectedUncollected },
+    machines.count { it.state in setOf("occupied", "abnormal") || it.state == "idle" && it.suspectedUncollected },
+    machines.count { it.state == "faulty" }
+)
+
+internal fun machineBoardStaleMinutes(updatedAt: Long?, now: Long): Long? = updatedAt?.let { ((now - it).coerceAtLeast(0) / 60_000) }
 
 /** Receives only the selected building's machines. It does not fetch or retain account information. */
 @Composable
@@ -59,14 +74,20 @@ fun MachineBoard(
     now: Long,
     onMachine: (Machine) -> Unit,
     modifier: Modifier = Modifier,
-    header: (@Composable () -> Unit)? = null
+    header: (@Composable () -> Unit)? = null,
+    updatedAt: Long? = null
 ) {
     var filter by rememberSaveable { mutableStateOf("all") }
     var cards by rememberSaveable { mutableStateOf(false) }
     var onlyFavorites by rememberSaveable { mutableStateOf(false) }
+    var floor by rememberSaveable { mutableStateOf<String?>(null) }
+    val floors = remember(machines) { machines.distinctBy { it.floorCode }.map { it.floorCode to it.floorName.ifBlank { it.floorCode.ifBlank { "其他位置" } } } }
+    val summary = remember(machines) { machineBoardSummary(machines) }
+    val staleMinutes = machineBoardStaleMinutes(updatedAt, now)
+    LaunchedEffect(floors) { if (floor != null && floors.none { it.first == floor }) floor = null }
     val ordered = remember(machines, now) { sortMachinesByAvailability(machines, now) }
-    val visible = remember(ordered, filter, onlyFavorites, favorites) {
-        ordered.filter { (filter == "all" || it.kind == filter) && (!onlyFavorites || it.id in favorites) }
+    val visible = remember(ordered, floor, filter, onlyFavorites, favorites) {
+        ordered.filter { (floor == null || it.floorCode == floor) && (filter == "all" || it.kind == filter) && (!onlyFavorites || it.id in favorites) }
     }
     val groups = remember(visible) {
         listOf(
@@ -83,6 +104,24 @@ fun MachineBoard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (header != null) item(key = "board-header", span = { GridItemSpan(maxLineSpan) }, contentType = "header") { header() }
+        item(key = "board-summary", span = { GridItemSpan(maxLineSpan) }, contentType = "summary") {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("本楼机器" to summary.total, "空闲" to summary.available, "占用" to summary.occupied, "故障" to summary.faulty).forEach { (label, count) ->
+                        Surface(Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp)) {
+                            Column(Modifier.padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(count.toString(), style = MaterialTheme.typography.titleLarge, color = when (label) { "空闲" -> MaterialTheme.colorScheme.primary; "故障" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface })
+                                Text(label, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+                Text(updatedAt?.let { "更新于 " + DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it)) } ?: "更新时间待确认", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (staleMinutes != null && staleMinutes >= 3) Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(12.dp)) {
+                    Text("数据已 $staleMinutes 分钟未更新，请以现场为准", Modifier.fillMaxWidth().padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+        }
         item(key = "board-controls", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
             Column {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -107,6 +146,10 @@ fun MachineBoard(
                         )
                     }
                     FilterChip(selected = onlyFavorites, onClick = { onlyFavorites = !onlyFavorites }, label = { Text("常用") }, modifier = Modifier.heightIn(min = 48.dp).testTag("machine-filter-favorites"))
+                }
+                if (floors.any { it.first.isNotBlank() }) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = floor == null, onClick = { floor = null }, label = { Text("本楼全部") }, modifier = Modifier.heightIn(min = 48.dp).testTag("machine-floor-all"))
+                    floors.forEach { (code, name) -> FilterChip(selected = floor == code, onClick = { floor = code }, label = { Text(name) }, modifier = Modifier.heightIn(min = 48.dp).testTag("machine-floor-$code")) }
                 }
             }
         }

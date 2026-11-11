@@ -17,7 +17,7 @@ object NativeNavigation {
         return when (destination) {
             "MY_LAUNDRY", "QUEUE_THREE_MINUTES", "ESTIMATED_END", "TASK_FINISHED", "PICKUP_REQUEST" -> 1
             "CHAT_MENTION" -> 2
-            "ANNOUNCEMENT" -> 0
+            "ANNOUNCEMENT", "LAUNDRY_BOARD" -> 0
             else -> null
         }
     }

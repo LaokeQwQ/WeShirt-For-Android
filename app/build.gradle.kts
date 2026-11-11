@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.net.URI
 
 plugins {
     id("com.android.application")
@@ -16,10 +17,11 @@ android {
         applicationId = "com.laoke.weshirt"
         minSdk = 29
         targetSdk = 36
-        versionCode = 3
+        versionCode = 4
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["timeout_msec"] = "90000"
+        manifestPlaceholders["weshirtShareHost"] = runCatching { URI(config("WESHIRT_API_BASE_URL")).host }.getOrNull() ?: "share.invalid"
         buildConfigField("String", "API_BASE_URL", literal(config("WESHIRT_API_BASE_URL")))
         listOf("PUSH_FCM_APP_ID", "PUSH_FCM_API_KEY", "PUSH_FCM_PROJECT_ID", "PUSH_FCM_SENDER_ID", "PUSH_UMENG_APP_KEY", "PUSH_UMENG_MESSAGE_SECRET").forEach { name -> buildConfigField("String", name, literal(config("WESHIRT_$name"))) }
     }

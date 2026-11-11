@@ -31,13 +31,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
-@Composable fun SettingsScreen(state: AppState, vm: AppViewModel, login: () -> Unit, requestNotifications: () -> Unit, endpoint: () -> Unit, building: () -> Unit) {
+@Composable fun SettingsScreen(state: AppState, vm: AppViewModel, login: () -> Unit, requestNotifications: () -> Unit, endpoint: () -> Unit, building: () -> Unit, backgroundSettings: () -> Unit = {}) {
     var nick by remember(state.profile?.nick) { mutableStateOf(state.profile?.nick.orEmpty()) }; var avatarMenu by remember { mutableStateOf(false) }
     var logout by remember { mutableStateOf(false) }; var reminderStart by remember(state.reminderStart) { mutableStateOf(state.reminderStart) }; var reminderEnd by remember(state.reminderEnd) { mutableStateOf(state.reminderEnd) }
+    var admin by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
+    var favoriteSettings by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
     val context = LocalContext.current
-    val owner = state.profile?.id
+    val owner = state.profile?.id?.let { state.endpoint + "|" + it }
     var avatarOwner by remember { mutableStateOf<String?>(null) }
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if(uri != null && avatarOwner != null && avatarOwner == vm.state.value.profile?.id) vm.mutate {
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri -> if(uri != null && avatarOwner != null && avatarOwner == vm.state.value.let { s -> s.profile?.id?.let { s.endpoint + "|" + it } }) vm.mutate {
         val requestOwner = avatarOwner
         val data = withContext(Dispatchers.IO) {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }; context.contentResolver.openInputStream(uri).use { BitmapFactory.decodeStream(it,null,bounds) }
@@ -49,7 +51,7 @@ import java.io.ByteArrayOutputStream
             if(resized !== square) resized.recycle(); if(square !== raw) square.recycle(); raw.recycle()
             "data:image/jpeg;base64," + android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP)
         }
-        if(requestOwner != vm.state.value.profile?.id) return@mutate
+        if(requestOwner != vm.state.value.let { s -> s.profile?.id?.let { s.endpoint + "|" + it } }) return@mutate
         vm.api.call("/api/user/profile","POST",JSONObject().put("avatarUrl",data))
     } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -62,8 +64,10 @@ import java.io.ByteArrayOutputStream
             else {
                 OutlinedTextField(nick, { nick = it.take(16) }, label = { Text("昵称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Button(onClick = { vm.nick(nick) }, enabled = !state.busy && nick.isNotBlank()) { Text("保存") }; OutlinedButton(onClick = { vm.randomNick { nick = it } }, enabled = !state.busy) { Text("随机昵称") } }
-                TextButton(onClick = building) { Icon(Icons.Outlined.Apartment, null); Text("住宿楼 · ${state.buildings.find { it.code == state.building }?.name ?: "请选择"}") }
-                Text("自行修改住宿楼一次，之后请联系管理员。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = building, enabled = !state.busy && (state.profile.changesLeft > 0 || state.profile.building.isBlank())) { Icon(Icons.Outlined.Apartment, null); Text("住宿楼 · ${state.buildings.find { it.code == state.building }?.name ?: "请选择"}") }
+                Text(if (state.profile.changesLeft > 0) "还可自行修改 ${state.profile.changesLeft} 次，之后请联系管理员。" else "自行修改次数已用完，换楼请联系管理员。", style = MaterialTheme.typography.bodySmall)
+                Text("钉钉账号 · ${state.profile.dingNick.ifBlank { "已关联" }}")
+                Text("手机号 · ${state.profile.mobile.ifBlank { "尚未获取" }}")
                 Spacer(Modifier.height(14.dp))
                 OutlinedButton(onClick = { logout = true }, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("退出登录") }
             }
@@ -72,10 +76,12 @@ import java.io.ByteArrayOutputStream
         item { SettingsCard("通知") {
             ToggleRow("系统洗衣提醒", "结束前提醒、排队与被 @ 提示", state.notificationsOn) { if(it) requestNotifications() else vm.toggleNotify(false) }
             ToggleRow("开屏公告", "接收所在楼栋和公共公告", state.announcementsOn) { vm.toggleAnnouncements(it) }
-            Text("推送需要服务端渠道配置与系统授权；国内手机优先使用厂商通道。", style = MaterialTheme.typography.bodySmall)
-            ToggleRow("常洗时间空闲提醒", "每半小时一次，最多三次；开始洗衣后停止", state.favoriteRemindersOn) { vm.saveReminders(it, reminderStart, reminderEnd) }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { OutlinedTextField(reminderStart, { reminderStart = it.take(5) }, label = { Text("开始 HH:mm") }, modifier = Modifier.weight(1f), singleLine = true); OutlinedTextField(reminderEnd, { reminderEnd = it.take(5) }, label = { Text("结束 HH:mm") }, modifier = Modifier.weight(1f), singleLine = true) }
-            TextButton(onClick = { vm.saveReminders(state.favoriteRemindersOn, reminderStart, reminderEnd) }, enabled = !state.busy) { Text("保存提醒时段") }
+            Text("优先使用 FCM，不可用时使用基础 U-Push。实际送达受网络和系统后台限制影响。", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = backgroundSettings, enabled = state.profile != null) { Text("后台提醒与省电白名单") }
+            Text("结束前提醒", style = MaterialTheme.typography.labelLarge)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf(0, 3, 5, 10).forEach { minutes -> FilterChip(state.profile?.notifyLeadMin == minutes, { vm.mutate { vm.api.call("/api/user/notify", "POST", JSONObject().put("leadMin", minutes)) } }, enabled = state.profile != null && !state.busy, label = { Text(if (minutes == 0) "结束时" else "${minutes}分") }) } }
+            TextButton(onClick = { vm.mutate(null) { val result = vm.api.call("/api/user/test-notify", "POST", JSONObject()); vm.message(result.str("message", result.str("hint", "通知请求已提交，请检查钉钉和系统通知"))) } }, enabled = state.profile != null && !state.busy) { Text("发送测试提醒") }
+            FilledTonalButton(onClick = { favoriteSettings = true }, enabled = state.profile != null && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("常用机器与洗衣时段 · ${if (state.favoriteRemindersOn) "提醒已开启" else "提醒已关闭"}") }
         } }
         item { SettingsCard("显示与性能") {
             Text("外观", style = MaterialTheme.typography.labelLarge)
@@ -88,8 +94,11 @@ import java.io.ByteArrayOutputStream
         } }
         item { SettingsCard("隐私") { ToggleRow("匿名性能数据", "不包含聊天、备注、手机号与账号标识", state.telemetryOn, vm::telemetry) } }
         item { SettingsCard("朋友与代取") { Text("扫描个人二维码添加朋友后，可在「我的洗衣」中发送代取请求。"); FilledTonalButton(onClick = { vm.tab(1) }) { Text("查看朋友与代取") } } }
+        if (state.access.optBoolean("adminVisible")) item { SettingsCard("管理") {
+            FilledTonalButton(onClick = { admin = true }, modifier = Modifier.fillMaxWidth()) { Text("管理员后台") }
+        } }
         item { SettingsCard("关于 WeShirt") {
-            Text("WeShirt ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
+            Text("WeShirt v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
             Text("本程序的初衷只是为了方便作者自己洗衣服。若有帮到您，您的认可是对我最大的鼓励。如果可以的话，可以请我喝杯咖啡嘛。")
             Text("至今耗费20亿Token和数天用于开发调试，部署于腾讯云CloudBase，这些都是不小的费用。", style = MaterialTheme.typography.bodySmall)
             Text("基于海乐生活公开数据提供服务。设备实际情况请以现场为准。", style = MaterialTheme.typography.bodySmall)
@@ -98,8 +107,11 @@ import java.io.ByteArrayOutputStream
             Text("Made with 💗 by Laoke", style = MaterialTheme.typography.labelMedium)
         } }
     }
+    if (admin && state.access.optBoolean("adminVisible")) com.laoke.weshirt.ui.admin.NativeAdminScreen(state, vm) { admin = false }
+    if (favoriteSettings && state.profile != null) FavoritePreferencesDialog(state, vm) { favoriteSettings = false }
     if(avatarMenu) AlertDialog(onDismissRequest = { avatarMenu = false }, title = { Text("头像") }, text = { Column {
         TextButton(onClick = { vm.mutate { vm.api.call("/api/user/dingtalk-avatar") }; avatarMenu = false }) { Text("用钉钉头像") }
+        TextButton(onClick = { vm.mutate { vm.api.call("/api/user/profile", "POST", JSONObject().put("avatarUrl", "")) }; avatarMenu = false }) { Text("移除头像，使用昵称首字") }
         TextButton(onClick = { avatarOwner = owner; avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); avatarMenu = false }) { Text("自定义头像") }
     } }, confirmButton = { TextButton(onClick = { avatarMenu = false }) { Text("取消") } })
     if(logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("退出当前账号？") }, text = { Text("会清理本机账号数据和洗衣通知。") }, confirmButton = { TextButton(onClick = { vm.logout(); logout = false }) { Text("退出登录") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("取消") } })

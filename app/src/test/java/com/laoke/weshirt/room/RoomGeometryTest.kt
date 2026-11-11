@@ -77,7 +77,10 @@ class RoomGeometryTest {
     @Test fun sceneGeometryStaysFiniteIndexedAndWithinAMobileVertexBudget() {
         val meshes = RoomGeometry.environment().values + RoomGeometry.machineBodies().values +
             RoomLayout.slots.map { RoomGeometry.status(it, RoomMachineState.UNKNOWN) } +
-            RoomLayout.slots.indices.map(RoomGeometry::garments)
+            RoomLayout.slots.indices.map(RoomGeometry::garments) +
+            RoomLayout.slots.map(RoomGeometry::door) + RoomLayout.slots.map { RoomGeometry.queueBuckets(it, 3) } +
+            RoomLayout.slots.filterNot { it.dryer }.map(RoomGeometry::water) +
+            (0..3).map(RoomGeometry::windowSash) + RoomGeometry.faucetWater()
         assertTrue(meshes.sumOf { it.vertexCount } < 120_000)
         meshes.forEach { mesh ->
             assertTrue(mesh.vertexCount > 0)
@@ -88,6 +91,36 @@ class RoomGeometryTest {
             assertTrue(mesh.normals.all(Float::isFinite))
             assertTrue(mesh.indices.all { it in 0 until mesh.vertexCount })
         }
+    }
+
+    @Test fun queueGeometryIsCappedAndEmptyQueuesAllocateNoVertices() {
+        val slot = RoomLayout.slots.first()
+        assertEquals(0, RoomGeometry.queueBuckets(slot, 0).vertexCount)
+        assertEquals(0, RoomGeometry.queueBuckets(slot, -1).vertexCount)
+        assertEquals(RoomGeometry.queueBuckets(slot, 3).vertexCount, RoomGeometry.queueBuckets(slot, Int.MAX_VALUE).vertexCount)
+    }
+
+    @Test fun pileHasAllThreeWebGarmentColorsAndNonFlatFolds() {
+        val mesh = RoomGeometry.garments(0)
+        val colors = mesh.colors.toList().chunked(4).map { it.take(3) }.toSet()
+        assertEquals(3, colors.size)
+        for (color in listOf(0x537BA6, 0xC68A7E, 0xF0EEE4)) assertTrue(RoomGeometry.rgb(color).take(3) in colors)
+        assertTrue(mesh.positions.toList().chunked(3).map { it[2] }.toSet().size > 10)
+        assertTrue(mesh.normals.toList().chunked(3).all { normal -> normal.sumOf { (it * it).toDouble() } in .99..1.01 })
+    }
+
+    @Test fun faultGeometryAddsTheCrossWithoutChangingTheIdleMachineBody() {
+        val slot = RoomLayout.slots.first()
+        assertTrue(RoomGeometry.status(slot, RoomMachineState.FAULT).vertexCount > RoomGeometry.status(slot, RoomMachineState.IDLE).vertexCount)
+    }
+
+    @Test fun reviewUsesTheWebOrangeIndicatorInsteadOfUnknownGrayOrFaultCross() {
+        val slot = RoomLayout.slots.first()
+        val review = RoomGeometry.status(slot, RoomMachineState.REVIEW)
+        val orange = RoomGeometry.rgb(0xF97316).toList()
+        assertTrue(review.colors.toList().chunked(4).all { it == orange })
+        assertEquals(RoomGeometry.status(slot, RoomMachineState.UNKNOWN).vertexCount, review.vertexCount)
+        assertTrue(review.vertexCount < RoomGeometry.status(slot, RoomMachineState.FAULT).vertexCount)
     }
 
     @Test fun garmentTriangulationPreservesConcaveLegGap() {

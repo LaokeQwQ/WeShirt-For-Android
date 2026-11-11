@@ -26,6 +26,9 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
     private var goodSince = -1L
     private var lastChange = Long.MIN_VALUE / 2
     private var noticePending = false
+    private var warmupStart = -1L
+    private var lastSample = -1L
+    private var badWindows = 0
 
     fun setMode(value: PerformanceMode) {
         if (mode != value) {
@@ -33,6 +36,8 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
             adaptiveLevel = 0
             noticePending = false
             lastChange = Long.MIN_VALUE / 2
+            warmupStart = -1L
+            lastSample = -1L
             resetWindow()
         }
     }
@@ -50,6 +55,8 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
     fun setForeground(value: Boolean) {
         if (foreground != value) {
             foreground = value
+            warmupStart = -1L
+            lastSample = -1L
             resetWindow()
         }
     }
@@ -113,6 +120,12 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         if (!foreground || mode != PerformanceMode.AUTO || powerSaver || thermalStatus >= 2 ||
             (!interacting && !animated) || scheduledBudgetNanos <= 0L
         ) return
+        // Shader compilation, surface resize and resumed sessions must settle before
+        // judging performance. Inactive gaps cannot turn short gestures into a failure.
+        if (lastSample >= 0L && nowNanos - lastSample > 1_000_000_000L) resetWindow()
+        lastSample = nowNanos
+        if (warmupStart < 0L) warmupStart = nowNanos
+        if (nowNanos - warmupStart < WARMUP_NANOS) return
         if (windowStart < 0L) windowStart = nowNanos
         frames++
         val work = max(gpuDurationNanos?.takeIf { it > 0L } ?: 0L, cpuDurationNanos)
@@ -126,13 +139,16 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         when {
             badRatio >= 0.25 -> {
                 goodSince = -1L
-                if (nowNanos - lastChange >= DOWNGRADE_COOLDOWN && adaptiveLevel < MAX_LEVEL) {
+                badWindows = (badWindows + 1).coerceAtMost(REQUIRED_BAD_WINDOWS)
+                if (badWindows >= REQUIRED_BAD_WINDOWS && nowNanos - lastChange >= DOWNGRADE_COOLDOWN && adaptiveLevel < MAX_LEVEL) {
                     adaptiveLevel++
                     lastChange = nowNanos
                     noticePending = true
+                    badWindows = 0
                 }
             }
             badRatio <= 0.05 && recoveryFrames.toDouble() / frames >= 0.9 -> {
+                badWindows = 0
                 if (goodSince < 0L) goodSince = windowStart
                 if (adaptiveLevel > 0 && nowNanos - goodSince >= RECOVERY_NANOS &&
                     nowNanos - lastChange >= DOWNGRADE_COOLDOWN
@@ -142,7 +158,7 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
                     goodSince = nowNanos
                 }
             }
-            else -> goodSince = -1L
+            else -> { goodSince = -1L; badWindows = 0 }
         }
         windowStart = nowNanos
         frames = 0
@@ -156,6 +172,7 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
         badFrames = 0
         recoveryFrames = 0
         goodSince = -1L
+        badWindows = 0
     }
 
     private fun hasRecoveryHeadroom(workNanos: Long): Boolean {
@@ -175,8 +192,10 @@ class AdaptiveFrameController(displayRefreshRate: Float = 60f) {
 
     companion object {
         private const val WINDOW_NANOS = 2_000_000_000L
-        private const val DOWNGRADE_COOLDOWN = 8_000_000_000L
-        private const val RECOVERY_NANOS = 16_000_000_000L
+        private const val WARMUP_NANOS = 8_000_000_000L
+        private const val REQUIRED_BAD_WINDOWS = 3
+        private const val DOWNGRADE_COOLDOWN = 30_000_000_000L
+        private const val RECOVERY_NANOS = 24_000_000_000L
         private const val MIN_WINDOW_FRAMES = 20
         private const val MAX_LEVEL = 3
 

@@ -26,5 +26,5 @@ jobs:
         with:
           languages: java-kotlin
           build-mode: manual
-      - run: chmod +x gradlew && ./gradlew :app:assembleDebug --no-daemon --no-configuration-cache
+      - run: chmod +x gradlew && ./gradlew :app:assembleDebug --no-daemon --no-configuration-cache --no-build-cache --rerun-tasks -Pkotlin.incremental=false
       - uses: github/codeql-action/analyze@v3

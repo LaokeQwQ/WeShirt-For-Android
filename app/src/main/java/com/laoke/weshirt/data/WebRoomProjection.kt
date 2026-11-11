@@ -25,6 +25,7 @@ fun projectWebRoom(machines: List<Machine>, now: Long): WebRoomProjection {
                 machine.suspectedUncollected || machine.state in setOf("pending_pickup", "awaiting_pickup") -> RoomMachineState.AWAITING_PICKUP
                 machine.state == "idle" -> RoomMachineState.IDLE
                 machine.state == "occupied" -> if (machine.finishAt?.let { it - now in 1..180_000L } == true) RoomMachineState.FINISHING else RoomMachineState.RUNNING
+                machine.state == "abnormal" -> RoomMachineState.REVIEW
                 machine.state == "faulty" -> RoomMachineState.FAULT
                 else -> RoomMachineState.UNKNOWN
             }

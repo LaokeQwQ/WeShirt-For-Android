@@ -3,6 +3,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
     <uses-permission android:name="freemme.permission.msa" tools:node="remove" />
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
@@ -10,13 +15,22 @@
     <application android:name=".WeShirtApplication" android:allowBackup="false" android:label="WeShirt" android:icon="@drawable/ic_launcher" android:theme="@style/Theme.WeShirt" android:usesCleartextTraffic="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:windowSoftInputMode="adjustResize">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+            <intent-filter><action android:name="android.intent.action.SEND" /><category android:name="android.intent.category.DEFAULT" /><data android:mimeType="text/plain" /></intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" /><category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="${weshirtShareHost}" android:path="/" />
+            </intent-filter>
         </activity>
         <activity android:name=".platform.login.DingTalkCallbackActivity" android:exported="false" />
         <activity-alias android:name="${applicationId}.ddauth.DDAuthActivity" android:targetActivity=".platform.login.DingTalkCallbackActivity" android:exported="true" />
         <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
         <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
-        <receiver android:name=".platform.widget.LaundryWidgetProvider" android:exported="false"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" /></receiver>
+        <receiver android:name=".platform.widget.LaundryWidgetProvider" android:label="@string/widget_name" android:exported="false"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" /></receiver>
         <receiver android:name=".platform.notification.NotificationDismissReceiver" android:exported="false" />
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.media" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/media_paths" />
+        </provider>
         <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
         <provider android:name="com.google.firebase.provider.FirebaseInitProvider" tools:node="remove" />
         <provider android:name="com.umeng.message.component.UmengMessageProvider" android:enabled="false" android:exported="false" tools:replace="android:enabled,android:exported" />

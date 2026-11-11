@@ -14,7 +14,14 @@ data class PushRoute(val provider: PushProvider, val reason: String)
 
 /** One installation uses either Firebase FCM or the base U-Push channel. */
 object PushRouter {
-    fun choose(region: PushRegion, available: PushAvailability): PushRoute {
+    const val FCM_RETRY_DELAY_MILLIS = 6 * 60 * 60_000L
+
+    /** A clock rollback or corrupt future timestamp must not suppress FCM forever. */
+    fun deferFcm(lastFailureAtMillis: Long, nowMillis: Long): Boolean =
+        lastFailureAtMillis > 0 && nowMillis >= lastFailureAtMillis &&
+            nowMillis - lastFailureAtMillis < FCM_RETRY_DELAY_MILLIS
+
+    fun choose(region: PushRegion, available: PushAvailability, fcmDeferred: Boolean = false): PushRoute {
         if (!available.consent) return PushRoute(PushProvider.NONE, "CONSENT_REQUIRED")
         return when (region) {
             PushRegion.DOMESTIC -> if (available.umengConfigured) PushRoute(PushProvider.UMENG, "UMENG_CHANNEL")
@@ -22,12 +29,17 @@ object PushRouter {
             PushRegion.GOOGLE -> if (available.firebaseConfigured && available.googleServicesAvailable)
                 PushRoute(PushProvider.FCM, "GOOGLE_SERVICES") else PushRoute(PushProvider.NONE, "FCM_UNAVAILABLE")
             PushRegion.AUTO -> when {
-                available.googleServicesAvailable && available.firebaseConfigured -> PushRoute(PushProvider.FCM, "GOOGLE_SERVICES")
-                available.umengConfigured -> PushRoute(PushProvider.UMENG, "UMENG_CHANNEL")
+                available.googleServicesAvailable && available.firebaseConfigured && !fcmDeferred -> PushRoute(PushProvider.FCM, "GOOGLE_SERVICES")
+                available.umengConfigured -> PushRoute(PushProvider.UMENG, if (fcmDeferred) "FCM_UNAVAILABLE_USING_UMENG" else "UMENG_CHANNEL")
+                fcmDeferred && available.firebaseConfigured -> PushRoute(PushProvider.NONE, "FCM_RETRY_DEFERRED")
                 else -> PushRoute(PushProvider.NONE, "NO_CONFIGURED_PROVIDER")
             }
         }
     }
+
+    fun afterFcmFailure(region: PushRegion, available: PushAvailability): PushRoute =
+        if (region == PushRegion.AUTO) choose(region, available, fcmDeferred = true)
+        else PushRoute(PushProvider.NONE, if (available.consent) "FCM_UNAVAILABLE" else "CONSENT_REQUIRED")
 }
 
 data class PushRegistration(val installationId: String, val provider: PushProvider, val token: String)

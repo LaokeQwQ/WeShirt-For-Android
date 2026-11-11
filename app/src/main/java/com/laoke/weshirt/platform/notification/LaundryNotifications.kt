@@ -31,6 +31,8 @@ data class TaskProgress(
     val active: Boolean = true,
     /** Promotion requires the user's explicit choice to monitor this particular active task. */
     val userRequestedTracking: Boolean = false,
+    /** Zero keeps the finish reminder while disabling the advance reminder. */
+    val leadMinutes: Int = 3,
 )
 
 data class NotificationCapabilities(val permissionGranted: Boolean, val notificationsEnabled: Boolean, val liveUpdatesAllowed: Boolean)

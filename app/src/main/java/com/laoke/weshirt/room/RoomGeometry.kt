@@ -174,8 +174,7 @@ internal object RoomGeometry {
             paint.box(side * 1.785f, 1.5f, -2.1f, .53f, 1.3f, .07f, wall)
             glow.box(x, 1.5f, -2.115f, 1.29f, 1.22f, .025f, rgb(0xA7C7DA))
             for (dy in listOf(-.65f, .65f)) metal.box(x, 1.5f + dy, -2.032f, 1.35f, .06f, .06f, frame)
-            for (dx in listOf(-.645f, 0f, .645f)) metal.box(x + dx, 1.5f, -2.03f, .045f, 1.3f, .06f, frame)
-            for (dx in listOf(-.12f, .12f)) metal.box(x + dx, 1.5f, -1.98f, .026f, .15f, .032f, rgb(0xD5DEE8))
+            for (dx in listOf(-.645f, .645f)) metal.box(x + dx, 1.5f, -2.03f, .045f, 1.3f, .06f, frame)
         }
         paint.box(0f, .79f, -1.99f, 3.28f, .06f, .14f, rgb(0x726452))
         // Open door, entrance piers, breaker and the opposite hall doorway.
@@ -207,6 +206,17 @@ internal object RoomGeometry {
         metal.box(-1.89f, .91f, -1.43f, .025f, .27f, .025f, pipe)
         metal.box(-1.82f, 1.04f, -1.43f, .17f, .025f, .025f, pipe)
         metal.cylinder(-1.02f, .17f, 3.66f, .13f, .34f, rgb(0x37414A), axisZ = false, segments = 16)
+        // Long notice text belongs to the native detail sheet, not a 3D texture.
+        for (z in listOf(.39f, .77f)) {
+            metal.box(-1.99f, 1.55f, z, .035f, .43f, .33f, rgb(0x3B4148))
+            paint.box(-1.964f, 1.55f, z, .012f, .37f, .27f, rgb(0xE7E5DC))
+            for (line in 0..4) metal.box(-1.952f, 1.66f - line * .053f, z, .008f, .008f, .20f - line * .018f, rgb(0x66717A))
+        }
+        for (x in listOf(1.36f, 1.88f)) for (z in listOf(3.56f, 3.88f)) metal.box(x, .39f, z, .025f, .78f, .025f, pipe)
+        for (y in listOf(.13f, .39f, .65f)) for (i in 0..4) metal.box(1.62f, y, 3.56f + i * .08f, .55f, .016f, .018f, pipe)
+        for (i in 0..3) paint.ellipsoid(1.44f + (i % 2) * .24f, .19f + (i / 2) * .26f, 3.70f, .085f, .045f, .14f, rgb(if (i % 2 == 0) 0xC9C5B8 else 0x4C5966))
+        metal.box(-1.87f, .62f, -1.35f, .025f, 1.22f, .025f, rgb(0x9BA7A8))
+        paint.box(-1.78f, .035f, -1.35f, .32f, .05f, .15f, rgb(0x6C7976))
         return mapOf(RoomMaterial.PAINT to paint.build(), RoomMaterial.METAL to metal.build(), RoomMaterial.GLOW to glow.build())
     }
 
@@ -224,15 +234,11 @@ internal object RoomGeometry {
             body.box(.105f, height - .10f, .334f, .24f, .09f, .02f, rgb(0x263840))
             detail.cylinder(-.20f, height - .10f, .34f, .043f, .025f, rgb(0xBCC5CB), segments = 16)
             detail.cylinder(0f, .53f, .328f, radius + .038f, .025f, rgb(0x26343C), segments = 28)
-            detail.torus(0f, .53f, .36f, radius, .038f, rgb(0xACB6BC))
-            detail.torus(0f, .53f, .389f, radius - .03f, .012f, rgb(0x5C6C76))
-            detail.torusArc(0f, .53f, .40f, radius + .008f, .008f, .35f, 1.25f, rgb(0xDAE5E8))
             for (i in 0..15) {
                 val a = i * (Math.PI * 2 / 16)
                 detail.cylinder((cos(a) * (radius - .05f)).toFloat(), .53f + (sin(a) * (radius - .05f)).toFloat(), .342f,
                     .005f, .005f, rgb(0x8B9DA5), segments = 5)
             }
-            body.box(radius + .035f, .53f, .411f, .038f, .13f, .04f, rgb(0x6C7A82))
             body.box(0f, .12f, .32f, .55f, .10f, .018f, rgb(0xB5C0C5))
             for (i in 0..6) body.box(-.20f + i * .066f, .12f, .334f, .035f, .006f, .006f, rgb(0x75868E))
             for (dx in listOf(-.25f, .25f)) detail.box(dx, .023f, .20f, .07f, .046f, .10f, rgb(0x4F5962))
@@ -260,7 +266,7 @@ internal object RoomGeometry {
             RoomMachineState.IDLE -> 0x22C55E
             RoomMachineState.RUNNING -> 0xF59E0B
             RoomMachineState.FINISHING -> 0xE2BD68
-            RoomMachineState.AWAITING_PICKUP -> 0xF97316
+            RoomMachineState.REVIEW, RoomMachineState.AWAITING_PICKUP -> 0xF97316
             RoomMachineState.FAULT -> 0xEF4444
             RoomMachineState.UNKNOWN -> 0x6B7280
         }
@@ -269,24 +275,81 @@ internal object RoomGeometry {
             box(.105f, height - .10f, .35f, .16f, .028f, .01f, rgb(color))
             cylinder(.27f, height - .045f, .34f, .017f, .012f, rgb(color), segments = 10)
             box(0f, height + .065f, .26f, .54f, .018f, .035f, rgb(color))
+            if (state == RoomMachineState.FAULT) for (angle in listOf(-.7854f, .7854f)) {
+                polygon(listOf(-.14f to -.015f, .14f to -.015f, .14f to .015f, -.14f to .015f)
+                    .map { (x, y) -> (x * cos(angle) - y * sin(angle)) to (.53f + x * sin(angle) + y * cos(angle)) }, .402f, rgb(color))
+            }
         }.build()
         return MeshBuilder().apply { append(local, slot) }.build()
     }
 
-    /** Local coordinates allow rotation by a transform, with no vertex uploads per frame. */
-    fun garments(slotIndex: Int): MeshData = MeshBuilder().apply {
-        val shirt = listOf(-.12f to .13f, -.055f to .18f, .055f to .18f, .12f to .13f,
-            .19f to .075f, .135f to .005f, .095f to .045f, .095f to -.15f,
-            -.095f to -.15f, -.095f to .045f, -.135f to .005f, -.19f to .075f)
-        polygon(shirt.map { (x, y) -> (x - .075f) to (y + .06f) }, .009f,
-            rgb(if (slotIndex % 2 == 0) 0x91B9D1 else 0xCEABA4), rotation = -.35f)
-        val trousers = listOf(-.11f to .14f, .11f to .14f, .13f to -.15f, .025f to -.16f,
-            0f to -.025f, -.025f to -.16f, -.13f to -.15f)
-        polygon(trousers.map { (x, y) -> (x + .105f) to (y - .065f) }, .032f,
-            rgb(0x526F83), rotation = .45f)
-        // Cuffs and a collar are distinct folds rather than spherical fabric blobs.
-        box(-.08f, .175f, .024f, .065f, .025f, .018f, rgb(0xD1DFE1))
-        box(.15f, -.17f, .047f, .085f, .026f, .018f, rgb(0x7E96A3))
+    /** Same three outlines, folds, colors and pile transforms as Web room/garments.js. */
+    @Suppress("UNUSED_PARAMETER")
+    fun garments(slotIndex: Int): MeshData {
+        val shirt = listOf(-.27f to .53f, -.58f to .42f, -.79f to .12f, -.55f to -.04f,
+            -.4f to .16f, -.4f to -.53f, .4f to -.53f, .4f to .16f, .55f to -.04f,
+            .79f to .12f, .58f to .42f, .27f to .53f, .18f to .35f, 0f to .29f, -.18f to .35f)
+        val trousers = listOf(-.39f to .53f, -.44f to -.5f, -.1f to -.54f, 0f to .1f,
+            .1f to -.54f, .44f to -.5f, .39f to .53f)
+        val pile = MeshBuilder()
+        fun piece(outline: List<Pair<Float, Float>>, color: Int, x: Float, y: Float, z: Float,
+                  sx: Float, sy: Float, sz: Float, angle: Float) {
+            val flat = MeshBuilder().apply { polygon(outline, 0f, rgb(color)) }.build()
+            fun point(index: Int): Vec3 {
+                val ox = flat.positions[index * 3]; val oy = flat.positions[index * 3 + 1]
+                val px = ox * sx; val py = oy * sy
+                return Vec3((x + px * cos(angle) - py * sin(angle)).toDouble(),
+                    (y + px * sin(angle) + py * cos(angle)).toDouble(),
+                    (z + (sin(ox * 5) * .035f + sin(oy * 4) * .02f) * sz).toDouble())
+            }
+            for (i in flat.indices.indices step 3) pile.triangle(point(flat.indices[i]), point(flat.indices[i + 1]), point(flat.indices[i + 2]), rgb(color))
+        }
+        piece(trousers, 0x537BA6, -.31f, -.31f, -.035f, .7f, .85f, .65f, -.35f)
+        piece(shirt, 0xC68A7E, .4f, -.1f, -.018f, .6f, .7f, .7f, .45f)
+        piece(shirt, 0xF0EEE4, 0f, .12f, .045f, 1.05f, 1.05f, .75f, -.12f)
+        return pile.build()
+    }
+
+    /** Vertices relative to the hinge; opening changes only a native transform. */
+    fun door(slot: RoomSlot): MeshData = MeshBuilder().apply {
+        val radius = if (slot.dryer) .23f else .205f
+        val x = radius * .95f
+        torus(x, 0f, 0f, radius, .038f, rgb(0xACB6BC))
+        torus(x, 0f, .029f, radius - .03f, .012f, rgb(0x5C6C76))
+        torusArc(x, 0f, .04f, radius + .008f, .008f, .35f, 1.25f, rgb(0xDAE5E8))
+        box(x + radius + .025f, 0f, .025f, .038f, .13f, .04f, rgb(0x6C7A82))
+    }.build()
+
+    fun queueBuckets(slot: RoomSlot, count: Int): MeshData = MeshBuilder().apply {
+        for (i in 0 until count.coerceIn(0, 3)) {
+            val x = -.28f + i * .24f
+            cylinder(x, .055f, .62f, .085f, .11f, rgb(listOf(0x3F8FD2, 0xD26A8A, 0x4FAE86)[i]), axisZ = false, segments = 14)
+            cylinder(x, .11f, .62f, .087f, .008f, rgb(0xE8EDF3), axisZ = false, segments = 20)
+            ellipsoid(x, .12f, .62f, .067f, .028f, .08f, rgb(if (i % 2 == 0) 0xE6E2D9 else 0x859CAE))
+        }
+    }.build().let { local -> MeshBuilder().apply { append(local, slot) }.build() }
+
+    fun water(slot: RoomSlot): MeshData = MeshBuilder().apply {
+        val radius = .205f * .82f
+        val outline = (0..20).map { i ->
+            val angle = Math.PI + i * Math.PI / 20
+            (cos(angle) * radius).toFloat() to (.53f + sin(angle).toFloat() * radius)
+        }
+        polygon(outline, .38f, rgb(0x4E8EA4))
+    }.build().let { local -> MeshBuilder().apply { append(local, slot) }.build() }
+
+    fun windowSash(index: Int): MeshData = MeshBuilder().apply {
+        val direction = if (index % 2 == 0) 1f else -1f
+        val x = direction * .315f
+        for (y in listOf(-.61f, .61f)) box(x, y, 0f, .63f, .035f, .035f, rgb(0x272F36))
+        for (dx in listOf(0f, direction * .63f)) box(dx, 0f, 0f, .028f, 1.22f, .035f, rgb(0x272F36))
+        box(direction * .56f, 0f, .035f, .025f, .15f, .03f, rgb(0xD5DEE8))
+        box(x, .15f, -.012f, .58f, .012f, .012f, rgb(0xA7C7DA))
+    }.build()
+
+    fun faucetWater(): MeshData = MeshBuilder().apply {
+        cylinder(-1.89f, .48f, 3.15f, .012f, .92f, rgb(0x98CAD9), axisZ = false, segments = 8)
+        cylinder(-1.89f, .015f, 3.15f, .075f, .009f, rgb(0x79AFBC), axisZ = false, segments = 16)
     }.build()
 
     internal fun rgb(color: Int) = floatArrayOf(

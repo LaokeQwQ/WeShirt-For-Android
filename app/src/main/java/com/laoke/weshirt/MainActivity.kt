@@ -2,8 +2,11 @@ package com.laoke.weshirt
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -19,16 +22,54 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if(granted) vm.toggleNotify(true) else vm.notificationPermissionDenied() }
+    private var notificationIdentity: String? = null
+    private fun accountIdentity(): String? = vm.state.value.profile?.id?.let { vm.state.value.endpoint + "|" + it }
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val expected = notificationIdentity
+        notificationIdentity = null
+        if (expected != null && expected == accountIdentity()) {
+            if(granted) vm.toggleNotify(true) else vm.notificationPermissionDenied()
+        }
+    }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationIdentity = savedInstanceState?.getString("notificationIdentity")
         enableEdgeToEdge()
         consumeLogin(intent)
         consumeNavigation(intent)
-        setContent { WeShirtApp(vm, onLogin = ::login, onRequestNotifications = { if(Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) else vm.toggleNotify(true) }) }
+        setContent { WeShirtApp(vm, onLogin = ::login, onRequestNotifications = ::requestNotifications, onRequestBackground = ::requestBackground) }
+    }
+    override fun onSaveInstanceState(outState: Bundle) { outState.putString("notificationIdentity", notificationIdentity); super.onSaveInstanceState(outState) }
+    private fun requestNotifications() {
+        val identity = accountIdentity() ?: return vm.message("登录后可开启洗衣提醒")
+        getSharedPreferences("permission_guidance", MODE_PRIVATE).edit().putBoolean("notificationOffered", true).apply()
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationIdentity = identity
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else vm.toggleNotify(true)
+    }
+    private fun requestBackground() {
+        if (accountIdentity() == null) return
+        val request = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+        try { startActivity(request) }
+        catch (_: RuntimeException) {
+            try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+            catch (_: RuntimeException) { vm.message("请在系统设置中打开 WeShirt 的电池与后台运行设置") }
+        }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); consumeLogin(intent); consumeNavigation(intent) }
-    private fun consumeNavigation(intent: Intent?) { NativeNavigation.consumeTab(intent)?.let(vm::tab) }
+    private fun consumeNavigation(intent: Intent?) {
+        NativeNavigation.consumeTab(intent)?.let(vm::tab)
+        val value = when (intent?.action) {
+            Intent.ACTION_VIEW -> intent.dataString
+            Intent.ACTION_SEND -> if (intent.type == "text/plain") intent.getStringExtra(Intent.EXTRA_TEXT) else null
+            else -> null
+        }
+        if (value != null) {
+            intent?.data = null; intent?.removeExtra(Intent.EXTRA_TEXT); intent?.action = Intent.ACTION_MAIN
+            vm.receiveShare(value)
+        }
+    }
     private fun login() {
         vm.mutate(null) {
             val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)

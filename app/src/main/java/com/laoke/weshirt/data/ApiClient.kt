@@ -103,6 +103,24 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         } catch(e: ApiException) { throw e } catch(e: IOException) { throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) } }
     }
     suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessToken(origin,version) }
+    /** Only a short-lived channel ticket is sent to the configured relay, never an access token. */
+    fun channelSocket(config: JSONObject, listener: okhttp3.WebSocketListener): okhttp3.WebSocket {
+        val (origin, version) = snapshot()
+        val address = config.str("url")
+        val url = address.replaceFirst("wss:", "https:").toHttpUrlOrNull()
+        require(address.startsWith("wss://") && url != null && url.isHttps && url.username.isEmpty() && url.password.isEmpty() && url.query == null && url.fragment == null)
+        require(config.str("protocol") == "weshirt.channel.v1" && config.str("ticket").length in 1..4096 && config.optLong("expiresAt") - System.currentTimeMillis() in 1..120_000)
+        val guarded = object : okhttp3.WebSocketListener() {
+            fun valid(socket: okhttp3.WebSocket): Boolean = try { current(origin, version); true } catch (_: CancellationException) { socket.cancel(); false }
+            override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) { if (valid(webSocket)) listener.onOpen(webSocket, response) }
+            override fun onMessage(webSocket: okhttp3.WebSocket, text: String) { if (valid(webSocket)) listener.onMessage(webSocket, text) }
+            override fun onMessage(webSocket: okhttp3.WebSocket, bytes: okio.ByteString) { if (valid(webSocket)) webSocket.cancel() }
+            override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) { if (valid(webSocket)) listener.onFailure(webSocket, t, response) }
+            override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) { listener.onClosed(webSocket, code, reason) }
+            override fun onClosing(webSocket: okhttp3.WebSocket, code: Int, reason: String) { webSocket.close(code, null); listener.onClosing(webSocket, code, reason) }
+        }
+        return http.newWebSocket(Request.Builder().url(address).header("Origin", origin).header("Sec-WebSocket-Protocol", "weshirt.channel.v1").build(), guarded)
+    }
     suspend fun upload(path: String, bytes: ByteArray, mime: String): JSONObject {
         require(path.startsWith("/api/messages/") && !path.contains("..") && bytes.size <= 8 * 1024 * 1024)
         val (origin,version) = snapshot()
@@ -111,6 +129,37 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         return execute(Request.Builder().url(origin + path).header("Authorization","Bearer $token").header("Cache-Control","no-store").header("Idempotency-Key",UUID.randomUUID().toString()).post(bytes.toRequestBody(mime.toMediaType())).build(),eventId()).also { current(origin,version) }
     }
     fun encoded(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
+    /** Export is kept in memory until a user-selected document is written. */
+    suspend fun adminCsv(path: String): String {
+        require(path.substringBefore('?') == "/api/admin/audit-logs.csv" && !path.contains("..") && !path.contains('#'))
+        val (origin, version) = snapshot()
+        val token = accessToken(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
+        current(origin, version)
+        val trace = eventId()
+        try {
+            return withContext(Dispatchers.IO) {
+                http.newCall(Request.Builder().url(origin + path).header("Authorization", "Bearer $token")
+                    .header("Cache-Control", "no-store").header("Accept", "text/csv").header("X-Request-ID", trace).build()).execute().use { response ->
+                    val body = response.body ?: throw IOException("empty response")
+                    if (body.contentLength() > MAX_RESPONSE) throw IOException("oversized response")
+                    val source = body.source(); source.request(MAX_RESPONSE + 1)
+                    if (source.buffer.size > MAX_RESPONSE) throw IOException("oversized response")
+                    val text = body.string()
+                    current(origin, version)
+                    if (!response.isSuccessful) {
+                        val error = runCatching { JSONObject(text).optJSONObject("error") }.getOrNull()
+                        throw ApiException(response.code, error?.str("code", "export_failed") ?: "export_failed",
+                            error?.str("eventId", response.header("X-Event-ID") ?: trace) ?: trace,
+                            error?.str("message", "日志导出失败") ?: "日志导出失败")
+                    }
+                    if (response.body?.contentType()?.subtype?.contains("csv") != true) throw ApiException(502, "invalid_export", trace, "日志导出格式异常")
+                    text
+                }
+            }
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: ApiException) { if (problem.status == 401) invalidate(origin, version); throw problem }
+        catch (_: IOException) { throw ApiException(0, "export_failed", trace, "日志导出未完成，请重试") }
+    }
     fun clearMedia() { mediaDir.listFiles()?.forEach { it.delete() } }
     suspend fun downloadMedia(mediaId: String, maxBytes: Long = 8L * 1024 * 1024): File {
         require(mediaId.matches(Regex("[A-Za-z0-9_-]{1,100}")) && maxBytes in 1..8L*1024*1024)
@@ -118,7 +167,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         val token = accessToken(origin,version) ?: throw ApiException(401,"unauthorized",eventId(),"请先登录")
         current(origin,version)
         val temp = File(mediaDir, UUID.randomUUID().toString())
-        return withContext(Dispatchers.IO) {
+        return try { withContext(Dispatchers.IO) {
             val trace = eventId()
             try {
                 http.newCall(Request.Builder().url("$origin/api/messages/media/${encoded(mediaId)}").header("Authorization","Bearer $token").header("Cache-Control","no-store").build()).execute().use { response ->
@@ -132,7 +181,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                 }
                 current(origin,version); temp
             } catch(e: CancellationException) { temp.delete(); throw e } catch(e: ApiException) { temp.delete(); throw e } catch(_: IOException) { temp.delete(); throw ApiException(0,"media_error",trace,"附件下载未完成") }
-        }
+        } } catch (cancel: CancellationException) { temp.delete(); throw cancel }
     }
     private fun eventId() = "client_" + UUID.randomUUID().toString().replace("-", "")
     companion object { private const val MAX_RESPONSE = 2L * 1024 * 1024 }

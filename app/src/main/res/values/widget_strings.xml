@@ -1,0 +1,30 @@
+<resources>
+    <string name="widget_name">WeShirt·洗衣</string>
+    <string name="widget_description">宿舍楼机器状态与我的洗衣任务</string>
+    <string name="widget_brand">WeShirt</string>
+    <string name="widget_current_building">当前宿舍楼</string>
+    <string name="widget_building_overview">楼栋机器</string>
+    <string name="widget_my_laundry">我的洗衣</string>
+    <string name="widget_idle_label">台空闲</string>
+    <string name="widget_idle_accessibility">%1$d 台机器空闲</string>
+    <string name="widget_counts">使用 %1$d · 未知 %2$d</string>
+    <string name="widget_counts_all">空闲 %1$d · 使用 %2$d · 未知 %3$d</string>
+    <string name="widget_usage_label">使用中</string>
+    <string name="widget_unknown_label">未知</string>
+    <string name="widget_sign_in">登录后查看</string>
+    <string name="widget_sign_in_detail">登录并选择宿舍楼</string>
+    <string name="widget_last_sync">同步于 %1$s</string>
+    <string name="widget_old_data">历史数据 · 同步于 %1$s</string>
+    <string name="widget_time_unknown">更新时间未知 · 打开刷新</string>
+    <string name="widget_open_refresh">打开应用刷新</string>
+    <string name="widget_expected_at">预计 %1$s 完成</string>
+    <string name="widget_expected_label">预计完成时间</string>
+    <string name="widget_expected_disclaimer">预计时间，以设备状态为准</string>
+    <string name="widget_awaiting">预计时间已到，待确认</string>
+    <string name="widget_unverified">打开查看最新任务状态</string>
+    <string name="widget_no_task">暂无进行中的洗衣任务</string>
+    <string name="widget_stale_hint">数据可能已变化，点按刷新</string>
+    <string name="widget_board_accessibility">%1$s，%2$s。%3$s。打开楼栋机器列表</string>
+    <string name="widget_task_accessibility">%1$s。%2$s。打开我的洗衣</string>
+    <string name="widget_current_time">当前时间</string>
+</resources>

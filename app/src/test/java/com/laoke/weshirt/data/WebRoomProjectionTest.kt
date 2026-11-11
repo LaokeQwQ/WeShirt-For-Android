@@ -28,4 +28,13 @@ class WebRoomProjectionTest {
         assertEquals(RoomMachineState.RUNNING, projection.machines.first { it.slot == "1" }.state)
         assertEquals("unbound:2", projection.machines.first { it.slot == "2" }.id)
     }
+
+    @Test fun abnormalOccupancyStaysUnderReviewWithoutImplyingUncollectedOrRunning() {
+        val normalReview = machine("review", "1", state = "abnormal", end = 500)
+        val suspected = machine("pickup", "2", state = "abnormal").copy(suspectedUncollected = true)
+        val projection = projectWebRoom(listOf(normalReview, suspected), 1_000)
+        assertEquals(RoomMachineState.REVIEW, projection.machines.first { it.id == "review" }.state)
+        assertEquals(RoomMachineState.AWAITING_PICKUP, projection.machines.first { it.id == "pickup" }.state)
+        assertEquals(RoomMachineState.UNKNOWN, projection.machines.first { it.slot == "3" }.state)
+    }
 }

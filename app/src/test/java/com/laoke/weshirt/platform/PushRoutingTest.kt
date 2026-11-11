@@ -40,6 +40,27 @@ class PushRoutingTest {
             PushAvailability(true, false, false, true)).reason)
     }
 
+    @Test fun fcmFailureFallsBackOnlyWithConsentAndAnAvailableBackup() {
+        val ready = PushAvailability(true, true, true, true)
+        assertEquals(PushProvider.FCM, PushRouter.choose(PushRegion.AUTO, ready).provider)
+        assertEquals(PushProvider.UMENG, PushRouter.afterFcmFailure(PushRegion.AUTO, ready).provider)
+        assertEquals(PushProvider.NONE, PushRouter.afterFcmFailure(PushRegion.AUTO, ready.copy(consent = false)).provider)
+        assertEquals(PushProvider.NONE, PushRouter.afterFcmFailure(PushRegion.AUTO, ready.copy(umengConfigured = false)).provider)
+        assertEquals(PushProvider.NONE, PushRouter.afterFcmFailure(PushRegion.GOOGLE, ready).provider)
+    }
+
+    @Test fun fcmBackoffExpiresAndDoesNotSurviveAClockRollbackForever() {
+        val failedAt = 10_000_000L
+        assertTrue(PushRouter.deferFcm(failedAt, failedAt))
+        assertTrue(PushRouter.deferFcm(failedAt, failedAt + PushRouter.FCM_RETRY_DELAY_MILLIS - 1))
+        assertFalse(PushRouter.deferFcm(failedAt, failedAt + PushRouter.FCM_RETRY_DELAY_MILLIS))
+        assertFalse(PushRouter.deferFcm(failedAt, failedAt - 1))
+        assertFalse(PushRouter.deferFcm(0L, failedAt))
+        val ready = PushAvailability(true, true, true, true)
+        assertEquals(PushProvider.UMENG, PushRouter.choose(PushRegion.AUTO, ready, fcmDeferred = true).provider)
+        assertEquals(PushProvider.FCM, PushRouter.choose(PushRegion.AUTO, ready, fcmDeferred = false).provider)
+    }
+
     @Test fun sameEventOnlyAcceptsNewerRevisions() {
         val ledger = EventRevisionLedger()
         ledger.record("task:one:finished", 3)
