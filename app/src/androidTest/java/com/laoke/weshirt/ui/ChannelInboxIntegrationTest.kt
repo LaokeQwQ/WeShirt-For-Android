@@ -149,7 +149,7 @@ class ChannelInboxIntegrationTest {
         val badgeBounds = unread.getUnclippedBoundsInRoot()
         val cardBounds = compose.onNodeWithTag("channel:public").getUnclippedBoundsInRoot()
         val previewBounds = compose.onNodeWithTag("channel-summary:public", useUnmergedTree = true).getUnclippedBoundsInRoot()
-        assertTrue("Unread badge must have real width", badgeBounds.width > 0.dp)
+        assertTrue("Unread badge must have real width", badgeBounds.right > badgeBounds.left)
         assertTrue("Unread badge must remain to the right of the summary", badgeBounds.left >= previewBounds.right)
         assertTrue("Unread badge must stay inside the visible card", badgeBounds.left >= cardBounds.left && badgeBounds.right <= cardBounds.right && badgeBounds.top >= cardBounds.top && badgeBounds.bottom <= cardBounds.bottom)
         assertFalse("The directory must neither prefetch message bodies nor clear unread", requests.any { it.requestUrl!!.encodedPath in setOf("/api/messages", "/api/messages/read") })
