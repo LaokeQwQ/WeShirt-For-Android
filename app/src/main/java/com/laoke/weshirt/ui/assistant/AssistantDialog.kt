@@ -30,10 +30,11 @@ private data class AssistantConfirmation(val title: String, val message: String,
     var status by remember(session) { mutableStateOf<JSONObject?>(null) }
     var messages by remember(session) { mutableStateOf<List<JSONObject>>(emptyList()) }
     var skills by remember(session) { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var preferences by remember(session) { mutableStateOf<JSONObject?>(null) }
+    var contextInfo by remember(session) { mutableStateOf<JSONObject?>(null) }
     var memory by remember(session) { mutableStateOf<JSONObject?>(null) }
     var tab by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(0) }
     var input by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
-    var selectedSkill by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
     var note by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
     var noteDirty by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(false) }
     var title by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
@@ -50,7 +51,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
         status = request("/api/assistant/status")
         // A failure in one optional panel must not erase the other panels or their drafts.
         val results = coroutineScope {
-            listOf("/api/assistant/history", "/api/assistant/skills", "/api/assistant/memory").map { path -> async {
+            listOf("/api/assistant/history", "/api/assistant/skills", "/api/assistant/memory", "/api/assistant/preferences").map { path -> async {
                 try { Result.success(request(path)) } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) { Result.failure<JSONObject>(failure) }
             } }.awaitAll()
         }
@@ -58,6 +59,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
         results[0].getOrNull()?.let { messages = it.optJSONArray("messages")?.objects().orEmpty() }
         results[1].getOrNull()?.let { skills = it.optJSONArray("skills")?.objects().orEmpty() }
         results[2].getOrNull()?.let { memory = it; if (!noteDirty) note = it.str("note") }
+        results[3].getOrNull()?.let { preferences = it }
         results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { if (it is Exception) error = clientFailure(it, "部分资料读取失败，可重试") }
     } }
     fun updateMemory(body: JSONObject, savedNote: Boolean = false) { session.run {
@@ -84,7 +86,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
     UserFeatureDialog("洗衣助手", close, actions = { IconButton(onClick = ::load, enabled = !session.busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") } }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("对话", "Skills", "个人记忆", "只读 MCP").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, label = { Text(label) }) }
+                listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, label = { Text(label) }) }
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { FeatureError(session) }
@@ -103,16 +105,8 @@ private data class AssistantConfirmation(val title: String, val message: String,
                 } }
                 when (tab) {
                     0 -> {
-                        item {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("提问模板", style = MaterialTheme.typography.titleSmall)
-                                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    FilterChip(selected = selectedSkill.isBlank(), onClick = { selectedSkill = "" }, label = { Text("自由提问") }, enabled = !session.busy)
-                                    skills.forEach { skill -> FilterChip(selected = selectedSkill == skill.str("id"), onClick = { selectedSkill = skill.str("id") }, label = { Text(skill.str("title")) }, enabled = !session.busy) }
-                                }
-                                skills.find { it.str("id") == selectedSkill }?.str("description")?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                            }
-                        }
+                        if(contextInfo?.optBoolean("compressed")==true)item{Text("较早的对话已自动压缩，近期问题保留原文；需要时请补充细节。",style=MaterialTheme.typography.bodySmall)}
+                        item { Text("技能已自动启用，会按问题使用洗衣知识和当前楼栋只读查询，无需选择。",style=MaterialTheme.typography.bodySmall) }
                         if (messages.isEmpty()) item { Text("可以询问空闲机器、洗衣建议或你的洗衣安排。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         items(messages) { message ->
                             val mine = message.str("role") == "user"
@@ -135,11 +129,11 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                     }) { Text("清空对话") }
                                     Button(enabled = canSend, onClick = {
                                         val submitted = input.trim()
-                                        val body = JSONObject().put("input", submitted).apply { if (selectedSkill.isNotBlank()) put("skillId", selectedSkill) }
+                                        val body = JSONObject().put("input", submitted)
                                         session.run {
                                             try {
                                                 val data = request("/api/assistant/chat", "POST", body)
-                                                messages = data.optJSONArray("messages")?.objects().orEmpty()
+                                                messages = data.optJSONArray("messages")?.objects().orEmpty(); contextInfo = data.optJSONObject("context")
                                                 status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
                                                 if (input.trim() == submitted) input = ""
                                             } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
@@ -162,7 +156,6 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 if (skill.str("description").isNotBlank()) Text(skill.str("description"))
                                 Text(skill.str("prompt"), style = MaterialTheme.typography.bodySmall)
                                 Row(Modifier.horizontalScroll(rememberScrollState())) {
-                                    TextButton(onClick = { selectedSkill = skill.str("id"); tab = 0 }) { Text("使用") }
                                     TextButton(onClick = { copyFeatureText(context, skill.str("prompt")); vm.message("模板已复制") }) { Text("复制") }
                                     TextButton(enabled = !session.busy, onClick = { title = skill.str("title"); description = skill.str("description"); prompt = skill.str("prompt") }) { Text("创建副本") }
                                     TextButton(enabled = !session.busy, onClick = { session.run {
@@ -173,7 +166,6 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                         confirmation = AssistantConfirmation("删除这个 Skill？", skill.str("title")) {
                                             session.run {
                                                 request("/api/assistant/skills/${vm.api.encoded(skill.str("id"))}", "DELETE")
-                                                if (selectedSkill == skill.str("id")) selectedSkill = ""
                                                 skills = skills.filterNot { it.str("id") == skill.str("id") }
                                             }
                                         }
@@ -190,7 +182,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 val body = JSONObject().put("title", title.trim()).put("description", description.trim()).put("prompt", prompt.trim())
                                 session.run {
                                     val created = request("/api/assistant/skills", "POST", body).optJSONObject("skill") ?: throw IllegalStateException("模板保存结果不完整，请刷新确认")
-                                    skills = skills + created; selectedSkill = created.str("id")
+                                    skills = skills + created
                                     title = ""; description = ""; prompt = ""; vm.message("Skill 已保存")
                                 }
                             }) { Text("保存模板") }
@@ -202,7 +194,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 if (ticket == null) session.error = "分享链接格式不正确，请粘贴完整的 Skill 链接"
                                 else session.run {
                                     val created = request("/api/assistant/skills/import", "POST", JSONObject().put("ticket", ticket)).optJSONObject("skill") ?: throw IllegalStateException("导入结果不完整，请刷新确认")
-                                    skills = skills + created; selectedSkill = created.str("id"); importLink = ""; vm.message("已导入你的 Skill 副本")
+                                    skills = skills + created; importLink = ""; vm.message("已导入你的 Skill 副本")
                                 }
                             }) { Text("导入副本") }
                         } }
@@ -231,6 +223,10 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 }) { Text("清空并关闭记忆", color = MaterialTheme.colorScheme.error) }
                             }
                         }
+                    }
+                    4 -> item {
+                        preferences?.let { current -> AssistantPromptEditor(current,session.busy,save={body->session.run{preferences=request("/api/assistant/preferences","PATCH",body);vm.message("已保存并使用此提示词")}},reset={confirmation=AssistantConfirmation("恢复平台默认提示词？","将删除当前账号的自定义模板，可重新编辑。") {session.run{preferences=request("/api/assistant/preferences","PATCH",JSONObject().put("reset",true))}}}) }
+                            ?: Text("提示词尚未读取，请点击右上角刷新。")
                     }
                     3 -> item {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

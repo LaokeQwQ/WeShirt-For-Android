@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 package com.laoke.weshirt.ui
 
 import androidx.compose.foundation.layout.*
@@ -17,6 +17,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -36,6 +39,7 @@ import kotlinx.coroutines.delay
     var renderer by remember { mutableStateOf<LaundryRoomView?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
     var facility by remember { mutableStateOf<RoomFacility?>(null) }
+    var selectedMachineId by rememberSaveable(state.endpoint, state.building) { mutableStateOf<String?>(null) }
     val owner = LocalLifecycleOwner.current
     val currentMachines by rememberUpdatedState(state.machines)
     val currentOnMachine by rememberUpdatedState(onMachine)
@@ -62,24 +66,23 @@ import kotlinx.coroutines.delay
         onDispose { owner.lifecycle.removeObserver(observer); room?.lifecyclePause() }
     }
     LaunchedEffect(notice) { if(notice != null) { delay(3000); notice = null } }
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+    val roomHeight = maxHeight
+    val compact = roomHeight < 480.dp
+    val compactScroll = rememberScrollState()
+    Column(Modifier.fillMaxSize().let { if (showing3D && compact) it.verticalScroll(compactScroll) else it }, verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
         state.boardWarning?.let { warning ->
             Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("board-freshness-warning"), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
                 Text(warning, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
             }
         }
-        if(allow3D) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
-                SegmentedButton(showing3D, { rendererUnavailable = false; threeD = true }, SegmentedButtonDefaults.itemShape(0,2), enabled = projection.hasBoundMachines, icon = {}) { Text("3D 洗衣房", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                SegmentedButton(!showing3D, { threeD = false }, SegmentedButtonDefaults.itemShape(1,2), icon = {}) { Text("机器列表", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            }
-            if(showing3D) FilterChip(onlyFavorites, { onlyFavorites = !onlyFavorites }, label = { Text("常用", maxLines = 1) }, leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
-        }
+        if(allow3D) RoomViewModeSwitch(showing3D, projection.hasBoundMachines,
+            showRoom = { rendererUnavailable = false; threeD = true }, showList = { threeD = false })
         if(showing3D) {
-            Box(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp))) {
+            Box(Modifier.fillMaxWidth().let { if (compact) it.height((roomHeight - 172.dp).coerceAtLeast(180.dp)) else it.weight(1f) }.padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).testTag("native-room-scene")) {
                 AndroidView(factory = { context -> LaundryRoomView(context).also { view ->
                     renderer = view
-                    view.onMachineSelected = { id -> currentMachines.find { it.id == id }?.let(currentOnMachine) ?: currentOnQuality("该机位尚未绑定设备，请在机器列表选择") }
+                    view.onMachineSelected = { id -> currentMachines.find { it.id == id }?.let { selectedMachineId = id; currentOnMachine(it) } ?: currentOnQuality("该机位尚未绑定设备，请在机器列表选择") }
                     view.onFacilitySelected = { facility = it }
                     view.onQualityChanged = { quality -> if(quality.showDowngradeNotice) notice = "为保持流畅，已自动调整画质 · ${quality.targetFps} 帧" }
                     view.onRendererError = { _ ->
@@ -107,15 +110,21 @@ import kotlinx.coroutines.delay
                 }
                 if(notice != null) Surface(Modifier.align(Alignment.TopCenter).padding(16.dp), color = MaterialTheme.colorScheme.inverseSurface, shape = RoundedCornerShape(16.dp)) { Text(notice!!, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.bodySmall) }
             }
-            Text("拖动环视 · 双指缩放 · 双击全景 · 轻点机器查看", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                item("room-facilities") { AssistChip(onClick = { facility = RoomFacility.BOILER }, label = { Text("设施须知") }, leadingIcon = { Icon(Icons.Outlined.Info, null, Modifier.size(18.dp)) }) }
-                items(machines, key = { it.id }) { machine ->
-                    AssistChip(onClick = { renderer?.focusMachine(machine.id); onMachine(machine) }, label = { Text("${machine.name} · ${machine.stateLabel}") }, leadingIcon = {
-                        Icon(if(machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService, null, Modifier.size(18.dp))
-                    })
-                }
-            }
+            RoomMachineShortcuts(
+                machines = if (onlyFavorites) projection.machines.filter { it.id in state.favorites } else projection.machines,
+                selectedId = selectedMachineId,
+                onlyFavorites = onlyFavorites,
+                onFavorites = { onlyFavorites = !onlyFavorites },
+                onSelect = { target -> currentMachines.find { it.id == target.id }?.let { machine ->
+                    selectedMachineId = machine.id
+                    renderer?.focusMachine(machine.id)
+                    onMachine(machine)
+                } },
+                onFacilities = { facility = RoomFacility.BOILER },
+                compact = compact
+            )
+            if (!compact) Text("拖动环视 · 双指缩放 · 双击全景", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!compact && onlyFavorites && machines.isEmpty()) Text("在机器详情中收藏后，可在这里快速选择。", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.bodySmall)
         }
         if(!showing3D) MachineBoard(
             machines = state.machines,
@@ -130,13 +139,14 @@ import kotlinx.coroutines.delay
                     TextButton(onClick = { rendererUnavailable = false; threeD = true }) { Text("重试 3D") }
                 }
             }) else null,
-        ) else Row(Modifier.padding(horizontal = 20.dp, vertical = 4.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        ) else if (!compact) FlowRow(Modifier.padding(horizontal = 20.dp, vertical = 4.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             val idle = machines.count { it.state == "idle" && !it.suspectedUncollected }
             Text("${machines.size} 台机器", style = MaterialTheme.typography.labelLarge)
             Text("$idle 台空闲", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             Text("${machines.count { it.state == "occupied" }} 台使用中", style = MaterialTheme.typography.labelLarge)
         }
         Spacer(Modifier.height(2.dp))
+    }
     }
     facility?.let { selected ->
         val rules = when (selected) {
@@ -154,6 +164,69 @@ import kotlinx.coroutines.delay
         }, confirmButton = { TextButton(onClick = { facility = null }) { Text("知道了") } })
     }
 }
+
+/** The mode controls keep the full row so text and touch targets never compete with a trailing chip. */
+@Composable
+internal fun RoomViewModeSwitch(showing3D: Boolean, roomAvailable: Boolean, showRoom: () -> Unit, showList: () -> Unit) {
+    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("room-view-mode")) {
+        SegmentedButton(showing3D, showRoom, SegmentedButtonDefaults.itemShape(0, 2), modifier = Modifier.heightIn(min = 48.dp).testTag("room-mode-3d"), enabled = roomAvailable, icon = {}) {
+            Text("3D 洗衣房", maxLines = 2)
+        }
+        SegmentedButton(!showing3D, showList, SegmentedButtonDefaults.itemShape(1, 2), modifier = Modifier.heightIn(min = 48.dp).testTag("room-mode-list"), icon = {}) {
+            Text("机器列表", maxLines = 2)
+        }
+    }
+}
+
+/** Mirrors the Web room's fixed physical slot order, rather than sorting buttons by changing availability. */
+@Composable
+internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: String?, onlyFavorites: Boolean, onFavorites: () -> Unit, onSelect: (RoomMachine) -> Unit, onFacilities: () -> Unit, compact: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+        if (!compact) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("机位快捷选择", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+            FilterChip(onlyFavorites, onFavorites, label = { Text("常用") }, modifier = Modifier.heightIn(min = 48.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
+            IconButton(onClick = onFacilities, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Info, "设施须知") }
+        }
+        LazyRow(Modifier.fillMaxWidth().testTag("room-machine-shortcuts"), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(machines, key = { it.id }) { machine ->
+                val bound = !machine.id.startsWith("unbound:")
+                val status = when (machine.state) {
+                    RoomMachineState.IDLE -> "空闲"
+                    RoomMachineState.RUNNING, RoomMachineState.FINISHING -> "使用中"
+                    RoomMachineState.AWAITING_PICKUP -> "疑似未取"
+                    RoomMachineState.REVIEW -> "待复核"
+                    RoomMachineState.FAULT -> "暂不可用"
+                    RoomMachineState.UNKNOWN -> if (bound) "状态待更新" else "未绑定"
+                }
+                val scheme = MaterialTheme.colorScheme
+                val colors = when (machine.state) {
+                    RoomMachineState.IDLE -> scheme.primaryContainer to scheme.onPrimaryContainer
+                    RoomMachineState.RUNNING, RoomMachineState.FINISHING -> scheme.secondaryContainer to scheme.onSecondaryContainer
+                    RoomMachineState.AWAITING_PICKUP, RoomMachineState.REVIEW -> scheme.tertiaryContainer to scheme.onTertiaryContainer
+                    RoomMachineState.FAULT -> scheme.errorContainer to scheme.onErrorContainer
+                    RoomMachineState.UNKNOWN -> scheme.surfaceContainerHigh to scheme.onSurfaceVariant
+                }
+                val selected = selectedId == machine.id
+                OutlinedButton(
+                    onClick = { onSelect(machine) }, enabled = bound,
+                    modifier = Modifier.widthIn(min = 60.dp).heightIn(min = 52.dp).testTag("room-slot:${machine.slot}").semantics {
+                        contentDescription = "${machine.slot}号${if (machine.kind == "dryer") "烘干机" else "洗衣机"} · ${machine.label}"
+                        stateDescription = status + if (selected) " · 已选择" else ""
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = if (selected) scheme.primary else colors.first, contentColor = if (selected) scheme.onPrimary else colors.second),
+                    border = androidx.compose.foundation.BorderStroke(if (selected) 2.dp else 1.dp, if (selected) scheme.primary else scheme.outlineVariant),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
+                ) { Text(machine.slot, style = MaterialTheme.typography.titleMedium, maxLines = 1) }
+            }
+            if (compact) {
+                item("favorites") { FilterChip(onlyFavorites, onFavorites, label = { Text("常用") }, modifier = Modifier.heightIn(min = 52.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) }) }
+                item("facilities") { IconButton(onClick = onFacilities, modifier = Modifier.size(52.dp)) { Icon(Icons.Outlined.Info, "设施须知") } }
+            }
+        }
+    }
+}
+
 @Composable fun MachineSheet(machine: Machine, state: AppState, vm: AppViewModel, close: () -> Unit, login: () -> Unit) {
     val session = rememberMachineActionSession(state, vm)
     val frozen = MachineActionSnapshot(state.endpoint, state.profile?.id, state.building, machine)
@@ -189,6 +262,7 @@ import kotlinx.coroutines.delay
             if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
                 OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, enabled = !state.busy && !session.busy, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
             }
+            MachineFeedback(machine, state, vm, session, login)
             OutlinedButton(onClick = { moreActions = !moreActions }, modifier = Modifier.fillMaxWidth().testTag("machine-more-actions")) { Text(if (moreActions) "收起排队与现场反馈" else "排队预约与现场反馈") }
             if (moreActions) MachineActions(machine, state, vm, session, login)
         }
@@ -216,6 +290,7 @@ internal fun MachineSheetFrame(machine: Machine, favorite: Boolean, enabled: Boo
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(machine.name, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (machine.originalName.isNotBlank() && machine.originalName != machine.name) Text("原名：${machine.originalName}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             }
             IconButton(onClick = favoriteClick, enabled = enabled) { Icon(if (favorite) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (favorite) "取消收藏机器" else "收藏机器") }

@@ -28,6 +28,20 @@ internal fun clientFailure(problem: Exception, fallback: String): String =
     if (problem is ApiException) problem.message.orEmpty()
     else "$fallback\n状态码 0 · 事件 client_${UUID.randomUUID().toString().replace("-", "")}"
 
+/** Keep the form within both the current viewing scope and operation scope. */
+internal fun inspectionAllowed(access: JSONObject, building: String, operation: Boolean = false): Boolean {
+    if (building.isBlank()) return false
+    val permission = access.optJSONObject("permissions")?.optJSONObject("inspections") ?: return false
+    if (!permission.optBoolean("view") || operation && !permission.optBoolean("operate")) return false
+    fun includes(axis: String): Boolean {
+        if (!permission.has(axis)) return false
+        if (permission.isNull(axis)) return true
+        val scope = permission.optJSONArray(axis) ?: return false
+        return (0 until scope.length()).any { scope.optString(it) == building }
+    }
+    return includes("viewBuildings") && (!operation || includes("operateBuildings"))
+}
+
 @Composable
 fun InspectionScreen(state: AppState, vm: AppViewModel, close: () -> Unit) {
     key(state.endpoint, state.profile?.id) { InspectionContent(state, vm, close) }
@@ -50,16 +64,19 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
     var feedback by remember { mutableStateOf<String?>(null) }
     var confirmation by remember { mutableStateOf<JSONObject?>(null) }
     var confirmedMachines by remember { mutableStateOf<Set<String>>(emptySet()) }
-    val buildings = data.optJSONArray("buildings")?.objects().orEmpty()
-    val machines = data.optJSONArray("machines")?.objects().orEmpty().filter { it.str("dormBuilding") == building }
+    val buildings = data.optJSONArray("buildings")?.objects().orEmpty().filter { inspectionAllowed(state.access, it.str("code")) }
+    val visibleBuilding = buildings.any { it.str("code") == building }
+    val machines = data.optJSONArray("machines")?.objects().orEmpty().filter { visibleBuilding && it.str("dormBuilding") == building }
     val machineIds = machines.map { it.str("id") }.toSet()
-    val history = data.optJSONArray("inspections")?.objects().orEmpty().filter { it.str("dormBuilding") == building }
+    val history = data.optJSONArray("inspections")?.objects().orEmpty().filter { visibleBuilding && it.str("dormBuilding") == building }
+    val canOperate = inspectionAllowed(state.access, building, operation = true)
     fun draft() = InspectionRound.body(building, machineIds, machines.mapNotNull { issues[it.str("id")] }, note, photo)
     suspend fun load() {
         val next = vm.api.call("/api/inspections")
         if (!current()) throw CancellationException("Account changed")
         data = next
-        if (next.optJSONArray("buildings")?.objects().orEmpty().none { it.str("code") == building }) building = next.optJSONArray("buildings")?.optJSONObject(0)?.str("code").orEmpty()
+        val allowed = next.optJSONArray("buildings")?.objects().orEmpty().filter { inspectionAllowed(vm.state.value.access, it.str("code")) }
+        if (allowed.none { it.str("code") == building }) building = allowed.firstOrNull()?.str("code").orEmpty()
     }
     fun action(block: suspend () -> Unit) {
         if (busy) return
@@ -72,6 +89,11 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
         }
     }
     LaunchedEffect(Unit) { action { load() } }
+    LaunchedEffect(buildings.map { it.str("code") }) {
+        preview = null
+        if (buildings.none { it.str("code") == building }) building = buildings.firstOrNull()?.str("code").orEmpty()
+    }
+    LaunchedEffect(canOperate) { if (!canOperate) confirmation = null }
     LaunchedEffect(building) { issues = emptyMap(); photo = ""; note = ""; confirmation = null; feedback = null }
     val staleSelection = issues.keys.any { it !in machineIds }
     Dialog(onDismissRequest = { if (!busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -80,12 +102,12 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
                 LazyColumn(Modifier.fillMaxSize().padding(padding).imePadding().testTag("inspection-round"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     item { Text(data.optJSONObject("identity")?.str("label").orEmpty(), style = MaterialTheme.typography.labelLarge) }
                     item { ChoiceRow("巡检楼栋", buildings.map { it.str("code") to it.str("name") }, building, !busy) { building = it } }
-                    item { Text("一次检查本楼全部 ${machines.size} 台机器，仅勾选异常机器。没有勾选时，本轮会登记为全部正常。", style = MaterialTheme.typography.bodyMedium) }
+                    item { Text(if (canOperate) "一次检查本楼全部 ${machines.size} 台机器，仅勾选异常机器。没有勾选时，本轮会登记为全部正常。" else "当前楼栋为只读巡检权限，可查看机器清单和下方的巡检记录。", style = MaterialTheme.typography.bodyMedium) }
                     item {
                         Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text("洗衣房全景图（选填）", style = MaterialTheme.typography.titleSmall)
                             Text("可拍摄整个洗衣房或选择已有全景照片，保持图片原比例。", style = MaterialTheme.typography.bodySmall)
-                            NativeAttachmentActions(!busy && building.isNotBlank(), "$account|$building", onMedia = { uri, cleanup ->
+                            NativeAttachmentActions(!busy && canOperate, "$account|$building", onMedia = { uri, cleanup ->
                                 val target = building
                                 action {
                                     try {
@@ -97,7 +119,7 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
                             }, onError = { error = it }, imagesOnly = true)
                             if (photo.isNotBlank()) {
                                 AsyncImage(photo, "本轮全景照片预览", Modifier.fillMaxWidth().heightIn(max = 180.dp), contentScale = ContentScale.Fit)
-                                TextButton(onClick = { photo = "" }, enabled = !busy) { Text("移除全景图") }
+                                TextButton(onClick = { photo = "" }, enabled = !busy && canOperate) { Text("移除全景图") }
                             } else Text("未添加图片，可直接提交", style = MaterialTheme.typography.bodySmall)
                         } }
                     }
@@ -105,11 +127,11 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
                     if (machines.isEmpty()) item { Text("本楼暂无可巡检机器，请刷新或选择其他楼栋。") }
                     items(machines, key = { it.str("id") }) { machine ->
                         val id = machine.str("id")
-                        InspectionMachineRow(machine.str("name"), issues[id], !busy, { checked -> issues = if (checked) issues + (id to InspectionIssue(id)) else issues - id }, { value -> issues = issues + (id to value) })
+                        InspectionMachineRow(machine.str("name"), issues[id], !busy && canOperate, { checked -> issues = if (checked) issues + (id to InspectionIssue(id)) else issues - id }, { value -> issues = issues + (id to value) })
                     }
                     if (staleSelection) item { Text("机器清单已变化，请重新选择楼栋并核对本轮异常。", color = MaterialTheme.colorScheme.error) }
-                    item { OutlinedTextField(note, { note = it.take(500) }, label = { Text("本轮备注（选填）") }, enabled = !busy, modifier = Modifier.fillMaxWidth(), minLines = 2, supportingText = { Text("${note.length}/500") }) }
-                    item { Button(onClick = { try { confirmation = draft(); confirmedMachines = machineIds } catch (problem: Exception) { error = clientFailure(problem, "请核对巡检内容") } }, enabled = !busy && !staleSelection && machineIds.isNotEmpty() && issues.values.all { it.reasons.isNotEmpty() }, modifier = Modifier.fillMaxWidth().testTag("inspection-submit")) { Text(if (busy) "正在处理…" else if (issues.isEmpty()) "提交本轮 · 全部正常" else "提交本轮 · ${issues.size} 台异常") } }
+                    item { OutlinedTextField(note, { note = it.take(500) }, label = { Text("本轮备注（选填）") }, enabled = !busy && canOperate, modifier = Modifier.fillMaxWidth(), minLines = 2, supportingText = { Text("${note.length}/500") }) }
+                    item { Button(onClick = { try { confirmation = draft(); confirmedMachines = machineIds } catch (problem: Exception) { error = clientFailure(problem, "请核对巡检内容") } }, enabled = !busy && canOperate && !staleSelection && machineIds.isNotEmpty() && issues.values.all { it.reasons.isNotEmpty() }, modifier = Modifier.fillMaxWidth().testTag("inspection-submit")) { Text(if (busy) "正在处理…" else if (!canOperate) "当前楼栋无上报权限" else if (issues.isEmpty()) "提交本轮 · 全部正常" else "提交本轮 · ${issues.size} 台异常") } }
                     if (error != null) item { Text(error!!, color = MaterialTheme.colorScheme.error) }
                     if (feedback != null) item { Text(feedback!!, color = MaterialTheme.colorScheme.primary) }
                     item { HorizontalDivider(); Text("本楼巡检记录", Modifier.padding(top = 16.dp), style = MaterialTheme.typography.titleLarge) }
@@ -125,8 +147,9 @@ private fun InspectionContent(state: AppState, vm: AppViewModel, close: () -> Un
             Text("${buildings.find { it.str("code") == frozen.str("dormBuilding") }?.str("name").orEmpty()} · 共 ${machines.size} 台机器")
             Text(if (count == 0) "没有勾选异常机器，将记录为全部正常。" else "本轮 $count 台异常，其余机器正常；异常摘要会尝试通知本楼指定群。")
             Text(if (frozen.str("photoData").isBlank()) "未添加全景图" else "已添加全景图")
-        } }, confirmButton = { TextButton(enabled = !busy, onClick = {
+        } }, confirmButton = { TextButton(enabled = !busy && canOperate, onClick = {
             action {
+                if (!inspectionAllowed(vm.state.value.access, frozen.str("dormBuilding"), operation = true)) throw ApiException(403, "permission_changed", "client_${UUID.randomUUID()}", "巡检操作权限已变化，请刷新后重试")
                 if (staleSelection || confirmedMachines != machineIds || frozen.toString() != draft().toString()) throw ApiException(409, "form_changed", "client_${UUID.randomUUID()}", "巡检内容已变化，请重新确认")
                 val result = vm.api.call("/api/inspections", "POST", frozen)
                 if (!current()) throw CancellationException("Account changed")

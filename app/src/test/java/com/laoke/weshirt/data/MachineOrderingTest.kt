@@ -48,7 +48,7 @@ class MachineOrderingTest {
         assertEquals(listOf("idle", "next"), result.take(2).map { it.id })
         assertEquals("unknown", result.last().id)
         assertEquals(MachineBoardState.RUNNING, machineBoardStatus(items.first(), now).state)
-        assertEquals("预计时间已到，等待设备确认", machineBoardStatus(items.first(), now).detail)
+        assertEquals("即将完成，等待设备确认", machineBoardStatus(items.first(), now).detail)
     }
 
     @Test fun onlyExplicitRunningStateExposesCountdown() {

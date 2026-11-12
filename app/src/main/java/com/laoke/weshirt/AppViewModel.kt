@@ -40,11 +40,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     private val telemetryBuffer = ArrayDeque<JSONObject>()
     private var telemetrySentAt = 0L
-    private val _state = MutableStateFlow(AppState(endpoint = prefs.getString("endpoint", BuildConfig.API_BASE_URL).orEmpty(), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false), announcementsOn = prefs.getBoolean("announcements", true)))
+    private val _state = MutableStateFlow(AppState(endpoint = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL, prefs.getString("endpoint", null)), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false), announcementsOn = prefs.getBoolean("announcements", true)))
     val state = _state.asStateFlow()
     private val platform: PlatformCoordinator = PlatformCoordinator(app, session, api) { refresh() }
     init {
+        if (!BuildConfig.DEBUG) prefs.edit().remove("endpoint").apply()
         api.baseUrl = _state.value.endpoint
+        if (session.read()?.str("origin")?.let { it != api.baseUrl } == true) session.clear()
         api.onMetric = { path, duration, status -> viewModelScope.launch {
             if(_state.value.telemetryOn) {
                 val safePath = when { path.matches(Regex("/api/tasks/[^/]+/take")) -> "/api/tasks/:id/take"; path.matches(Regex("/api/tasks/[^/]+")) -> "/api/tasks/:id"; path in setOf("/api/machines","/api/tasks","/api/auth/me","/api/messages","/api/queue","/api/occupancy","/api/user/profile","/api/user/notify") -> path; else -> "/api/other" }
@@ -55,14 +57,32 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             generation.incrementAndGet()
             platform.clearLocal()
             coil.Coil.imageLoader(app).memoryCache?.clear()
-            _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = false) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = platform.notificationsEnabled) }
         }
         platform.initialize()
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         refresh()
     }
-    fun platformSessionChanged() { generation.incrementAndGet(); metadata.clear(); platform.sessionChanged(); refresh() }
-    fun notificationPermissionDenied() { notificationIntent.incrementAndGet(); platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
+    fun platformSessionChanged() {
+        generation.incrementAndGet(); metadata.clear(); platform.sessionChanged()
+        _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
+        // Apply only an explicit, still-enabled guest request once. An older
+        // device preference must not overwrite another account's server choice.
+        if (prefs.getBoolean("pendingGuestNotifyEnable", false) && platform.notificationsEnabled) toggleNotify(true)
+        refresh()
+    }
+    fun prepareNotificationPermission(): Long {
+        val request = notificationIntent.incrementAndGet()
+        if (session.read() == null) prefs.edit().putBoolean("pendingGuestNotifyEnable", true).commit()
+        platform.enableNotifications(true)
+        _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
+        return request
+    }
+    fun notificationPermissionResult(request: Long, granted: Boolean) {
+        if (request != notificationIntent.get()) return
+        if (granted) toggleNotify(true) else notificationPermissionDenied()
+    }
+    fun notificationPermissionDenied() { notificationIntent.incrementAndGet(); prefs.edit().remove("pendingGuestNotifyEnable").commit(); platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
     fun message(text: String) { _state.update { it.copy(info = text) } }
     fun clearFeedback() { _state.update { it.copy(info = null, error = null) } }
     fun tab(value: Int) { _state.update { it.copy(tab = value) }; if(_state.value.telemetryOn && telemetryBuffer.size < 20) telemetryBuffer.add(JSONObject().put("name","page_view").put("route",route())); refresh() }
@@ -78,6 +98,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun telemetry(value: Boolean) { prefs.edit().putBoolean("telemetry", value).apply(); _state.update { it.copy(telemetryOn = value) }; if(!value) telemetryBuffer.clear() }
     fun configure(endpoint: String) {
+        if (!BuildConfig.DEBUG) return message("服务由应用内置，无需设置地址")
         val url = api.validEndpoint(endpoint) ?: return message("请输入完整的 HTTPS 服务地址，不含路径、账号或参数")
         mutate(null) {
             if (url != api.baseUrl) {
@@ -87,7 +108,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 getApplication<Application>().getSharedPreferences("native_login_origin", 0).edit().clear().commit()
                 platform.beforeSessionCleared()
                 session.clear()
-                _state.update { AppState(endpoint = url, appearance = it.appearance, palette = it.palette, notificationsOn = false, announcementsOn = prefs.getBoolean("announcements", true)) }
+                _state.update { AppState(endpoint = url, appearance = it.appearance, palette = it.palette, notificationsOn = platform.notificationsEnabled, announcementsOn = prefs.getBoolean("announcements", true)) }
             }
             api.baseUrl = url; prefs.edit().putString("endpoint", url).apply()
         }
@@ -130,7 +151,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 Triple(tasks.await(), occupancy.await(), queue.await())
             }
             if(version != generation.get()) return@launch
-            val tasks = extra.first.map { it.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse) }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
+            val tasks = extra.first.map { response ->
+                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
+                response.optJSONArray("tasks")?.objects().orEmpty().map { LaundryTask.parse(it).copy(clockOffsetMs = offset) }
+            }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
             val queues = extra.third.map { it.optJSONArray("queue")?.objects().orEmpty() }.readOr(if (mayReadQueue) _state.value.queues else emptyList())
             val occupancy = extra.second.getOrNull()?.optJSONObject("occupancy")
             extra.second.exceptionOrNull()?.let { problems += it }
@@ -211,17 +235,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleNotify(value: Boolean): kotlinx.coroutines.Job {
         val intent = notificationIntent.incrementAndGet()
         val account = generation.get()
-        if (!value) {
-            platform.enableNotifications(false)
-            _state.update { it.copy(notificationsOn = false) }
-            message("通知已关闭")
+        val guest = session.read() == null
+        if (!value) prefs.edit().remove("pendingGuestNotifyEnable").commit()
+        else if (guest) prefs.edit().putBoolean("pendingGuestNotifyEnable", true).commit()
+        if (!value || guest) {
+            val status = platform.enableNotifications(value)
+            _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
+            message(status)
         }
         return mutate(null, wait = true) {
             if (intent != notificationIntent.get() || account != generation.get()) return@mutate
-            api.call("/api/user/notify", "POST", JSONObject().put("on", value))
+            if (session.read() != null) api.call("/api/user/notify", "POST", JSONObject().put("on", value))
             if (value && intent == notificationIntent.get() && account == generation.get()) {
                 val status = platform.enableNotifications(true)
                 _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
+                if (session.read() != null) prefs.edit().remove("pendingGuestNotifyEnable").commit()
                 message(status)
             }
         }
@@ -293,13 +321,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun assistant(text: String, callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/assistant/chat", "POST", JSONObject().put("input", text)); callback(j.str("reply", j.str("message"))) }
     fun logout() = mutate("已退出登录") {
         generation.incrementAndGet()
+        prefs.edit().remove("pendingGuestNotifyEnable").commit()
         com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
         try {
             platform.beforeSessionCleared()
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = false) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = platform.notificationsEnabled) }
         }
     }
 }

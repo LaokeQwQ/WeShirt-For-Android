@@ -93,6 +93,26 @@ class RoomGeometryTest {
         }
     }
 
+    @Test fun dosingBottlesMatchTheWebAndNoticesRemainAboveTheEquipment() {
+        fun pointsForColor(meshes: Collection<MeshData>, color: Int): List<List<Float>> = meshes.flatMap { mesh ->
+            val expected = RoomGeometry.rgb(color).toList()
+            (0 until mesh.vertexCount).filter { mesh.colors.slice(it * 4 until it * 4 + 4) == expected }
+                .map { mesh.positions.slice(it * 3 until it * 3 + 3) }
+        }
+        val washer = RoomGeometry.machineBodies(listOf(RoomSlot("washer", 0f, 0f))).values
+        val dryer = RoomGeometry.machineBodies(listOf(RoomSlot("dryer", 0f, 0f, dryer = true))).values
+        for (color in listOf(0x3F8FD2, 0x3FAE86, 0x14181F)) {
+            val points = pointsForColor(washer, color)
+            assertTrue("Washer must retain the dosing box and both distinct bottles", points.isNotEmpty())
+            assertTrue("Dosing equipment belongs behind the cabinet", points.all { it[2] < -.43f })
+            assertTrue("Dryers do not dispense detergent", pointsForColor(dryer, color).isEmpty())
+        }
+        val noticeBottom = RoomUtilityLayout.noticeCenterY - RoomUtilityLayout.noticeHeight / 2
+        val equipmentTop = RoomUtilityLayout.dosingCenterY + RoomUtilityLayout.dosingHeight / 2
+        assertTrue("Notice boards must clear the dosing box, including a viewing gap", noticeBottom - equipmentTop >= .13f)
+        assertTrue(RoomUtilityLayout.noticeCenterY + RoomUtilityLayout.noticeHeight / 2 < 2.6f)
+    }
+
     @Test fun queueGeometryIsCappedAndEmptyQueuesAllocateNoVertices() {
         val slot = RoomLayout.slots.first()
         assertEquals(0, RoomGeometry.queueBuckets(slot, 0).vertexCount)
@@ -112,6 +132,56 @@ class RoomGeometryTest {
     @Test fun faultGeometryAddsTheCrossWithoutChangingTheIdleMachineBody() {
         val slot = RoomLayout.slots.first()
         assertTrue(RoomGeometry.status(slot, RoomMachineState.FAULT).vertexCount > RoomGeometry.status(slot, RoomMachineState.IDLE).vertexCount)
+    }
+
+    @Test fun anOpenDoorRevealsARecessedDrumInsteadOfTheSolidCabinetFront() {
+        for (dryer in listOf(false, true)) {
+            val slot = RoomSlot("machine", 0f, 0f, dryer = dryer)
+            val meshes = RoomGeometry.machineBodies(listOf(slot)).values
+            val cavity = firstSurface(meshes, Ray(Vec3(0.0, .53, 1.2), Vec3(0.0, 0.0, -1.0)))
+            val frontPanel = firstSurface(meshes, Ray(Vec3(.29, .53, 1.2), Vec3(0.0, 0.0, -1.0)))
+            assertTrue("The drum must be recessed at least 15 cm behind the front panel", cavity - frontPanel > .15)
+            assertEquals("The drum back must close the cavity inside the cabinet", 1.089, cavity, .005)
+        }
+    }
+
+    @Test fun numberLabelsDoNotCreateGeometryFloatingAboveTheFrontOfAMachine() {
+        for (dryer in listOf(false, true)) {
+            val height = if (dryer) 1.02f else .95f
+            val meshes = RoomGeometry.machineBodies(listOf(RoomSlot("D1", 0f, 0f, dryer = dryer))).values
+            val frontPoints = meshes.flatMap { it.positions.toList().chunked(3) }.filter { it[2] > .30f }
+            assertTrue(frontPoints.isNotEmpty())
+            assertTrue("Readable labels belong to native controls rather than clipping into utility pipes",
+                frontPoints.all { it[1] <= height + .05f })
+        }
+    }
+
+    @Test fun drumBackOverlapsTheTubeWithoutExposingTheWhiteCabinetAtItsEdge() {
+        for (dryer in listOf(false, true)) {
+            val radius = if (dryer) .23 else .205
+            val meshes = RoomGeometry.machineBodies(listOf(RoomSlot("machine", 0f, 0f, dryer = dryer))).values
+            val edge = firstSurface(meshes, Ray(Vec3(radius - .007, .53, .28), Vec3(0.0, 0.0, -1.0)))
+            assertEquals("The edge must hit the metal drum back rather than the outer cabinet", .169, edge, .005)
+        }
+    }
+
+    private fun firstSurface(meshes: Collection<MeshData>, ray: Ray): Double {
+        return meshes.flatMap { mesh ->
+            fun vertex(index: Int) = Vec3(mesh.positions[index * 3].toDouble(), mesh.positions[index * 3 + 1].toDouble(), mesh.positions[index * 3 + 2].toDouble())
+            mesh.indices.toList().chunked(3).mapNotNull { (ai, bi, ci) ->
+                val a = vertex(ai); val b = vertex(bi); val c = vertex(ci)
+                val e1 = b - a; val e2 = c - a
+                val p = ray.direction.cross(e2)
+                val determinant = e1.dot(p)
+                if (abs(determinant) < 1e-9) return@mapNotNull null
+                val t = ray.origin - a
+                val u = t.dot(p) / determinant
+                val q = t.cross(e1)
+                val v = ray.direction.dot(q) / determinant
+                val distance = e2.dot(q) / determinant
+                distance.takeIf { u >= -1e-8 && v >= -1e-8 && u + v <= 1.00000001 && it >= 0 }
+            }
+        }.minOrNull() ?: error("The ray missed the complete appliance")
     }
 
     @Test fun reviewUsesTheWebOrangeIndicatorInsteadOfUnknownGrayOrFaultCross() {

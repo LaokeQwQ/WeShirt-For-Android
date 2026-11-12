@@ -205,4 +205,146 @@ class ApiClientTest {
         assertNull(request.getHeader("Authorization")); assertEquals("/api/mobile/auth/refresh", request.path)
         assertEquals(1, server.requestCount)
     }
+
+    @Test fun previousRefresh401CannotCancelAnInFlightNativeExchange() = runBlocking {
+        expired()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val exchangeEntered = CountDownLatch(1); val exchangeRelease = CountDownLatch(1)
+        val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/mobile/auth/refresh" -> {
+                    entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                    json("{\"error\":{\"code\":\"invalid_refresh_token\",\"message\":\"旧会话过期\"}}").setResponseCode(401)
+                }
+                "/api/mobile/auth/exchange" -> {
+                    assertNull(request.getHeader("Authorization"))
+                    exchangeEntered.countDown(); assertTrue(exchangeRelease.await(4, TimeUnit.SECONDS))
+                    json(refreshed)
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val old = async(Dispatchers.Default) { api.call("/api/tasks") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                val endpoint = api.baseUrl; val installation = sessions.installationId
+                api.beginNativeLogin(endpoint)
+                assertNull(sessions.read())
+                assertEquals(endpoint, api.baseUrl); assertEquals(installation, sessions.installationId)
+                val fresh = async(Dispatchers.Default) { api.call("/api/mobile/auth/exchange", "POST", JSONObject(), auth = false) }
+                assertTrue(exchangeEntered.await(4, TimeUnit.SECONDS))
+                release.countDown()
+                try { old.await(); fail("The previous refresh should report its 401") } catch (e: ApiException) { assertEquals(401, e.status) }
+                exchangeRelease.countDown()
+                api.saveSession(fresh.await(), endpoint)
+                assertEquals("new-access", sessions.read()?.str("accessToken"))
+                assertEquals(1, invalidations.get())
+            } finally { release.countDown(); exchangeRelease.countDown() }
+        }
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun lateOldAccess401BeforeAndAfterSavingExchangeCannotEraseTheNewSession() = runBlocking {
+        valid()
+        val entered = CountDownLatch(2); val releaseBeforeSave = CountDownLatch(1); val releaseAfterSave = CountDownLatch(1)
+        val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/auth/me?phase=before", "/api/auth/me?phase=after" -> {
+                    assertEquals("Bearer valid-access", request.getHeader("Authorization"))
+                    entered.countDown()
+                    assertTrue((if (request.path!!.endsWith("before")) releaseBeforeSave else releaseAfterSave).await(4, TimeUnit.SECONDS))
+                    json("{\"error\":{\"code\":\"unauthorized\",\"message\":\"旧凭据失效\"}}").setResponseCode(401)
+                }
+                "/api/mobile/auth/exchange" -> json(refreshed)
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val before = async(Dispatchers.Default) { api.call("/api/auth/me?phase=before") }
+            val after = async(Dispatchers.Default) { api.call("/api/auth/me?phase=after") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                api.beginNativeLogin()
+                val response = api.call("/api/mobile/auth/exchange", "POST", JSONObject(), auth = false)
+                // The successful code has been consumed remotely, but saveSession
+                // has not happened yet. A late old 401 must remain harmless here.
+                releaseBeforeSave.countDown()
+                try { before.await(); fail("Expected the old access failure") } catch (e: ApiException) { assertEquals(401, e.status) }
+                api.saveSession(response)
+                releaseAfterSave.countDown()
+                try { after.await(); fail("Expected the second old access failure") } catch (e: ApiException) { assertEquals(401, e.status) }
+                assertEquals("new-access", sessions.read()?.str("accessToken"))
+                assertEquals("new-refresh", sessions.read()?.str("refreshToken"))
+                assertEquals(1, invalidations.get())
+            } finally { releaseBeforeSave.countDown(); releaseAfterSave.countDown() }
+        }
+    }
+
+    @Test fun newLoginProfileDoesNotWaitBehindAnObsoleteRefresh() = runBlocking {
+        expired()
+        val refreshEntered = CountDownLatch(1); val releaseRefresh = CountDownLatch(1)
+        val profileEntered = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/mobile/auth/refresh" -> {
+                    refreshEntered.countDown(); assertTrue(releaseRefresh.await(4, TimeUnit.SECONDS))
+                    json("{\"error\":{\"code\":\"invalid_refresh_token\"}}").setResponseCode(401)
+                }
+                "/api/mobile/auth/exchange" -> json(refreshed)
+                "/api/auth/me" -> {
+                    assertEquals("Bearer new-access", request.getHeader("Authorization"))
+                    profileEntered.countDown()
+                    json("{\"user\":{\"id\":\"new-account\"}}")
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val old = async(Dispatchers.Default) { api.call("/api/tasks") }
+            try {
+                assertTrue(refreshEntered.await(4, TimeUnit.SECONDS))
+                api.beginNativeLogin()
+                api.saveSession(api.call("/api/mobile/auth/exchange", "POST", JSONObject(), auth = false))
+                val profile = async(Dispatchers.Default) { api.call("/api/auth/me") }
+                assertTrue("The new account must load while the previous refresh is still blocked", profileEntered.await(2, TimeUnit.SECONDS))
+                assertEquals(1L, releaseRefresh.count)
+                assertEquals("new-account", profile.await().optJSONObject("user")?.str("id"))
+                releaseRefresh.countDown()
+                try { old.await(); fail("The previous refresh must report its 401") } catch (e: ApiException) { assertEquals(401, e.status) }
+                assertEquals("new-access", sessions.read()?.str("accessToken"))
+            } finally { releaseRefresh.countDown() }
+        }
+    }
+
+    @Test fun queuedProtectedCallWithoutCredentialsCannotInvalidateOrReachAnActiveExchange() = runBlocking {
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("/api/mobile/auth/exchange", request.path)
+                entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                return json(refreshed)
+            }
+        }
+        api.beginNativeLogin()
+        supervisorScope {
+            val fresh = async(Dispatchers.Default) { api.call("/api/mobile/auth/exchange", "POST", JSONObject(), auth = false) }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                try { api.call("/api/tasks"); fail("A protected read requires local credentials") }
+                catch (e: ApiException) { assertEquals(401, e.status); assertTrue(e.eventId.startsWith("client_")) }
+                assertEquals("Only the deliberate login boundary invalidates the session", 1, invalidations.get())
+                release.countDown()
+                api.saveSession(fresh.await())
+                assertEquals("new-access", sessions.read()?.str("accessToken"))
+            } finally { release.countDown() }
+        }
+        assertEquals("The stale protected child must not issue an anonymous HTTP request", 1, server.requestCount)
+    }
 }

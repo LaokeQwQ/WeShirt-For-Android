@@ -64,7 +64,7 @@ fun machineBoardStatus(machine: Machine, now: Long): MachineBoardStatus = when {
         val end = machine.finishAt
         val detail = when {
             end == null -> "剩余时间待同步"
-            end <= now -> "预计时间已到，等待设备确认"
+            end <= now -> "即将完成，等待设备确认"
             else -> "预计剩余 ${(end - now - 1) / 60_000 + 1} 分钟"
         }
         MachineBoardStatus(MachineBoardState.RUNNING, "使用中", detail)

@@ -31,12 +31,12 @@ internal class AdminController(val api: ApiClient, private val scope: CoroutineS
             finally { if (active() && request == revision) loading = false }
         }
     }
-    fun act(path: String, method: String = "POST", body: JSONObject = JSONObject(), refresh: String? = loadedPath, finished: () -> Unit = {}, success: (JSONObject) -> Unit = {}) {
+    fun act(path: String, method: String = "POST", body: JSONObject = JSONObject(), refresh: String? = loadedPath, finished: () -> Unit = {}, success: (JSONObject) -> Unit = {}, key: String? = null) {
         if (saving || !active()) return
         reader?.cancel(); ++revision; loading = false; saving = true; error = null; info = null
         writer = scope.launch {
             try {
-                val result = api.call(path, method, body)
+                val result = api.call(path, method, body, key = key)
                 if (!active()) return@launch
                 success(result)
                 info = "操作已完成"
@@ -66,7 +66,7 @@ internal class AdminController(val api: ApiClient, private val scope: CoroutineS
                 ensureActive()
                 if (!active()) return@launch
                 write(csv)
-                if (active()) info = "审计日志已导出到所选文件"
+                if (active()) info = "已导出到所选文件"
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { if (active()) error = safeError(e) }
             finally { if (active()) saving = false }

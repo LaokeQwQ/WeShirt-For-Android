@@ -5,14 +5,22 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import androidx.work.Worker
+import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.laoke.weshirt.BuildConfig
+import com.laoke.weshirt.data.ApiClient
+import com.laoke.weshirt.data.ApiException
+import com.laoke.weshirt.data.SecureSession
+import com.laoke.weshirt.data.serviceEndpoint
+import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.push.NativePushEvent
 import com.laoke.weshirt.platform.push.PushEventKind
 import com.laoke.weshirt.platform.push.PushRuntime
 import com.laoke.weshirt.platform.push.TaskNoticeCoalescing
 import com.laoke.weshirt.platform.widget.LaundryWidgetStore
 import org.json.JSONObject
+import kotlinx.coroutines.CancellationException
+import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 internal fun reminderLeadMinutes(value: Int): Int = value.takeIf { it == 0 || it == 3 || it == 5 || it == 10 } ?: 0
@@ -91,45 +99,98 @@ object LaundryReminders {
     private fun name(id: String, kind: String) = "$TAG:$id:$kind"
 }
 
-class LaundryReminderWorker(context: Context, parameters: WorkerParameters) : Worker(context, parameters) {
-    // Coordinate the final settings check and delivery with schedule/cancel, including a lead of zero.
-    override fun doWork(): Result {
-        synchronized(LaundryReminders) {
-        if (!PushRuntime.notificationsAllowed(applicationContext)) return Result.success()
+class LaundryReminderWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
+    /** Network validation happens outside the reminder lock. A slow connection
+     * cannot block logout, changing reminder preferences or replacing a task. */
+    override suspend fun doWork(): Result {
         val taskId = inputData.getString("taskId") ?: return Result.failure()
         val revision = inputData.getLong("revision", -1L)
         val kind = inputData.getString("kind") ?: return Result.failure()
         if (kind != "soon" && kind != "estimated") return Result.failure()
-        val raw = applicationContext.getSharedPreferences(LaundryReminders.PREFS, Context.MODE_PRIVATE).getString(taskId, null)
-            ?: return Result.success()
-        val state = runCatching { JSONObject(raw) }.getOrNull() ?: return Result.failure()
-        if (revision != state.optLong("revision", -2)) return Result.success()
-        val finish = state.optLong("finish", 0)
-        if (inputData.getLong("finish", finish) != finish) return Result.success()
-        val leadMinutes = reminderLeadMinutes(state.optInt("leadMinutes", 3))
-        if (kind == "soon" && (leadMinutes == 0 || inputData.getInt("leadMinutes", 3) != leadMinutes)) return Result.success()
-        if (state.optLong("${kind}DeliveredRevision", -1) == revision || state.optLong("${kind}DeliveredFinish", 0).takeIf { it > 0 }?.let { TaskNoticeCoalescing.sameFinish(it, finish) } == true) return Result.success()
+        val session = SecureSession(applicationContext)
+        val before = session.read() ?: return Result.success()
+        val account = accountKey(before)
+        val state = synchronized(LaundryReminders) { currentState(taskId, revision, kind) } ?: return Result.success()
+        val origin = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
+            applicationContext.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString("endpoint", null)).trimEnd('/')
+        if (origin.isBlank() || before.str("origin") != origin) return Result.success()
+        val transport = OkHttpClient.Builder().connectTimeout(8,TimeUnit.SECONDS).readTimeout(12,TimeUnit.SECONDS)
+            .callTimeout(15,TimeUnit.SECONDS).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
+        val api = ApiClient(session,applicationContext.cacheDir,transport).also { it.baseUrl = origin }
+        val finish = state.optLong("finish")
+        val verified = try { fetchVerifiedReminder(api,taskId) }
+        catch (error: CancellationException) { throw error }
+        catch (error: ApiException) {
+            if (error.status in 400..499 && error.status !in setOf(408,429)) return Result.success()
+            VerifiedReminder(finish,state.str("name","洗衣机"),fallback=true)
+        }
+        catch (_: Exception) { return Result.retry() }
+
+        synchronized(LaundryReminders) {
+        if (accountKey(session.read()) != account || currentState(taskId,revision,kind) == null) return Result.success()
+        val leadMinutes = reminderLeadMinutes(state.optInt("leadMinutes",3))
+        val latestLead=verified.leadMinutes?.let(::reminderLeadMinutes) ?: leadMinutes
+        if(latestLead!=leadMinutes){
+            LaundryReminders.schedule(applicationContext,TaskProgress(taskId,revision,verified.name,0L,verified.finish?:finish,userRequestedTracking=true,leadMinutes=latestLead))
+            return Result.success()
+        }
         val now = System.currentTimeMillis()
-        if (now > finish + 15 * 60_000L || (kind == "soon" && (now >= finish || now < finish - leadMinutes * 60_000L))) return Result.success()
-        val machine = state.optString("name", "洗衣机")
-        val remaining = ((finish - now + 59_999L) / 60_000L).coerceAtLeast(1)
-        val event = if (kind == "soon") NativePushEvent("task:$taskId:soon", revision,
-            PushEventKind.QUEUE_THREE_MINUTES, "洗衣预计还有 $remaining 分钟", "$machine 即将到达预计结束时间，可准备前往。设备实际状态以看板为准。", taskId, finishAtMillis = finish)
-        else NativePushEvent("task:$taskId:estimated", revision, PushEventKind.ESTIMATED_END,
-            "洗衣预计时间已到", "$machine 已到预计结束时间，尚待设备确认结束，请查看最新状态。", taskId, finishAtMillis = finish)
-        if (kind == "estimated") {
+        val action = reminderAction(verified,finish,kind,leadMinutes,now)
+        when(action) {
+            ReminderAction.CANCEL -> { LaundryReminders.cancel(applicationContext,taskId); return Result.success() }
+            ReminderAction.RESCHEDULE -> {
+                val next = TaskProgress(taskId,revision+1,verified.name,0L,verified.finish ?: return Result.retry(),userRequestedTracking=true,leadMinutes=leadMinutes)
+                LaundryReminders.schedule(applicationContext,next)
+                LaundryNotifications(applicationContext).updateProgress(next)
+                return Result.success()
+            }
+            ReminderAction.WAIT -> return Result.retry()
+            else -> Unit
+        }
+        val currentFinish = verified.finish ?: finish
+        val machine = verified.name
+        val remaining = ((currentFinish - now + 59_999L) / 60_000L).coerceAtLeast(1)
+        val event = when(action) {
+            ReminderAction.SOON -> NativePushEvent("task:$taskId:soon",revision,PushEventKind.QUEUE_THREE_MINUTES,
+                "洗衣预计还有 $remaining 分钟",if(verified.fallback) "$machine · 网络暂不可用，按上次计时预计，请现场确认。" else "$machine · 按最新平台时间提醒，请现场确认衣物情况。",taskId,finishAtMillis=currentFinish)
+            ReminderAction.FINISHED -> NativePushEvent("task:$taskId:finished",revision,PushEventKind.TASK_FINISHED,
+                "洗衣已结束", "$machine · 平台已确认结束，请现场确认并取衣。",taskId,serverConfirmed=true,finishAtMillis=currentFinish)
+            else -> NativePushEvent("task:$taskId:estimated",revision,PushEventKind.ESTIMATED_END,
+                "洗衣预计时间已到", "$machine · 网络暂不可用，上次计时已到，尚未确认机器结束。",taskId,finishAtMillis=currentFinish)
+        }
+        if (action == ReminderAction.ESTIMATE) {
             LaundryNotifications(applicationContext).updateProgress(
-                TaskProgress(taskId, revision, machine, 0L, finish, userRequestedTracking = true))
+                TaskProgress(taskId, revision, machine, 0L, currentFinish, userRequestedTracking = true))
             LaundryWidgetStore.refresh(applicationContext)
         }
         val notices = LaundryNotifications(applicationContext)
         if (notices.post(event) || notices.wasHandled(event)) {
+            if(action == ReminderAction.FINISHED) { LaundryReminders.confirmFinished(applicationContext,taskId);return Result.success() }
             val prefs = applicationContext.getSharedPreferences(LaundryReminders.PREFS, Context.MODE_PRIVATE)
             val latest = runCatching { JSONObject(prefs.getString(taskId, "{}")!!) }.getOrNull()
             if (latest != null && latest.optLong("revision", -1) == revision)
-                prefs.edit().putString(taskId, latest.put("${kind}DeliveredRevision", revision).put("${kind}DeliveredFinish", finish).toString()).commit()
+                prefs.edit().putString(taskId, latest.put("${kind}DeliveredRevision", revision).put("${kind}DeliveredFinish", currentFinish).toString()).commit()
         }
         return Result.success()
         }
+    }
+
+    private fun currentState(taskId: String,revision:Long,kind:String): JSONObject? {
+        if(!PushRuntime.notificationsAllowed(applicationContext) || LaundryReminders.isConfirmedFinished(applicationContext,taskId)) return null
+        val raw=applicationContext.getSharedPreferences(LaundryReminders.PREFS,Context.MODE_PRIVATE).getString(taskId,null) ?: return null
+        val state=runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val finish=state.optLong("finish",0)
+        if(revision!=state.optLong("revision",-2)||inputData.getLong("finish",finish)!=finish)return null
+        val lead=reminderLeadMinutes(state.optInt("leadMinutes",3))
+        if(kind=="soon"&&(lead==0||inputData.getInt("leadMinutes",3)!=lead))return null
+        if(state.optLong("${kind}DeliveredRevision",-1)==revision || state.optLong("${kind}DeliveredFinish",0).takeIf { it>0 }?.let { TaskNoticeCoalescing.sameFinish(it,finish) }==true)return null
+        return state
+    }
+
+    private fun accountKey(value:JSONObject?):String? {
+        value ?: return null
+        val token=value.str("accessToken").split('.')
+        val identity=if(token.size==3&&token[0]=="ma1")token[1] else value.optJSONObject("user")?.str("id") ?: value.str("refreshToken")
+        return value.str("origin")+"|"+identity
     }
 }

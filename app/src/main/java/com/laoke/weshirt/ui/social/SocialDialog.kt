@@ -191,7 +191,7 @@ private data class PickupConfirmation(val title: String, val message: String, va
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(if (received) "${request.optJSONObject("peer")?.str("nick", "朋友")} 请你代取" else "请 ${request.optJSONObject("peer")?.str("nick", "朋友")} 代取", style = MaterialTheme.typography.titleMedium)
         Text(task?.str("machineName", "任务暂不可用").orEmpty())
-        Text(when { unavailable -> "任务已删除或暂不可用"; done -> "已确认取衣"; left == null -> "结束时间待确认，请以现场为准"; left > 0 -> "预计剩余 $left 分钟，请等机器结束后取衣"; else -> "计时已结束，请现场确认后再取衣" }, style = MaterialTheme.typography.bodySmall)
+        Text(when { unavailable -> "任务已删除或暂不可用"; done -> "已确认取衣"; task?.optBoolean("completionConfirmed") == true -> "平台已确认完成 · 等待取衣"; left == null -> "结束时间待确认，请以现场为准"; left > 0 -> "预计剩余 $left 分钟，请等机器结束后取衣"; else -> "即将完成，等待设备确认后再取衣" }, style = MaterialTheme.typography.bodySmall)
         Text(when (state) { "pending" -> "等待接受"; "accepted" -> "已接受代取"; "completed" -> "已完成代取"; "rejected" -> "暂不方便"; else -> "状态已更新" }, color = MaterialTheme.colorScheme.primary)
         if (received && state == "pending") Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(enabled = !busy && !unavailable && !done, onClick = { respond(request, "accept") }) { Text("接受") }

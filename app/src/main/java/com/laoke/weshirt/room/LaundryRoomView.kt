@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.PointF
+import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -67,7 +68,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     val renderStatistics: RoomRenderStatistics get() = RoomRenderStatistics(
         renderedFrames, rejectedFrames, engine != null, swapChain != null && uiHelper?.isReadyToRender == true,
         materials.size, meshes.size, machines.size, latestGpuDurationNanos, rendererFailure, disposed,
-        pendingMaterialCompilations, nativeDiagnostics(),
+        pendingMaterialCompilations, nativeDiagnostics(), cameraGoal != null, doorsMoving(),
     )
 
     private val surfaceView = SurfaceView(context)
@@ -230,19 +231,38 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     /** Door center projected into view coordinates, also usable by native accessibility overlays. */
     fun machineScreenPosition(machineId: String): PointF? {
-        if(viewportWidth <= 0 || viewportHeight <= 0 || disposed) return null
         val position = positions.firstOrNull { it.slot == machineId } ?: return null
+        return projectToScreen(position.doorCenter)?.takeIf { it.x >= 0 && it.x < width && it.y >= 0 && it.y < height }
+    }
+
+    /** Cabinet bounds for native overlays; unlike the centre, these describe apparent size. */
+    fun machineScreenBounds(machineId: String): RectF? {
+        val position = positions.firstOrNull { it.slot == machineId } ?: return null
+        val height = if (position.dryer) 1.05f else .98f
+        val corners = listOf(-.345f, .345f).flatMap { x -> listOf(.025f, height).flatMap { y ->
+            listOf(-.335f, .39f).map { z -> projectToScreen(position.point(x, y, z)) ?: return null }
+        } }
+        return RectF(corners.minOf { it.x }, corners.minOf { it.y }, corners.maxOf { it.x }, corners.maxOf { it.y })
+    }
+
+    // PixelCopy can otherwise read an older presented buffer while Filament's
+    // accepted submissions are still queued on its render thread. Capture alone
+    // needs this barrier; the interactive render loop must remain asynchronous.
+    internal fun synchronizeRenderingForCapture() { engine?.flushAndWait() }
+
+    private fun projectToScreen(point: Vec3): PointF? {
+        if(viewportWidth <= 0 || viewportHeight <= 0 || disposed) return null
         val forward = (target - eye).normalized()
         val right = forward.cross(Vec3(0.0, 1.0, 0.0)).normalized()
         val up = right.cross(forward).normalized()
-        val relative = position.doorCenter - eye
+        val relative = point - eye
         val depth = relative.dot(forward)
         if(depth <= 0) return null
         val halfHeight = tan(Math.toRadians(fieldOfView) / 2)
         val aspect = viewportWidth.toDouble() / viewportHeight
         val x = (relative.dot(right) / (depth * halfHeight * aspect) + 1) / 2 * surfaceView.width
         val y = (1 - relative.dot(up) / (depth * halfHeight)) / 2 * surfaceView.height
-        return PointF(x.toFloat(), y.toFloat()).takeIf { it.x >= 0 && it.x < width && it.y >= 0 && it.y < height }
+        return PointF(x.toFloat(), y.toFloat())
     }
 
     fun setMachines(value: List<RoomMachine>) {
@@ -326,7 +346,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     fun focusFacility(facility: RoomFacility) {
         if (!RoomLayout.isSurveyedLayout(positions)) return
         val pose = if (facility == RoomFacility.BOILER) RoomCameraPose(Vec3(-.55, 1.35, 3.15), Vec3(-1.2, .9, 4.02))
-            else RoomCameraPose(Vec3(-.85, 1.5, .58), Vec3(-2.0, 1.55, .58))
+            else RoomCameraPose(Vec3(-.85, 2.0, .58), Vec3(-2.0, RoomUtilityLayout.noticeCenterY.toDouble(), .58))
         yawVelocity = 0.0
         if (motionEnabled()) cameraGoal = pose else adoptCameraPose(pose)
         requestFrame(immediate = true)
@@ -545,7 +565,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         RoomMaterial.entries.forEach { kind ->
             instances[kind] = (if (kind == RoomMaterial.GLOW) unlit else lit).createInstance().apply {
                 if (kind != RoomMaterial.GLOW) {
-                    setParameter("roughness", when (kind) { RoomMaterial.METAL -> .32f; RoomMaterial.CLOTH -> 1f; else -> .78f })
+                    setParameter("roughness", when (kind) { RoomMaterial.METAL -> .28f; RoomMaterial.ENAMEL -> .36f; RoomMaterial.CLOTH -> 1f; else -> .78f })
                     setParameter("metallic", if (kind == RoomMaterial.METAL) .65f else 0f)
                 }
             }
@@ -610,8 +630,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
         val cy = cos(slot.yaw); val sy = sin(slot.yaw)
         val ca = cos(angle); val sa = sin(angle)
         val radius = if (slot.dryer) .23f else .205f
-        val scale = radius * .74f * 1.25f
-        val center = slot.point(0f, .53f - radius * .06f, .365f)
+        val scale = radius * .71f
+        val center = slot.point(0f, .53f - radius * .09f, .274f)
         transform.fill(0f)
         transform[0] = cy * ca * scale; transform[1] = sa * scale; transform[2] = -sy * ca * scale
         transform[4] = -cy * sa * scale; transform[5] = ca * scale; transform[6] = sy * sa * scale
@@ -624,7 +644,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     private fun updateDoorTransform(slot: RoomSlot, angle: Float) {
         val radius = if (slot.dryer) .23f else .205f
-        setMeshPose(doorMeshes[slot.slot], slot.point(-radius * .95f, .53f, if (slot.dryer) .36f else .38f), slot.yaw + angle)
+        setMeshPose(doorMeshes[slot.slot], slot.point(-radius * .95f, .53f, .365f), slot.yaw + angle)
     }
 
     private fun setMeshPose(mesh: NativeMesh?, center: Vec3, angle: Float) {

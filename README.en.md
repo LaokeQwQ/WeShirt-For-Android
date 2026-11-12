@@ -12,7 +12,7 @@ Machines are grouped into washers and dryers, with available machines first. The
 
 Registration supports wash programs, custom durations and public notes, disinfectant and pre-wash self-cleaning records. Machine discussions are shared with the Web app. Other features include favorites, queues, community channels, media attachments, friend invitations, pickup requests, native notifications and a home screen widget. Themes support light, dark and custom colors. The 3D renderer adapts to measured frame cost, thermal conditions and battery saver.
 
-Requires Android 10 or later. Package: `com.laoke.weshirt`. Releases are privately distributed with a self-signed certificate. Enter your service URL and choose your building on first launch.
+Requires Android 10 or later. Package: `com.laoke.weshirt`. Releases are privately distributed with a self-signed certificate and connect to the service configured by the distributor. Choose your building on first launch.
 
 The native client also includes the laundry assistant, memory, Skills, building inspections and administration. See the [Web feature mapping](docs/native-parity.md) for native entry points and platform differences.
 

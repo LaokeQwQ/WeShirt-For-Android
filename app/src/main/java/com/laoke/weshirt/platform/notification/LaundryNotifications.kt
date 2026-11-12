@@ -118,7 +118,7 @@ class LaundryNotifications(context: Context) {
         val builder = Notification.Builder(app, PROGRESS_CHANNEL)
             .setSmallIcon(R.drawable.notification_laundry)
             .setContentTitle(progress.machineName.take(100))
-            .setContentText(if (expectedEnded) "预计时间已到，实际状态以设备更新为准" else "正在洗衣 · 剩余时间为估计值")
+            .setContentText(if (expectedEnded) "即将完成，等待设备确认" else "正在洗衣 · 以最新平台时间为准")
             .setOngoing(!expectedEnded).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setProgress(if (progress.startedAtMillis > 0) 1000 else 0,

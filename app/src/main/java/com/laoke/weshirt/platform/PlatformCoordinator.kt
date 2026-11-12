@@ -9,6 +9,7 @@ import com.laoke.weshirt.data.epoch
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.data.isArchived
 import com.laoke.weshirt.data.isExpired
+import com.laoke.weshirt.data.serviceEndpoint
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
 import com.laoke.weshirt.platform.notification.TaskProgress
@@ -43,7 +44,8 @@ class PlatformCoordinator(
         }
     }
 
-    val notificationsEnabled: Boolean get() = session.read() != null && prefs.getBoolean("nativePushConsent", false) &&
+    /** Device choice and OS permission are available before an account signs in. */
+    val notificationsEnabled: Boolean get() = prefs.getBoolean("nativePushConsent", false) &&
         LaundryNotifications(app).capabilities().let { it.permissionGranted && it.notificationsEnabled }
 
     fun initialize() {
@@ -63,6 +65,7 @@ class PlatformCoordinator(
             LaundryNotifications(app).clear()
             return if (enabled) "请在系统设置中允许 WeShirt 通知" else "通知已关闭"
         }
+        if (session.read() == null) return "通知已开启，登录后接收洗衣与消息提醒"
         lastState?.let(::synchronize)
         return if (route.provider == PushProvider.NONE) "本地提醒已开启，远程推送尚未配置" else "本地提醒已开启；远程推送正在登记"
     }
@@ -78,14 +81,18 @@ class PlatformCoordinator(
         lastState = state
         if (session.read() == null || state.profile == null) { clearLocal(); return }
         if (!PushRuntime.isSessionActive(app)) PushRuntime.onSessionAvailable(app)
+        if (!state.profile.notifyOn) { LaundryReminders.cancelAll(app); LaundryNotifications(app).clear(); return }
         val active = LinkedHashMap<String, TaskProgress>()
+        val permissions = state.access.optJSONObject("permissions")
         state.tasks.filter { !it.done && !it.isArchived(System.currentTimeMillis()) && !it.isExpired(System.currentTimeMillis()) && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
-            val finish = task.endAt ?: return@forEach
-            active[task.id] = tracked(task.id, task.name, finish, task.startAt ?: 0L, state.profile.notifyLeadMin)
+            if (permissions?.optJSONObject("tasks")?.optBoolean("view", true) == false) return@forEach
+            val finish = (task.endAt ?: return@forEach) - task.clockOffsetMs
+            active[task.id] = tracked(task.id, task.name, finish, (task.startAt ?: 0L).let { if(it > 0) it - task.clockOffsetMs else 0L }, state.profile.notifyLeadMin)
         }
         state.queues.filter { it.optBoolean("mine") && it.optInt("position") == 1 && !it.optBoolean("uncertain") }.forEach { queue ->
+            if (permissions?.optJSONObject("queue")?.optBoolean("view", true) == false) return@forEach
             val machine = state.machines.find { it.id == queue.str("machineId") }
-            val finish = machine?.finishAt ?: epoch(queue.str("eta")) ?: return@forEach
+            val finish = machine?.finishAt?.minus(machine.clockOffsetMs) ?: epoch(queue.str("eta")) ?: return@forEach
             val id = "queue:${queue.str("id")}"
             active[id] = tracked(id, "等候 · ${machine?.name ?: "预约机器"}", finish, 0L, 3)
         }
@@ -121,7 +128,11 @@ class PlatformCoordinator(
         /** Restores SDK state on a push-started process without constructing a second API client. */
         fun bootstrap(context: Context) {
             val session = SecureSession(context)
-            val active = session.read() != null
+            val saved = session.read()
+            val endpoint = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
+                context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString("endpoint", null)).trimEnd('/')
+            val active = saved != null && saved.str("origin") == endpoint
+            if (saved != null && !active) session.clear()
             PushRuntime.useInstallationId(context, session.installationId)
             PushRuntime.initialize(context, configuration(context, active))
             if (active) PushRuntime.onSessionAvailable(context) else PushRuntime.clearLocalSession(context)

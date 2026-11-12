@@ -39,6 +39,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Exercises the real ViewModel, Android preferences, notification service and WorkManager. */
 @RunWith(AndroidJUnit4::class)
@@ -51,7 +52,7 @@ class NativePreferencePrivacyTest {
     @Before fun prepare() {
         runBlocking { PushRuntime.logout(app) }
         SecureSession(app).clear()
-        prefs.edit().putString("endpoint", "").putBoolean("nativePushConsent", false).putBoolean("announcements", true).commit()
+        prefs.edit().putString("endpoint", "").putBoolean("nativePushConsent", false).putBoolean("announcements", true).remove("pendingGuestNotifyEnable").commit()
         if (Build.VERSION.SDK_INT >= 33) instrumentation.uiAutomation
             .executeShellCommand("pm grant ${app.packageName} ${Manifest.permission.POST_NOTIFICATIONS}")
             .use { android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText() }
@@ -61,7 +62,96 @@ class NativePreferencePrivacyTest {
         onMain { store.clear() }
         runBlocking { PushRuntime.logout(app) }
         SecureSession(app).clear()
-        prefs.edit().remove("endpoint").remove("nativePushConsent").remove("announcements").commit()
+        prefs.edit().remove("endpoint").remove("nativePushConsent").remove("announcements").remove("pendingGuestNotifyEnable").commit()
+    }
+
+    @Test fun guestCanEnableDeviceNotificationsWithoutCreatingAnAccountSubscription() {
+        val vm = newViewModel()
+        runBlocking { onMain { vm.toggleNotify(true) }.join() }
+        assertTrue(prefs.getBoolean("nativePushConsent", false))
+        assertTrue(prefs.getBoolean("pendingGuestNotifyEnable", false))
+        assertTrue(vm.state.value.notificationsOn)
+        assertTrue(vm.state.value.info.orEmpty().contains("登录后"))
+        assertNull("A guest's local choice must not create credentials", vm.session.read())
+        assertFalse(PushRuntime.isSessionActive(app))
+        assertFalse(PushRuntime.notificationsAllowed(app))
+        assertFalse(LaundryNotifications(app).post(NativePushEvent("guest-event", 1, PushEventKind.ANNOUNCEMENT, "公告", "游客不接收账号消息")))
+        assertTrue(newViewModel().state.value.notificationsOn)
+    }
+
+    @Test fun latePermissionResultCannotUndoANewerGuestOptOut() {
+        val vm = newViewModel()
+        val request = onMain { vm.prepareNotificationPermission() }
+        assertTrue(prefs.getBoolean("nativePushConsent", false))
+        runBlocking { onMain { vm.toggleNotify(false) }.join() }
+        onMain { vm.notificationPermissionResult(request, granted = true) }
+        assertFalse(prefs.getBoolean("nativePushConsent", true))
+        assertFalse(prefs.getBoolean("pendingGuestNotifyEnable", false))
+        assertFalse(vm.state.value.notificationsOn)
+        assertFalse(PushRuntime.notificationsAllowed(app))
+        val retried = onMain { vm.prepareNotificationPermission() }
+        onMain { vm.notificationPermissionResult(retried, granted = false) }
+        assertFalse("Denying system permission withdraws the pending enable request", prefs.getBoolean("pendingGuestNotifyEnable", false))
+        assertFalse(prefs.getBoolean("nativePushConsent", true))
+        assertFalse(vm.state.value.notificationsOn)
+    }
+
+    @Test fun guestChoiceSyncsAfterLoginAndLogoutBlocksOldAccountEvents() {
+        val vm = newViewModel()
+        runBlocking { onMain { vm.toggleNotify(true) }.join() }
+        val synchronizedChoice = CountDownLatch(1)
+        val enabled = AtomicBoolean(false)
+        val notificationWrites = AtomicInteger()
+        val origin = "https://notification-fixture.invalid"
+        onMain {
+            vm.api.baseUrl = origin
+            val client = OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                if (request.url.encodedPath == "/api/user/notify") {
+                    notificationWrites.incrementAndGet()
+                    assertEquals("Bearer notification-fixture-access", request.header("Authorization"))
+                    val buffer = okio.Buffer(); request.body!!.writeTo(buffer)
+                    enabled.set(JSONObject(buffer.readUtf8()).optBoolean("on"))
+                    synchronizedChoice.countDown()
+                }
+                val body = when (request.url.encodedPath) {
+                    "/api/site" -> "{\"buildings\":[]}"
+                    "/api/auth/me" -> "{\"user\":{\"id\":\"notification-fixture\",\"nick\":\"测试用户\"}}"
+                    else -> "{}"
+                }
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                    .body(body.toResponseBody("application/json".toMediaType())).build()
+            }.build()
+            vm.api.javaClass.getDeclaredField("http").apply { isAccessible = true }.set(vm.api, client)
+            vm.api.saveSession(JSONObject().put("accessToken", "notification-fixture-access")
+                .put("refreshToken", "notification-fixture-refresh").put("expiresIn", 900))
+            vm.platformSessionChanged()
+        }
+        assertTrue("Login must synchronize the device choice using authenticated API", synchronizedChoice.await(10, TimeUnit.SECONDS))
+        assertTrue(enabled.get())
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while ((vm.state.value.profile?.id != "notification-fixture" || vm.state.value.busy) && System.nanoTime() < deadline) Thread.sleep(30)
+        assertEquals("notification-fixture", vm.state.value.profile?.id)
+        assertFalse("The explicit guest choice is consumed only after a successful account update", prefs.getBoolean("pendingGuestNotifyEnable", false))
+        assertTrue(PushRuntime.notificationsAllowed(app))
+        assertTrue(LaundryNotifications(app).post(NativePushEvent("old-account-event", 1, PushEventKind.ANNOUNCEMENT, "测试通知", "退出后必须清理")))
+        runBlocking { onMain { vm.logout() }.join() }
+        assertNull(vm.session.read())
+        assertNull(vm.state.value.profile)
+        assertTrue("Logout preserves only the device's notification choice", prefs.getBoolean("nativePushConsent", false))
+        assertTrue(vm.state.value.notificationsOn)
+        assertFalse(PushRuntime.notificationsAllowed(app))
+        assertTrue(app.getSystemService(NotificationManager::class.java).activeNotifications.isEmpty())
+        assertFalse(LaundryNotifications(app).post(NativePushEvent("late-old-account-event", 2, PushEventKind.ANNOUNCEMENT, "旧号通知", "不得显示")))
+        onMain {
+            vm.api.saveSession(JSONObject().put("accessToken", "another-account-access")
+                .put("refreshToken", "another-account-refresh").put("expiresIn", 900))
+            vm.platformSessionChanged()
+        }
+        val reloginDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        while ((vm.state.value.profile == null || vm.state.value.loading) && System.nanoTime() < reloginDeadline) Thread.sleep(30)
+        assertNotNull(vm.state.value.profile)
+        assertEquals("An existing device setting must not silently rewrite a later account's preference", 1, notificationWrites.get())
     }
 
     @Test fun disablingWithoutAServiceRevokesLocallyBeforeTheConfigurationError() {

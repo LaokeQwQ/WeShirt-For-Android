@@ -30,8 +30,11 @@ class NativeScreensTest {
         var rendererFailure: String? = null
         compose.setContent { WeShirtTheme("light","blue") { RoomScreen(AppState(building="test", machines=machines), { selection = it.id }, { rendererFailure = it }) } }
         compose.waitForIdle()
-        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("测试机 D1", substring = true))
-        compose.onNodeWithText("测试机 D1", substring = true).performClick()
+        compose.onNodeWithTag("room-machine-shortcuts").assertIsDisplayed()
+        android.os.SystemClock.sleep(2000)
+        saveScreenshot("native-room-shortcuts.png")
+        compose.onNodeWithTag("room-machine-shortcuts").performScrollToNode(hasTestTag("room-slot:D1"))
+        compose.onNodeWithTag("room-slot:D1").performClick()
         compose.runOnIdle { assertEquals("dry-1", selection); check(rendererFailure == null) { rendererFailure.orEmpty() } }
         compose.onNodeWithText("机器列表").performClick()
         compose.onNodeWithText("最快可用").assertIsDisplayed()

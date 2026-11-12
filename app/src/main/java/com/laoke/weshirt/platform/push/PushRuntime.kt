@@ -280,6 +280,7 @@ object PushRuntime {
         val snapshot = synchronized(this) {
             val oldSink = sink
             val identity = installationId(context)
+            DingTalkLoginBridge.clear(context)
             clearLocalSession(context)
             Triple(generation, identity, oldSink)
         }
@@ -309,7 +310,9 @@ object PushRuntime {
         LaundryReminders.cancelAll(context, clearConfirmed = true)
         LaundryWidgetStore.clear(context)
         LaundryNotifications(context).clear()
-        DingTalkLoginBridge.clear(context)
+        // Notification housekeeping also runs while signed out and after an
+        // anonymous refresh. It must not erase an in-flight DingTalk request;
+        // only an explicit logout/service change owns that login state.
     }
 
     private fun setComponents(context: Context, names: List<String>, enabled: Boolean) {

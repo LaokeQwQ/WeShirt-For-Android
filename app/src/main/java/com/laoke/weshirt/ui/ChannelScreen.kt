@@ -111,7 +111,13 @@ import java.util.UUID
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Surface(Modifier.size(40.dp).combinedClickable(onClick = {}, onLongClick = { if(!state.busy && message.mentionRef.isNotBlank()) { mentions = mentions + message.mentionRef; input = (input + "@${message.nick} ").take(200) } }), shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Box(contentAlignment = Alignment.Center) { if(message.avatar.isNotBlank()) AsyncImage(ImageRequest.Builder(context).data(message.avatar).memoryCacheKey("avatar|${scope.endpoint}|${scope.profileId}|${message.avatar}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(), "${message.nick}的头像", Modifier.fillMaxSize()) else Text(message.nick.take(1)) } }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { Text(message.nick, style = MaterialTheme.typography.labelLarge); if(message.building.isNotBlank()) Text(message.building, style = MaterialTheme.typography.labelSmall); if(message.role.isNotBlank() && message.role != "用户") SuggestionChip(onClick = {}, label = { Text(message.role) }, modifier = Modifier.height(22.dp)) }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                            Text(message.nick, style = MaterialTheme.typography.labelLarge)
+                            if (message.building.isNotBlank()) Text(message.building, style = MaterialTheme.typography.labelSmall)
+                            if (message.role.isNotBlank() && message.role != "用户") Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+                                Text(message.role, Modifier.padding(horizontal = 6.dp, vertical = 3.dp), style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                         Surface(Modifier.combinedClickable(onClick = { if(message.mediaId.isNotBlank()) media = message }, onLongClick = { menu = message }), shape = RoundedCornerShape(18.dp), color = if(message.mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 if(message.pinned) Text("置顶", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)

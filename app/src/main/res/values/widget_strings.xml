@@ -20,7 +20,7 @@
     <string name="widget_expected_at">预计 %1$s 完成</string>
     <string name="widget_expected_label">预计完成时间</string>
     <string name="widget_expected_disclaimer">预计时间，以设备状态为准</string>
-    <string name="widget_awaiting">预计时间已到，待确认</string>
+    <string name="widget_awaiting">即将完成，等待设备确认</string>
     <string name="widget_unverified">打开查看最新任务状态</string>
     <string name="widget_no_task">暂无进行中的洗衣任务</string>
     <string name="widget_stale_hint">数据可能已变化，点按刷新</string>

@@ -155,6 +155,42 @@ class NativeLaundryRoomTest {
         assertSurfaceContainsRenderedGeometry(room)
     }
 
+    @Test fun realSurfaceShowsWasherAndDryerCloseupsWithOpenAndClosedDoors() = withRoom { _, room, errors ->
+        await("Scene did not become ready") { snapshot(room).renderedFrames > 0 }
+        for ((slot, state, filename) in listOf(
+            Triple("1", RoomMachineState.RUNNING, "native-washer-closed"),
+            Triple("1", RoomMachineState.IDLE, "native-washer-open"),
+            Triple("D1", RoomMachineState.RUNNING, "native-dryer-closed"),
+        )) {
+            val id = "native-machine-$slot"
+            val before = snapshot(room).renderedFrames
+            onMain {
+                room.setMachines(originalMachines().map { if (it.id == id) it.copy(state = state) else it })
+                room.focusMachine(id)
+            }
+            await("Close-up did not submit a fresh frame") { snapshot(room).renderedFrames > before }
+            // A stable projected centre also occurs in a still overview or while
+            // the render thread is busy. Verify actual close-up size and flight
+            // completion, including the door, before reading the GPU surface.
+            await("Close-up camera did not settle") {
+                onMain {
+                    val bounds = room.machineScreenBounds(id)
+                    val stats = room.renderStatistics
+                    bounds != null && !stats.cameraMoving && !stats.doorsAnimating &&
+                        bounds.height() / room.height >= .40f && bounds.width() / room.width >= .28f
+                }
+            }
+            val bounds = requireNotNull(onMain { room.machineScreenBounds(id) })
+            assertTrue("Focused machine must stay in the viewport: $bounds", onMain {
+                bounds.centerX() in 0f..room.width.toFloat() && bounds.centerY() in 0f..room.height.toFloat()
+            })
+            assertSurfaceContainsRenderedGeometry(room, filename)
+            assertNull(snapshot(room).failureEvent)
+        }
+        assertEquals(9, snapshot(room).machineCount)
+        assertTrue(errors.get().isEmpty())
+    }
+
     private fun withRoom(test: (ActivityScenario<MainActivity>, LaundryRoomView, AtomicReference<List<String>>) -> Unit) {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             val errors = AtomicReference<List<String>>(emptyList())
@@ -187,12 +223,13 @@ class NativeLaundryRoomTest {
         }
     }
 
-    private fun assertSurfaceContainsRenderedGeometry(room: LaundryRoomView) {
+    private fun assertSurfaceContainsRenderedGeometry(room: LaundryRoomView, filename: String = "native-room-3d") {
         val surface = onMain { room.getChildAt(0) as SurfaceView }
         val dimensions = onMain { surface.width to surface.height }
         assertTrue(dimensions.first > 0 && dimensions.second > 0)
         val pixels = Bitmap.createBitmap(dimensions.first, dimensions.second, Bitmap.Config.ARGB_8888)
         try {
+            onMain { room.synchronizeRenderingForCapture() }
             var copyResult = PixelCopy.ERROR_SOURCE_NO_DATA
             var colorCount = 0
             val deadline = SystemClock.uptimeMillis() + 20_000
@@ -213,7 +250,7 @@ class NativeLaundryRoomTest {
                 assertNull("Renderer failed while awaiting actual presentation", snapshot(room).failureEvent)
                 SystemClock.sleep(200)
             }
-            if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage("native-room-3d")
+            if(copyResult == PixelCopy.SUCCESS) pixels.writeToTestStorage(filename)
             android.util.Log.i("WeShirtRoomTest", "Baseline native surface: copy=$copyResult, colors=$colorCount, ${snapshot(room)}")
             assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
             assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)
