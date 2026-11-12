@@ -51,6 +51,7 @@ class NativeAdminIntegrationTest {
     private var client: OkHttpClient? = null
     private val requests = CopyOnWriteArrayList<RecordedRequest>()
     private val closes = AtomicInteger()
+    @Volatile private var residentCanOperate = true
 
     @Before fun prepare() {
         check(BuildConfig.DEBUG) { "This fixture requires the debug-only endpoint override" }
@@ -76,7 +77,8 @@ class NativeAdminIntegrationTest {
                     "/api/auth/me" -> """{"user":{"id":"admin-fixture","nick":"测试管理员","dormBuilding":"test","role":"admin"}}"""
                     "/api/user/permissions" -> """{"adminVisible":true,"identity":{"role":"admin"},"permissions":{"adminUsers":{"view":true,"operate":true,"viewBuildings":["test"],"operateBuildings":["test"]},"tasks":{"view":false,"operate":false},"queue":{"view":false,"operate":false},"messages":{"view":false,"operate":false}}}"""
                     "/api/machines" -> """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[]},"freshness":{"stale":false,"syncFailed":false}}"""
-                    "/api/admin/users" -> """{"items":[{"id":"resident-fixture","nick":"测试居民","dormBuilding":"test","dingBound":true,"dingNick":"测试钉钉昵称","mobile":"138****0000","notifyOn":true}]}"""
+                    // Match the API's per-target authority, not just the directory-level grant.
+                    "/api/admin/users" -> """{"bulk":{"max":50,"operate":true,"operateBuildings":["test"]},"items":[{"id":"resident-fixture","nick":"测试居民","dormBuilding":"test","dingBound":true,"dingNick":"测试钉钉昵称","mobile":"138****0000","notifyOn":true,"canOperate":$residentCanOperate}]}"""
                     "/api/user/announcements" -> """{"enabled":false}"""
                     "/api/user/laundry-preferences" -> """{"preferences":{"enabled":false,"favorites":[],"timeWindows":[]}}"""
                     else -> "{}"
@@ -116,6 +118,44 @@ class NativeAdminIntegrationTest {
     }
 
     @Test fun authorizedDirectoryLoadsRealUsersAndNativeBackReturnsThenCloses() {
+        openAdminDirectory()
+        compose.onNodeWithText("日常管理").assertIsDisplayed()
+        compose.onNodeWithTag("admin-open:机器与机位").assertDoesNotExist()
+        compose.onNodeWithTag("admin-open:网站与楼栋").assertDoesNotExist()
+        compose.onNodeWithTag("admin-open:上游与系统").assertDoesNotExist()
+        compose.onNodeWithTag("admin-open:成员功能权限与范围").assertDoesNotExist()
+        openResident()
+        compose.onNodeWithText("保存昵称与通知偏好").assertDoesNotExist()
+        compose.onNodeWithTag("admin-user-expand").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("复制用户 ID").performScrollTo().assertIsDisplayed()
+        compose.onNode(hasText("昵称") and hasSetTextAction()).performScrollTo().performTextClearance()
+        compose.onNode(hasText("昵称") and hasSetTextAction()).performTextInput("更新的测试昵称")
+        Espresso.closeSoftKeyboard()
+        compose.onNodeWithText("保存昵称与通知偏好").performScrollTo().assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("删除用户").performScrollTo().assertIsDisplayed()
+        assertReadOnlyAuthenticatedRequests()
+
+        Espresso.pressBack()
+        compose.onNodeWithTag("admin-open:用户管理").assertIsDisplayed()
+        assertEquals("The first native back must return to the directory", 0, closes.get())
+        Espresso.pressBack()
+        compose.onNodeWithTag("admin-closed").assertIsDisplayed()
+        assertEquals(1, closes.get())
+    }
+
+    @Test fun directoryOperationGrantCannotOverrideTheServersPerUserDenial() {
+        residentCanOperate = false
+        openAdminDirectory()
+        openResident()
+        compose.onNodeWithTag("admin-user-expand").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("复制用户 ID").performScrollTo().assertIsDisplayed()
+        compose.onNode(hasText("昵称") and hasSetTextAction()).assertDoesNotExist()
+        compose.onNodeWithText("保存昵称与通知偏好").performScrollTo().assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("删除用户").performScrollTo().assertIsDisplayed().assertIsNotEnabled()
+        assertReadOnlyAuthenticatedRequests()
+    }
+
+    private fun openAdminDirectory() {
         val origin = server.url("/").toString().trimEnd('/')
         val vm = onMain {
             AppViewModel(app).also { model ->
@@ -143,33 +183,19 @@ class NativeAdminIntegrationTest {
                 else Text("后台已关闭", Modifier.testTag("admin-closed"))
             }
         }
-        compose.onNodeWithText("日常管理").assertIsDisplayed()
-        compose.onNodeWithTag("admin-open:机器与机位").assertDoesNotExist()
-        compose.onNodeWithTag("admin-open:网站与楼栋").assertDoesNotExist()
-        compose.onNodeWithTag("admin-open:上游与系统").assertDoesNotExist()
-        compose.onNodeWithTag("admin-open:成员功能权限与范围").assertDoesNotExist()
+    }
+
+    private fun openResident() {
         compose.onNodeWithTag("admin-open:用户管理").assertIsDisplayed().performClick()
         compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/admin/users" } }
         compose.waitUntil(10_000) { compose.onAllNodesWithText("测试居民").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("测试楼 · 已绑定钉钉").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("保存昵称与通知偏好").assertDoesNotExist()
-        compose.onNodeWithTag("admin-user-expand").performScrollTo().performClick()
-        compose.onNodeWithContentDescription("复制用户 ID").performScrollTo().assertIsDisplayed()
-        compose.onNode(hasText("昵称") and hasSetTextAction()).performScrollTo().performTextClearance()
-        compose.onNode(hasText("昵称") and hasSetTextAction()).performTextInput("更新的测试昵称")
-        Espresso.closeSoftKeyboard()
-        compose.onNodeWithText("保存昵称与通知偏好").performScrollTo().assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("删除用户").performScrollTo().assertIsDisplayed()
+    }
+
+    private fun assertReadOnlyAuthenticatedRequests() {
         val users = requests.single { it.requestUrl!!.encodedPath == "/api/admin/users" }
         assertEquals("Bearer admin-fixture-access", users.getHeader("Authorization"))
         assertTrue("Browsing and editing a draft must never submit a mutation", requests.all { it.method == "GET" })
-
-        Espresso.pressBack()
-        compose.onNodeWithTag("admin-open:用户管理").assertIsDisplayed()
-        assertEquals("The first native back must return to the directory", 0, closes.get())
-        Espresso.pressBack()
-        compose.onNodeWithTag("admin-closed").assertIsDisplayed()
-        assertEquals(1, closes.get())
     }
 
     private fun json(body: String, code: Int = 200) = MockResponse().setResponseCode(code)
