@@ -3,6 +3,9 @@ package com.laoke.weshirt.data
 import java.text.Collator
 import java.util.Locale
 
+/** Deadlines arrive in server time; compare snapshots using the device's local clock basis. */
+internal fun Machine.localFinishAt(): Long? = finishAt?.minus(clockOffsetMs)
+
 /** Matches the status groups in the web board's machineOrder.js. Never infers idle from an estimate. */
 fun sortMachinesByAvailability(machines: List<Machine>, now: Long): List<Machine> {
     val names = Collator.getInstance(Locale.SIMPLIFIED_CHINESE)
@@ -11,7 +14,7 @@ fun sortMachinesByAvailability(machines: List<Machine>, now: Long): List<Machine
         if (group != 0) group
         else {
             val end = if (availabilityGroup(left, now) == 1) {
-                requireNotNull(left.finishAt).compareTo(requireNotNull(right.finishAt))
+                requireNotNull(left.localFinishAt()).compareTo(requireNotNull(right.localFinishAt()))
             } else 0
             if (end != 0) end else naturalNameCompare(displayName(left), displayName(right), names)
         }
@@ -20,7 +23,7 @@ fun sortMachinesByAvailability(machines: List<Machine>, now: Long): List<Machine
 
 private fun availabilityGroup(machine: Machine, now: Long): Int = when {
     machine.state == "idle" && !machine.suspectedUncollected -> 0
-    machine.state == "occupied" && machine.finishAt?.let { it > now } == true -> 1
+    machine.state == "occupied" && machine.localFinishAt()?.let { it > now } == true -> 1
     machine.suspectedUncollected || machine.state == "occupied" || machine.state == "abnormal" -> 2
     machine.state == "faulty" -> 4
     else -> 3
@@ -61,7 +64,7 @@ fun machineBoardStatus(machine: Machine, now: Long): MachineBoardStatus = when {
         MachineBoardStatus(MachineBoardState.PICKUP, "疑似未取", "请先确认现场衣物")
     machine.state == "idle" -> MachineBoardStatus(MachineBoardState.AVAILABLE, "空闲", null)
     machine.state == "occupied" -> {
-        val end = machine.finishAt
+        val end = machine.localFinishAt()
         val detail = when {
             end == null -> "剩余时间待同步"
             end <= now -> "即将完成，等待设备确认"

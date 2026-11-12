@@ -21,15 +21,16 @@ fun projectWebRoom(machines: List<Machine>, now: Long): WebRoomProjection {
             kind = if (slot.startsWith("D")) "dryer" else "washer")
         else {
             bound = true
+            val localFinishAt = machine.localFinishAt()
             val state = when {
                 machine.suspectedUncollected || machine.state in setOf("pending_pickup", "awaiting_pickup") -> RoomMachineState.AWAITING_PICKUP
                 machine.state == "idle" -> RoomMachineState.IDLE
-                machine.state == "occupied" -> if (machine.finishAt?.let { it - now in 1..180_000L } == true) RoomMachineState.FINISHING else RoomMachineState.RUNNING
+                machine.state == "occupied" -> if (localFinishAt?.let { it - now in 1..180_000L } == true) RoomMachineState.FINISHING else RoomMachineState.RUNNING
                 machine.state == "abnormal" -> RoomMachineState.REVIEW
                 machine.state == "faulty" -> RoomMachineState.FAULT
                 else -> RoomMachineState.UNKNOWN
             }
-            RoomMachine(machine.id, slot, machine.name, state, machine.finishAt, machine.kind)
+            RoomMachine(machine.id, slot, machine.name, state, localFinishAt, machine.kind)
         }
     }
     return WebRoomProjection(room, bound)
