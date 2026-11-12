@@ -12,6 +12,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.SecureSession
@@ -138,8 +139,19 @@ class ChannelInboxIntegrationTest {
         assertTrue("Directory loading must not wait for the blocked tasks response", vm.state.value.loading)
         assertEquals(1L, releaseTasks.count)
         releaseTasks.countDown()
+        assertTrue("The authenticated directory must preserve its real unread count", vm.state.value.channels.single().unreadCount > 0)
+        captureDirectoryEvidence()
         compose.onNodeWithText("李**同学:你好").assertIsDisplayed()
-        compose.onNodeWithTag("channel-unread:public").assertIsDisplayed()
+        // Clickable Card merges its children's descriptions and text. Inspect
+        // the actual badge layout node rather than searching that merged card.
+        val unread = compose.onNodeWithTag("channel-unread:public", useUnmergedTree = true)
+            .assertIsDisplayed().assertHeightIsAtLeast(16.dp)
+        val badgeBounds = unread.getUnclippedBoundsInRoot()
+        val cardBounds = compose.onNodeWithTag("channel:public").getUnclippedBoundsInRoot()
+        val previewBounds = compose.onNodeWithTag("channel-summary:public", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertTrue("Unread badge must have real width", badgeBounds.width > 0.dp)
+        assertTrue("Unread badge must remain to the right of the summary", badgeBounds.left >= previewBounds.right)
+        assertTrue("Unread badge must stay inside the visible card", badgeBounds.left >= cardBounds.left && badgeBounds.right <= cardBounds.right && badgeBounds.top >= cardBounds.top && badgeBounds.bottom <= cardBounds.bottom)
         assertFalse("The directory must neither prefetch message bodies nor clear unread", requests.any { it.requestUrl!!.encodedPath in setOf("/api/messages", "/api/messages/read") })
         compose.onNodeWithTag("channel:public").performClick()
         compose.waitUntil(10_000) { readIds.isNotEmpty() }
@@ -168,6 +180,15 @@ class ChannelInboxIntegrationTest {
         compose.onNodeWithText("所有频道").performClick()
         compose.onNodeWithTag("channel-directory").assertIsDisplayed()
         assertTrue("Unread older messages remain visible on return", vm.state.value.channels.single().unreadCount > 0)
+    }
+
+    private fun captureDirectoryEvidence() {
+        // Capture before assertions, so a layout regression keeps its visual
+        // evidence even when the subsequent visibility/bounds checks fail.
+        compose.onRoot().printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxMerged", it) }
+        compose.onRoot(useUnmergedTree = true).printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxUnmerged", it) }
+        val image = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try { image.writeToTestStorage("native-channel-directory") } finally { image.recycle() }
     }
 
     private fun json(body: String, status: Int = 200) = MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body)
