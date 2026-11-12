@@ -112,13 +112,18 @@ class ChannelInboxIntegrationTest {
     }
 
     @Test fun directoryAppearsBeforeSlowPersonalRefreshAndOnlyVisibleMessagesBecomeRead() {
-        val origin = server.url("/").toString().trimEnd('/')
+        // MockWebServer.url() uses the address's canonical host name, which is
+        // localhost on Android even when start() bound 127.0.0.1. Keep the URL,
+        // certificate SAN and no-network-escape interceptor on the same literal IP.
+        val origin = server.url("/").newBuilder().host("127.0.0.1").build().toString().trimEnd('/')
         val vm = onMain { AppViewModel(app).also {
             models.put("channels", it)
             it.api.javaClass.getDeclaredField("http").apply { isAccessible = true }.set(it.api, client)
             it.configure(origin)
         } }
         compose.waitUntil(15_000) { vm.state.value.endpoint == origin && !vm.state.value.loading && !vm.state.value.busy }
+        assertNull("The fixture must complete its real TLS site request before login", vm.state.value.error)
+        assertTrue(requests.any { it.requestUrl!!.encodedPath == "/api/site" })
         onMain { vm.api.saveSession(JSONObject().put("accessToken", "channel-fixture").put("expiresIn", 900)); vm.platformSessionChanged() }
         compose.waitUntil(10_000) { vm.state.value.profile?.id == "channel-user" }
         onMain { vm.tab(2) }

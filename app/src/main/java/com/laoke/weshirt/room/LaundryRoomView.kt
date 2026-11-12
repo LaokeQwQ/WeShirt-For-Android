@@ -232,8 +232,8 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     /** Same camera projection as picking; the physical label belongs to this backend slot. */
     internal fun machineNumberScreenPosition(machineId: String): PointF? {
         val position = positions.firstOrNull { it.slot == machineId } ?: return null
-        val height = if (position.dryer) 1.02f else .95f
-        return projectToScreen(position.point(-.215f, height - .102f, .383f))
+        val cabinetHeight = if (position.dryer) 1.02f else .95f
+        return projectToScreen(position.point(-.215f, cabinetHeight - .102f, .383f))
             ?.takeIf { it.x >= 0 && it.x < width && it.y >= 0 && it.y < height }
     }
 

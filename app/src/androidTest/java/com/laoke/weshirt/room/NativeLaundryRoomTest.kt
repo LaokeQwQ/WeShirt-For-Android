@@ -84,7 +84,11 @@ class NativeLaundryRoomTest {
         // Verify the actual initial overview before any selection changes the camera.
         originalMachines().forEach { machine ->
             assertNotNull("Initial framing must show the door for ${machine.slot}", onMain { room.machineScreenPosition(machine.id) })
-            assertNotNull("Physical slot ${machine.slot} must project on its own machine front", onMain { room.machineNumberScreenPosition(machine.id) })
+            val number = onMain { room.machineNumberScreenPosition(machine.id) }
+            assertNotNull("Physical slot ${machine.slot} must project on its own machine front", number)
+            assertTrue("Physical slot ${machine.slot} must stay inside its cabinet's projected bounds", onMain {
+                room.machineScreenBounds(machine.id)?.contains(requireNotNull(number).x, number.y) == true
+            })
         }
         originalMachines().forEach { machine ->
             // Selection deliberately flies to a close-up. Return to the overview
@@ -182,6 +186,9 @@ class NativeLaundryRoomTest {
                 }
             }
             val bounds = requireNotNull(onMain { room.machineScreenBounds(id) })
+            val number = onMain { room.machineNumberScreenPosition(id) }
+            assertNotNull("Close-up must retain the fixed front number for $slot", number)
+            assertTrue("Close-up number must remain on the selected cabinet", bounds.contains(requireNotNull(number).x, number.y))
             assertTrue("Focused machine must stay in the viewport: $bounds", onMain {
                 bounds.centerX() in 0f..room.width.toFloat() && bounds.centerY() in 0f..room.height.toFloat()
             })

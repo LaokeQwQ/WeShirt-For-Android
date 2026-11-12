@@ -55,4 +55,36 @@ class RoomOverviewTest {
             }
         }
     }
+
+    @Test fun everyPhysicalNumberPlateStaysInsideTheOverviewAndPicksItsOwnMachine() {
+        val slots = RoomLayout.slots.map { it.copy(slot = "business-${it.label}") }
+        for (aspect in listOf(.35, .45, .6, .84, 1.0, 2.2)) {
+            val fov = if (aspect < .85) 72.0 else 58.0
+            val overview = RoomOverview.fit(slots, aspect, fov)
+            val back = Vec3(0.0, sin(RoomOverview.PITCH), cos(RoomOverview.PITCH))
+            val eye = overview.target + back * overview.distance
+            val up = Vec3(0.0, cos(RoomOverview.PITCH), -sin(RoomOverview.PITCH))
+            val halfHeight = tan(Math.toRadians(fov) / 2)
+            for (slot in slots) {
+                // Exercise the real background and glyph vertices, not only a
+                // convenient anchor which could hide a cropped edge of D1/D2.
+                val mesh = RoomNumberPlate.mesh(slot)
+                assertTrue(mesh.vertexCount > 0)
+                for (index in mesh.positions.indices step 3) {
+                    val point = slot.point(mesh.positions[index], mesh.positions[index + 1], mesh.positions[index + 2])
+                    val relative = point - eye
+                    val depth = -relative.dot(back)
+                    assertTrue("Number ${slot.label} must stay in front of the camera ($aspect)", depth > .1)
+                    val x = relative.x / (depth * halfHeight * aspect)
+                    val y = relative.dot(up) / (depth * halfHeight)
+                    assertTrue("Number ${slot.label} must clear both horizontal viewport edges ($aspect): $x", abs(x) < .9)
+                    assertTrue("Number ${slot.label} must clear both vertical viewport edges ($aspect): $y", abs(y) < .9)
+                }
+                val cabinetHeight = if (slot.dryer) 1.02f else .95f
+                val center = slot.point(-.215f, cabinetHeight - .102f, .383f)
+                assertEquals("A physical number must refer to its own machine ($aspect)",
+                    slot.slot, RoomLayout.pick(Ray(eye, (center - eye).normalized()), slots))
+            }
+        }
+    }
 }
