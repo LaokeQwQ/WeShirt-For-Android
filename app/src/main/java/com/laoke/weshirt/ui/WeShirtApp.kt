@@ -45,7 +45,7 @@ import kotlinx.coroutines.launch
         var queueInbox by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
         val seenQueueNotices = remember(state.endpoint, state.profile?.id) { mutableSetOf<String>() }
         LaunchedEffect(state.endpoint, state.profile?.id, state.building) { selected = null }
-        LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh(); delay(if (latest.tab == 2 && latest.channelConnected) 120_000 else 45_000) } } }
+        LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh().join(); delay(30_000) } } }
         LaunchedEffect(state.error, state.info) { (state.error ?: state.info)?.let { snackbar.showSnackbar(it, withDismissAction = true); vm.clearFeedback() } }
         LaunchedEffect(state.endpoint, state.profile?.id, state.queueNotices) {
             val fresh = state.queueNotices.filter { it.optBoolean("active") && it.str("readAt").isBlank() && it.str("id") !in seenQueueNotices }

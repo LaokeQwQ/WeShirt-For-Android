@@ -27,6 +27,7 @@ private val adminSections = listOf(
     AdminSection("dashboard", "概览与同步", "adminDashboard", "日常管理", "数据状态与手动同步", Icons.Outlined.Dashboard),
     AdminSection("users", "用户管理", "adminUsers", "日常管理", "资料、住宿楼与账号", Icons.Outlined.PeopleOutline),
     AdminSection("machines", "机器与机位", "adminMachines", "日常管理", "登记、排队与 3D 机位", Icons.Outlined.LocalLaundryService),
+    AdminSection("machineTime", "机器时间校准", "adminMachines", "日常管理", "分钟偏移与自动校时", Icons.Outlined.Schedule),
     AdminSection("messages", "内容治理", "adminMessages", "日常管理", "聊天举报、留言与禁言", Icons.Outlined.Forum),
     AdminSection("operations", "运营与通知", "adminOperations", "公告与通知", "整点播报、待处理通知与诊断", Icons.Outlined.NotificationsNone),
     AdminSection("announcements", "开屏公告", "adminAnnouncements", "公告与通知", "Markdown 编辑与定时发布", Icons.Outlined.Campaign),
@@ -43,6 +44,7 @@ private val adminSections = listOf(
     val scope = rememberCoroutineScope()
     val controller = remember(binding) { AdminController(vm.api, scope) { vm.state.value.profile?.id == owner && vm.state.value.endpoint == state.endpoint && vm.state.value.access.optBoolean("adminVisible") } }
     var section by remember(binding) { mutableStateOf("") }
+    var userQuery by remember(binding) { mutableStateOf("") }
     val permissions = state.access.optJSONObject("permissions") ?: JSONObject()
     val visible = adminSections.filter { permissions.optJSONObject(it.permission)?.optBoolean("view") == true }
     val window = LocalActivity.current?.window
@@ -55,7 +57,7 @@ private val adminSections = listOf(
     Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, securePolicy = SecureFlagPolicy.SecureOn)) {
       Surface(Modifier.fillMaxSize()) {
        Scaffold(topBar = {
-           TopAppBar(title = { Text(if (section == "permissions") "成员功能权限与范围" else visible.find { it.key == section }?.title ?: "管理员后台", style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+           TopAppBar(title = { Text(when(section) { "permissions" -> "成员功能权限与范围"; "accessCodes" -> "临时管理员口令"; else -> visible.find { it.key == section }?.title ?: "管理员后台" }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                navigationIcon = { IconButton(onClick = ::goBack, enabled = !controller.saving) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
                actions = { IconButton(onClick = close, enabled = !controller.saving) { Icon(Icons.Outlined.Close, "关闭后台") } })
        }) { padding -> Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
@@ -79,19 +81,27 @@ private val adminSections = listOf(
                 if (state.access.optJSONObject("identity")?.text("role") == "super") item {
                     Card(Modifier.fillMaxWidth()) { AdminNavigationItem("成员功能权限与范围", "逐项设置查看、操作和楼栋范围", Icons.Outlined.AdminPanelSettings) { section = "permissions" } }
                 }
+                if (state.access.optJSONObject("identity")?.text("role") == "super") item {
+                    Card(Modifier.fillMaxWidth()) { AdminNavigationItem("临时管理员口令", "创建、限定权限与即时销毁", Icons.Outlined.Key) { section = "accessCodes" } }
+                }
             } else item {
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     if (!canOperate && resource != null) Text("当前为只读权限，可查看授权范围内的信息。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    when (if (resource != null || section == "permissions" && state.access.optJSONObject("identity")?.text("role") == "super") section else "unavailable") {
+                    when (if (resource != null || section in listOf("permissions", "accessCodes") && state.access.optJSONObject("identity")?.text("role") == "super") section else "unavailable") {
                         "site" -> AdminSitePanel(controller, state, canOperate)
                         "permissions" -> AdminPermissionsPanel(controller, state)
+                        "accessCodes" -> AdminAccessCodesPanel(controller, state)
+                        "machineTime" -> AdminMachineTimePanel(controller, canOperate)
                         "operations" -> AdminOperationsPanel(controller, state, canOperate)
                         "announcements" -> AdminAnnouncementsPanel(controller, state, canOperate)
                         "assistant" -> AdminAssistantPanel(controller, canOperate)
                         "system" -> AdminSystemPanel(controller, canOperate)
                         "telemetry" -> AdminTelemetryPanel(controller, state)
-                        "users" -> AdminUsersPanel(controller, state, canOperate)
-                        "machines" -> AdminMachinesPanel(controller, state, canOperate)
+                        "users" -> AdminUsersPanel(controller, state, canOperate, initialUserQuery = userQuery)
+                        "machines" -> AdminMachinesPanel(controller, state, canOperate, onUserSelected = { id ->
+                            if (permissions.optJSONObject("adminUsers")?.optBoolean("view") == true) { userQuery = id; section = "users" }
+                            else controller.localError("当前账号没有用户管理查看权限")
+                        })
                         "messages" -> AdminModerationPanel(controller, state, canOperate)
                         "audits" -> AdminAuditPanel(controller, permissions.optJSONObject("adminSystem")?.optBoolean("operate") == true)
                         "dashboard" -> AdminDashboardPanel(controller, state, permissions.optJSONObject("adminSystem")?.optBoolean("operate") == true)

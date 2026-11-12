@@ -49,39 +49,6 @@ import org.json.JSONObject
     }
 }
 
-@Composable internal fun AdminAssistantPanel(c: AdminController, operate: Boolean) {
-    val path = "/api/admin/assistant"
-    LaunchedEffect(Unit) { c.load(path) }
-    val d = c.document
-    var enabled by remember(d.toString()) { mutableStateOf(d.optBoolean("enabled")) }
-    var endpoint by remember(d.toString()) { mutableStateOf(d.text("endpoint")) }
-    var model by remember(d.toString()) { mutableStateOf(d.text("model")) }
-    var daily by remember(d.toString()) { mutableStateOf(d.optInt("dailyLimit", 10).toString()) }
-    var minute by remember(d.toString()) { mutableStateOf(d.optInt("minuteLimit", 2).toString()) }
-    var key by remember { mutableStateOf("") }; var clear by remember { mutableStateOf(false) }
-    DisposableEffect(Unit) { onDispose { key = "" } }
-    AdminAction("刷新模型设置", !c.saving) { c.load(path) }
-    if (d.length() > 0) AdminCard("Responses 兼容模型") {
-        AdminToggle("启用洗衣助手", enabled, { enabled = it }, operate && !c.saving)
-        AdminField("HTTPS 端点", endpoint, { endpoint = it }, operate && !c.saving)
-        AdminField("模型名称", model, { model = it }, operate && !c.saving)
-        AdminField("每人每日上限（1–20）", daily, { daily = it }, operate && !c.saving, numeric = true)
-        AdminField("每人每分钟上限（1–3）", minute, { minute = it }, operate && !c.saving, numeric = true)
-        Text("API 密钥：${if (d.optBoolean("keyConfigured")) "已配置" else "未配置"}。原值不会返回，留空保留。")
-        AdminField("替换 API 密钥", key, { key = it }, operate && !c.saving, secret = true)
-        AdminToggle("清除现有密钥", clear, { clear = it }, operate && !c.saving)
-        AdminAction("保存模型设置", operate && !c.saving, "将更新模型调用与频率限制。") {
-            val a = daily.toIntOrNull(); val b = minute.toIntOrNull()
-            if (a == null || b == null || a !in 1..20 || b !in 1..3 || (endpoint.isNotBlank() && Uri.parse(endpoint).scheme != "https")) c.localError("请检查 HTTPS 端点与调用次数")
-            else {
-                val body = JSONObject().put("enabled", enabled).put("endpoint", endpoint.trim()).put("model", model.trim()).put("dailyLimit", a).put("minuteLimit", b)
-                if (clear) body.put("clearKey", true) else if (key.isNotBlank()) body.put("apiKey", key.trim())
-                c.act(path, "PATCH", body, finished = { key = ""; clear = false })
-            }
-        }
-    }
-}
-
 internal fun allowedBuildings(state: AppState, resource: String, operation: Boolean = false): List<Pair<String,String>> {
     val p = state.access.optJSONObject("permissions")?.optJSONObject(resource)
     if (p?.optBoolean(if (operation) "operate" else "view") != true) return emptyList()

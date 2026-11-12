@@ -346,7 +346,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     fun focusFacility(facility: RoomFacility) {
         if (!RoomLayout.isSurveyedLayout(positions)) return
         val pose = if (facility == RoomFacility.BOILER) RoomCameraPose(Vec3(-.55, 1.35, 3.15), Vec3(-1.2, .9, 4.02))
-            else RoomCameraPose(Vec3(-.85, 1.5, .58), Vec3(-2.0, 1.55, .58))
+            else RoomCameraPose(Vec3(-.85, 2.0, .58), Vec3(-2.0, RoomUtilityLayout.noticeCenterY.toDouble(), .58))
         yawVelocity = 0.0
         if (motionEnabled()) cameraGoal = pose else adoptCameraPose(pose)
         requestFrame(immediate = true)

@@ -151,7 +151,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 Triple(tasks.await(), occupancy.await(), queue.await())
             }
             if(version != generation.get()) return@launch
-            val tasks = extra.first.map { it.optJSONArray("tasks")?.objects().orEmpty().map(LaundryTask::parse) }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
+            val tasks = extra.first.map { response ->
+                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
+                response.optJSONArray("tasks")?.objects().orEmpty().map { LaundryTask.parse(it).copy(clockOffsetMs = offset) }
+            }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
             val queues = extra.third.map { it.optJSONArray("queue")?.objects().orEmpty() }.readOr(if (mayReadQueue) _state.value.queues else emptyList())
             val occupancy = extra.second.getOrNull()?.optJSONObject("occupancy")
             extra.second.exceptionOrNull()?.let { problems += it }

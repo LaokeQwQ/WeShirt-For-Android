@@ -15,9 +15,10 @@ fun preferLatestBoard(incoming: BoardSnapshot, building: String, previousBuildin
 fun parseBoardSnapshot(response: JSONObject, building: String): BoardSnapshot {
     val board = response.optJSONObject("board")
     if (board == null || board.str("dormBuilding") != building || board.optJSONArray("floors") == null) throw ApiException(502, "invalid_board", "client_${UUID.randomUUID()}", "楼栋数据不匹配，请重试")
+    val clockOffset = epoch(response.optJSONObject("freshness")?.str("serverNow").orEmpty())?.minus(System.currentTimeMillis()) ?: 0L
     val machines = board.getJSONArray("floors").objects().flatMap { floor ->
         floor.optJSONArray("machines")?.objects().orEmpty().map { value ->
-            Machine.parse(value).let { machine -> machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") }, floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }) }
+            Machine.parse(value).let { machine -> machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") }, floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }, clockOffsetMs = clockOffset) }
         }
     }
     if (machines.any { it.id.isBlank() } || machines.map { it.id }.distinct().size != machines.size) throw ApiException(502, "invalid_board", "client_${UUID.randomUUID()}", "机器数据异常，请重试")

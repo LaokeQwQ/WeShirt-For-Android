@@ -86,7 +86,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
             if (active.isEmpty()) item { Text("还没有进行中的登记，选一台机器开始吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(active, key = { it.id }) { task ->
                 val raw = taskDetails[task.id]
-                val finished = task.endAt?.let { it <= now } == true || raw?.str("takeState") == "pending"
+                val finished = task.completionConfirmed || raw?.str("takeState") == "pending" || task.timingSource != "upstream" && task.endAt?.let { it <= now + task.clockOffsetMs } == true
                 Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(task.name, style = MaterialTheme.typography.titleMedium)
                     Text(laundryTimeLabel(task, now), style = MaterialTheme.typography.titleLarge, color = if (finished) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary)
@@ -177,6 +177,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
 @Composable private fun TaskDetailText(task: LaundryTask, raw: JSONObject?) {
     raw?.let {
         Text(when {
+            task.timingSource == "upstream" -> "按最新平台时间同步" + if (task.timeOffsetMinutes != 0) " · 校准 ${if(task.timeOffsetMinutes > 0) "+" else ""}${task.timeOffsetMinutes} 分钟" else ""
             it.str("mode") == "machine" -> if (task.estimated) "按估算时间提醒，请核对现场状态" else "按机器时间提醒 · 程序未提供"
             it.str("program") == "self_clean" -> "桶自洁 · 6 分钟提醒"
             else -> "自行设置 ${it.optInt("minutes")} 分钟提醒，不代表机器远端状态"
@@ -188,8 +189,11 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
 
 internal fun laundryTimeLabel(task: LaundryTask, now: Long): String {
     if (task.done) return "已确认取衣"
+    if (task.completionConfirmed) return "平台已确认完成 · 等待取衣"
     val end = task.endAt ?: return "结束时间待确认"
-    if (end > now) return "登记计时剩余 ${((end - now + 59_999) / 60_000).coerceAtLeast(1)} 分钟"
-    val overdue = ((now - end) / 60_000).coerceAtLeast(0)
+    val platformNow = now + task.clockOffsetMs
+    if (end > platformNow) return "${if(task.timingSource == "upstream") "平台" else "预计"}剩余 ${((end - platformNow + 59_999) / 60_000).coerceAtLeast(1)} 分钟"
+    if (task.timingSource == "upstream") return "即将完成"
+    val overdue = ((platformNow - end) / 60_000).coerceAtLeast(0)
     return if (overdue == 0L) "登记计时已到 · 请现场确认" else "登记计时结束${when { overdue < 60 -> "$overdue 分钟"; overdue < 1440 -> "${overdue / 60} 小时"; else -> "${overdue / 1440} 天" }} · 请确认机器和衣物"
 }

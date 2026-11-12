@@ -152,7 +152,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     fun encoded(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
     /** Export is kept in memory until a user-selected document is written. */
     suspend fun adminCsv(path: String): String {
-        require(path.substringBefore('?') == "/api/admin/audit-logs.csv" && !path.contains("..") && !path.contains('#'))
+        require(path.substringBefore('?') in setOf("/api/admin/audit-logs.csv", "/api/admin/users.csv") && !path.contains("..") && !path.contains('#'))
         val (origin, version) = snapshot()
         val token = accessToken(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
         current(origin, version)
@@ -171,15 +171,15 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                         val error = runCatching { JSONObject(text).optJSONObject("error") }.getOrNull()
                         throw ApiException(response.code, error?.str("code", "export_failed") ?: "export_failed",
                             error?.str("eventId", response.header("X-Event-ID") ?: trace) ?: trace,
-                            error?.str("message", "日志导出失败") ?: "日志导出失败")
+                            error?.str("message", "文件导出失败") ?: "文件导出失败")
                     }
-                    if (response.body?.contentType()?.subtype?.contains("csv") != true) throw ApiException(502, "invalid_export", trace, "日志导出格式异常")
+                    if (response.body?.contentType()?.subtype?.contains("csv") != true) throw ApiException(502, "invalid_export", trace, "文件导出格式异常")
                     text
                 }
             }
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: ApiException) { if (problem.status == 401) invalidate(origin, version); throw problem }
-        catch (_: IOException) { throw ApiException(0, "export_failed", trace, "日志导出未完成，请重试") }
+        catch (_: IOException) { throw ApiException(0, "export_failed", trace, "文件导出未完成，请重试") }
     }
     fun clearMedia() { mediaDir.listFiles()?.forEach { it.delete() } }
     suspend fun downloadMedia(mediaId: String, maxBytes: Long = 8L * 1024 * 1024): File {

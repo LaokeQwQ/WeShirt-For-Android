@@ -214,6 +214,7 @@ private fun BoardMachineItem(machine: Machine, favorite: Boolean, status: Machin
                     Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            if (machine.originalName.isNotBlank() && machine.originalName != machine.name) Text("原名：${machine.originalName}", maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val care = listOfNotNull("已用消毒液".takeIf { machine.disinfectant }, "已自清洁".takeIf { machine.selfCleaned }).joinToString(" · ")
             if (care.isNotEmpty()) Text(care, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             if (machine.note.isNotBlank()) Text("备注：${machine.note}", maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

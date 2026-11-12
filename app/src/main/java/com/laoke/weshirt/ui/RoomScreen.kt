@@ -262,6 +262,7 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
             if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
                 OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, enabled = !state.busy && !session.busy, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
             }
+            MachineFeedback(machine, state, vm, session, login)
             OutlinedButton(onClick = { moreActions = !moreActions }, modifier = Modifier.fillMaxWidth().testTag("machine-more-actions")) { Text(if (moreActions) "收起排队与现场反馈" else "排队预约与现场反馈") }
             if (moreActions) MachineActions(machine, state, vm, session, login)
         }
@@ -289,6 +290,7 @@ internal fun MachineSheetFrame(machine: Machine, favorite: Boolean, enabled: Boo
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(machine.name, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (machine.originalName.isNotBlank() && machine.originalName != machine.name) Text("原名：${machine.originalName}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(machine.stateLabel, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
             }
             IconButton(onClick = favoriteClick, enabled = enabled) { Icon(if (favorite) Icons.Outlined.Star else Icons.Outlined.StarOutline, if (favorite) "取消收藏机器" else "收藏机器") }

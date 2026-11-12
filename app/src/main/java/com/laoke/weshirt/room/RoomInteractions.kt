@@ -21,8 +21,8 @@ internal enum class RoomFixture { BOILER, WASHER_NOTICE, DRYER_NOTICE, FAUCET, W
 internal object RoomInteractions {
     private val bounds = linkedMapOf(
         RoomFixture.BOILER to RoomBounds(Vec3(-1.8, 0.0, 3.76), Vec3(-1.25, 1.72, 4.27)),
-        RoomFixture.WASHER_NOTICE to RoomBounds(Vec3(-2.04, 1.31, .20), Vec3(-1.91, 1.80, .57)),
-        RoomFixture.DRYER_NOTICE to RoomBounds(Vec3(-2.04, 1.31, .58), Vec3(-1.91, 1.80, .97)),
+        RoomFixture.WASHER_NOTICE to RoomBounds(Vec3(-2.04, 1.73, .08), Vec3(-1.91, 2.31, .56)),
+        RoomFixture.DRYER_NOTICE to RoomBounds(Vec3(-2.04, 1.73, .60), Vec3(-1.91, 2.31, 1.08)),
         RoomFixture.FAUCET to RoomBounds(Vec3(-2.04, .88, 3.02), Vec3(-1.73, 1.28, 3.28)),
     )
 

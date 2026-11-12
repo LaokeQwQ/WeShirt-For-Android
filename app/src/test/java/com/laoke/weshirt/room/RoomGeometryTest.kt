@@ -93,6 +93,26 @@ class RoomGeometryTest {
         }
     }
 
+    @Test fun dosingBottlesMatchTheWebAndNoticesRemainAboveTheEquipment() {
+        fun pointsForColor(meshes: Collection<MeshData>, color: Int): List<List<Float>> = meshes.flatMap { mesh ->
+            val expected = RoomGeometry.rgb(color).toList()
+            (0 until mesh.vertexCount).filter { mesh.colors.slice(it * 4 until it * 4 + 4) == expected }
+                .map { mesh.positions.slice(it * 3 until it * 3 + 3) }
+        }
+        val washer = RoomGeometry.machineBodies(listOf(RoomSlot("washer", 0f, 0f))).values
+        val dryer = RoomGeometry.machineBodies(listOf(RoomSlot("dryer", 0f, 0f, dryer = true))).values
+        for (color in listOf(0x3F8FD2, 0x3FAE86, 0x14181F)) {
+            val points = pointsForColor(washer, color)
+            assertTrue("Washer must retain the dosing box and both distinct bottles", points.isNotEmpty())
+            assertTrue("Dosing equipment belongs behind the cabinet", points.all { it[2] < -.43f })
+            assertTrue("Dryers do not dispense detergent", pointsForColor(dryer, color).isEmpty())
+        }
+        val noticeBottom = RoomUtilityLayout.noticeCenterY - RoomUtilityLayout.noticeHeight / 2
+        val equipmentTop = RoomUtilityLayout.dosingCenterY + RoomUtilityLayout.dosingHeight / 2
+        assertTrue("Notice boards must clear the dosing box, including a viewing gap", noticeBottom - equipmentTop >= .13f)
+        assertTrue(RoomUtilityLayout.noticeCenterY + RoomUtilityLayout.noticeHeight / 2 < 2.6f)
+    }
+
     @Test fun queueGeometryIsCappedAndEmptyQueuesAllocateNoVertices() {
         val slot = RoomLayout.slots.first()
         assertEquals(0, RoomGeometry.queueBuckets(slot, 0).vertexCount)

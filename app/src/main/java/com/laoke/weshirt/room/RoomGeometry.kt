@@ -128,6 +128,13 @@ internal data class MeshData(val positions: FloatArray, val normals: FloatArray,
     val vertexCount get() = positions.size / 3
 }
 
+internal object RoomUtilityLayout {
+    const val noticeCenterY = 2.02f
+    const val noticeHeight = .56f
+    const val dosingCenterY = 1.52f
+    const val dosingHeight = .17f
+}
+
 /** Shared geometry is merged by material. No network models or per-frame mesh allocations. */
 internal object RoomGeometry {
     fun environment(extraDepth: Float = 0f): Map<RoomMaterial, MeshData> {
@@ -207,10 +214,11 @@ internal object RoomGeometry {
         metal.box(-1.82f, 1.04f, -1.43f, .17f, .025f, .025f, pipe)
         metal.cylinder(-1.02f, .17f, 3.66f, .13f, .34f, rgb(0x37414A), axisZ = false, segments = 16)
         // Long notice text belongs to the native detail sheet, not a 3D texture.
-        for (z in listOf(.39f, .77f)) {
-            metal.box(-1.99f, 1.55f, z, .035f, .43f, .33f, rgb(0x3B4148))
-            paint.box(-1.964f, 1.55f, z, .012f, .37f, .27f, rgb(0xE7E5DC))
-            for (line in 0..4) metal.box(-1.952f, 1.66f - line * .053f, z, .008f, .008f, .20f - line * .018f, rgb(0x66717A))
+        for (z in listOf(.32f, .84f)) {
+            metal.box(-1.99f, RoomUtilityLayout.noticeCenterY, z, .035f, RoomUtilityLayout.noticeHeight, .46f, rgb(0x3A2F22))
+            paint.box(-1.964f, RoomUtilityLayout.noticeCenterY, z, .012f, .50f, .42f, rgb(0xF2EDE0))
+            paint.box(-1.952f, 2.20f, z, .008f, .032f, .28f, rgb(0x8A4B1F))
+            for (line in 0..4) metal.box(-1.952f, 2.10f - line * .067f, z, .008f, .009f, .30f - line * .018f, rgb(0x66717A))
         }
         for (x in listOf(1.36f, 1.88f)) for (z in listOf(3.56f, 3.88f)) metal.box(x, .39f, z, .025f, .78f, .025f, pipe)
         for (y in listOf(.13f, .39f, .65f)) for (i in 0..4) metal.box(1.62f, y, 3.56f + i * .08f, .55f, .016f, .018f, pipe)
@@ -278,10 +286,20 @@ internal object RoomGeometry {
             // The Web room places dosing equipment and utility lines behind each
             // washer. Keep these static details batched in the same two materials.
             if (!slot.dryer) {
-                body.box(0f, 1.52f, -.43f, .36f, .28f, .12f, rgb(0xD5DEE5))
-                body.box(-.07f, 1.30f, -.43f, .10f, .15f, .085f, rgb(0xB0CADB))
-                body.box(.07f, 1.30f, -.43f, .10f, .15f, .085f, rgb(0xD0C8E0))
-                detail.box(0f, 1.15f, -.47f, .018f, .55f, .018f, rgb(0x8B99A5))
+                // Same black dosing box and blue/green detergent containers as
+                // the Web. Opaque tinted plastic avoids transparent overdraw.
+                body.beveledBox(0f, RoomUtilityLayout.dosingCenterY, -.53f, .38f, RoomUtilityLayout.dosingHeight, .14f, .008f, rgb(0x14181F))
+                val bottleTop = RoomUtilityLayout.dosingCenterY - RoomUtilityLayout.dosingHeight / 2
+                for ((x, color) in listOf(-.078f to 0x3F8FD2, .078f to 0x3FAE86)) {
+                    body.beveledBox(x, bottleTop - .15f, -.53f, .145f, .30f, .15f, .012f, rgb(color))
+                    body.box(x, bottleTop - .022f, -.53f, .085f, .045f, .085f, rgb(0xE8EEF5))
+                    body.box(x, bottleTop - .15f, -.449f, .092f, .075f, .006f, rgb(0xE5EEF0))
+                }
+                body.box(.12f, 1.55f, -.454f, .018f, .018f, .008f, rgb(0x4ADE80))
+                detail.box(0f, bottleTop - .312f, -.53f, .33f, .018f, .20f, rgb(0x8B98A6))
+                detail.box(-.10f, 1.025f, -.53f, .012f, .22f, .012f, rgb(0x8B99A5))
+                detail.box(.10f, 1.025f, -.53f, .012f, .22f, .012f, rgb(0x8B99A5))
+                detail.box(0f, .925f, -.44f, .21f, .012f, .018f, rgb(0x8B99A5))
                 detail.box(.23f, 1.44f, -.45f, .09f, .12f, .04f, rgb(0xE6E9EA))
             } else {
                 for (i in 0..4) detail.box(-.14f + i * .07f, height + .048f, -.13f, .025f, .012f, .20f, rgb(0x6D7A83))
