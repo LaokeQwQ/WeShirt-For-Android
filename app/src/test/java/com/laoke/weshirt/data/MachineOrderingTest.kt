@@ -62,6 +62,29 @@ class MachineOrderingTest {
         assertNull(machineBoardStatus(machine("idle", "idle", now + 90_000), now).detail)
     }
 
+    @Test fun countdownAndExactEndRemainCorrectWithFastAndSlowDeviceClocks() {
+        for (offset in listOf(-600_000L, 600_000L)) {
+            val running = machine("run", "occupied", now + offset + 90_000).copy(clockOffsetMs = offset)
+            assertEquals("预计剩余 2 分钟", machineBoardStatus(running, now).detail)
+            val reached = running.copy(finishAt = now + offset)
+            assertEquals(MachineBoardState.RUNNING, machineBoardStatus(reached, now).state)
+            assertEquals("即将完成，等待设备确认", machineBoardStatus(reached, now).detail)
+        }
+    }
+
+    @Test fun sortingNormalizesEachSnapshotsClockBeforeComparingDeadlinesOrElapsedGroups() {
+        val first = machine("first", "occupied", now + 600_000 + 60_000).copy(clockOffsetMs = 600_000)
+        val second = machine("second", "occupied", now - 600_000 + 120_000).copy(clockOffsetMs = -600_000)
+        val reached = machine("reached", "occupied", now + 600_000).copy(clockOffsetMs = 600_000)
+        val idle = machine("idle", "idle")
+        assertEquals(listOf("idle", "first", "second", "reached"), sortMachinesByAvailability(listOf(reached, second, first, idle), now).map { it.id })
+        assertEquals(listOf("idle", "first", "second", "reached"), listOf(reached, second, first, idle).sortedBy { it.availability(now) }.map { it.id })
+        assertEquals(now + 60_000, first.availability(now))
+        assertEquals(now + 120_000, second.availability(now))
+        assertEquals(now + 600_000 + 60_000, first.finishAt)
+        assertEquals(MachineBoardState.RUNNING, machineBoardStatus(reached, now).state)
+    }
+
     @Test fun suspicionOverridesIdleAndRunningPresentationAndNeverCountsAsAvailable() {
         for (state in listOf("idle", "occupied", "unknown")) {
             val status = machineBoardStatus(machine("suspect", state, now + 60_000, suspected = true), now)

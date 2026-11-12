@@ -56,6 +56,20 @@ class TaskRegistrationTest {
         assertTrue(failure is ApiException)
     }
 
+    @Test fun followingTheMachineUsesItsSnapshotClockAndRefusesReachedDeadlines() {
+        val now = 1_000_000L
+        for (offset in listOf(-600_000L, 600_000L)) {
+            val active = machine(state = "occupied", finishAt = now + offset + 60_000).copy(clockOffsetMs = offset)
+            assertTrue(TaskRegistration.machineTimingAvailable(active, now))
+            assertEquals("machine", TaskRegistration.body(active, 30, "", false, false, true, false, now).getString("mode"))
+            val reached = active.copy(finishAt = now + offset)
+            assertFalse(TaskRegistration.machineTimingAvailable(reached, now))
+            val failure = runCatching { TaskRegistration.body(reached, 30, "", false, false, true, false, now) }.exceptionOrNull() as ApiException
+            assertEquals(422, failure.status)
+            assertEquals("invalid_registration", failure.code)
+        }
+    }
+
     @Test fun estimatedUpstreamTimeAndSuspectedPickupParseWithoutBecomingMachineTiming() {
         val parsed = Machine.parse(org.json.JSONObject("""{"id":"test","state":"occupied","finishAt":"2030-01-01T00:00:00Z","estimated":true,"suspectedUncollected":true}"""))
         assertTrue(parsed.estimated); assertTrue(parsed.suspectedUncollected)

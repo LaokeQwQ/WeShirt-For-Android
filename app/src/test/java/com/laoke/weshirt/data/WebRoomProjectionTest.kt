@@ -37,4 +37,16 @@ class WebRoomProjectionTest {
         assertEquals(RoomMachineState.AWAITING_PICKUP, projection.machines.first { it.id == "pickup" }.state)
         assertEquals(RoomMachineState.UNKNOWN, projection.machines.first { it.slot == "3" }.state)
     }
+
+    @Test fun finishingWindowAndProjectedDeadlineFollowServerClockWithoutInferringIdle() {
+        val now = 1_000_000L
+        for (offset in listOf(-600_000L, 600_000L)) {
+            fun projected(remaining: Long) = projectWebRoom(listOf(machine("running", "1", "occupied", now + offset + remaining).copy(clockOffsetMs = offset)), now).machines.first { it.slot == "1" }
+            assertEquals(RoomMachineState.FINISHING, projected(180_000).state)
+            assertEquals(now + 180_000, projected(180_000).finishAt)
+            assertEquals(RoomMachineState.RUNNING, projected(180_001).state)
+            assertEquals(RoomMachineState.RUNNING, projected(0).state)
+            assertEquals(now, projected(0).finishAt)
+        }
+    }
 }

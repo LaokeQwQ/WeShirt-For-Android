@@ -16,7 +16,7 @@ object TaskRegistration {
     )
 
     fun machineTimingAvailable(machine: Machine, now: Long = System.currentTimeMillis()) =
-        !machine.estimated && machine.state in setOf("occupied", "abnormal") && machine.finishAt?.let { it > now } == true
+        !machine.estimated && machine.state in setOf("occupied", "abnormal") && machine.localFinishAt()?.let { it > now } == true
 
     fun validMinutes(kind: String, minutes: Int?) = minutes != null && minutes in (if (kind == "dryer") 10 else 1)..180
 
