@@ -1,14 +1,29 @@
 package com.laoke.weshirt.ui.admin
 
 import android.net.Uri
+import android.content.ClipData
+import android.content.ClipboardManager
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import com.laoke.weshirt.data.AppState
 import org.json.JSONObject
 
 @Composable internal fun AdminUsersPanel(c: AdminController, state: AppState, operate: Boolean) {
     var query by remember { mutableStateOf("") }; var dorm by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf<JSONObject?>(null) }
+    val clipboard = LocalContext.current.getSystemService(ClipboardManager::class.java)
     val choices = allowedBuildings(state, "adminUsers")
     val targets = allowedBuildings(state, "adminUsers", true)
     val global = globalOperation(state, "adminUsers")
@@ -20,13 +35,20 @@ import org.json.JSONObject
     AdminAction("搜索用户", !c.saving) { c.load(path) }
     AdminAction("补全已绑定用户资料", global && !c.saving, "会向钉钉查询已绑定用户的缺失资料，并记录操作日志。") { c.act("/api/admin/backfill-ding-profile?apply=1", refresh = path) }
     Text("手机号默认脱敏；查看全号会单独留档。")
+    if (!c.loading) Text("共 ${c.document.arrayRows("items").size} 人 · 点开用户查看资料和管理操作", style = MaterialTheme.typography.bodySmall)
     c.document.arrayRows("items").forEach { user -> key(user.text("id")) {
         var draft by remember(user.text("dormBuilding")) { mutableStateOf(user.text("dormBuilding")) }
         var nick by remember(user.text("nick")) { mutableStateOf(user.text("nick")) }
         var notify by remember(user.optBoolean("notifyOn",true)) { mutableStateOf(user.optBoolean("notifyOn",true)) }
         val mayEdit = operate && (global || targets.any { it.first == user.text("dormBuilding") })
-        AdminCard(user.text("nick").ifBlank { user.text("id") }) {
-            AdminFacts(user, listOf("id" to "账号", "dormBuilding" to "楼栋", "dingBound" to "钉钉绑定", "dingNick" to "钉钉昵称", "mobile" to "手机号"))
+        var expanded by remember { mutableStateOf(false) }
+        val buildingName = state.buildings.find { it.code == user.text("dormBuilding") }?.name ?: user.text("dormBuilding").ifBlank { "未绑定住宿楼" }
+        AdminUserCard(user.text("nick").ifBlank { user.text("id") }, "$buildingName · ${if (user.optBoolean("dingBound")) "已绑定钉钉" else "未绑定钉钉"}", expanded, { expanded = !expanded }) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                SelectionContainer(Modifier.weight(1f)) { Text("账号 ID：${user.text("id")}", style = MaterialTheme.typography.bodySmall) }
+                IconButton(onClick = { clipboard?.setPrimaryClip(ClipData.newPlainText("WeShirt 用户 ID", user.text("id"))) }) { Icon(Icons.Outlined.ContentCopy, "复制用户 ID") }
+            }
+            AdminFacts(user, listOf("dingNick" to "钉钉昵称", "mobile" to "手机号"))
             AdminField("昵称",nick,{nick=it.take(16)},mayEdit && !c.saving)
             AdminToggle("接收钉钉提醒",notify,{notify=it},mayEdit && !c.saving)
             AdminAction("保存昵称与通知偏好",mayEdit && !c.saving,"确认修改此用户的资料与提醒开关？") {
@@ -40,6 +62,21 @@ import org.json.JSONObject
         }
     } }
     phone?.let { value -> AlertDialog(onDismissRequest = { phone = null }, title = { Text("手机号") }, text = { Text(value.text("mobile").ifBlank { "未记录手机号" }) }, confirmButton = { TextButton({ phone = null }) { Text("隐藏并关闭") } }) }
+}
+
+@Composable internal fun AdminUserCard(name: String, summary: String, expanded: Boolean, toggle: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = toggle).testTag("admin-user-expand"), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(name, style = MaterialTheme.typography.titleMedium)
+                    Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, if (expanded) "收起用户资料" else "展开用户资料与操作")
+            }
+            if (expanded) { HorizontalDivider(); content() }
+        }
+    }
 }
 
 @Composable internal fun AdminMachinesPanel(c: AdminController, state: AppState, operate: Boolean) {

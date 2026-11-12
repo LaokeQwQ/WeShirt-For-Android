@@ -34,7 +34,6 @@ fun ReminderPermissionGuidance(
         onDispose { owner.lifecycle.removeObserver(observer) }
     }
     LaunchedEffect(state.profile?.id, state.notificationsOn, state.loading) {
-        if (state.profile == null) { offerNotification = false; offerBackground = false; return@LaunchedEffect }
         if (state.loading) return@LaunchedEffect
         if (!state.notificationsOn && !preferences.contains("nativePushConsent") && !choices.getBoolean("notificationOffered", false)) {
             choices.edit().putBoolean("notificationOffered", true).apply()
@@ -45,14 +44,14 @@ fun ReminderPermissionGuidance(
             offerBackground = true
         }
     }
-    if (offerNotification && state.profile != null) AlertDialog(
+    if (offerNotification) AlertDialog(
         onDismissRequest = { offerNotification = false },
         title = { Text("开启洗衣提醒？") },
-        text = { Text("结束前、设备确认结束以及有人 @ 你时通知你。接下来会申请系统通知权限，也可稍后在设置中开启。") },
+        text = { Text("可以先允许系统通知，登录后接收洗衣结束、排队和被 @ 提醒。也可稍后在设置中开启。") },
         confirmButton = { TextButton(onClick = { offerNotification = false; requestNotifications() }) { Text("开启提醒") } },
         dismissButton = { TextButton(onClick = { offerNotification = false }) { Text("暂不开启") } },
     )
-    if ((showBackground || offerBackground) && state.profile != null && !offerNotification) AlertDialog(
+    if ((showBackground || offerBackground) && !offerNotification) AlertDialog(
         onDismissRequest = { offerBackground = false; closeBackground() },
         title = { Text("后台提醒与省电设置") },
         text = { Text(if (unrestricted) "系统已允许 WeShirt 不受电池优化限制。部分手机仍有独立的自启动和后台运行设置；实际提醒时间以系统调度为准。"

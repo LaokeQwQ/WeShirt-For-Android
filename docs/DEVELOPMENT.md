@@ -11,7 +11,7 @@ Android 10 及以上，Kotlin + Jetpack Compose Material 3，Filament 原生 3D�
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --no-configuration-cache
 ```
 
-本地 `local.properties` 配置 `sdk.dir`。服务端地址可以在应用中填写 HTTPS 根地址，也可以通过私有 `WESHIRT_API_BASE_URL` 环境变量注入。公开源码不包含学校、正式域名、账号或凭据。
+本地 `local.properties` 配置 `sdk.dir`。发行包的 HTTPS 服务根地址通过私有 `WESHIRT_API_BASE_URL` 环境变量注入；应用不提供地址编辑入口，也不沿用旧版本保存的地址。无配置的公开源码用于调试和自动测试，分发前必须注入服务地址。公开源码不包含学校、正式域名、账号或凭据。
 
 `local.properties` 使用 Java Properties 格式；Windows 路径请写为 `C:/Android/sdk` 这样的正斜杠路径，避免反斜杠被当作转义符。环境变量优先于同名本地属性。客户端 FCM 和基础 U-Push 配置见 [PUSH.md](PUSH.md)，服务端凭据和 CloudBase 原子存储见 [API.md](API.md)。
 
@@ -59,8 +59,8 @@ Android 仓库保留原有 `main` 分支，开发提交先进入 `dev`，通过 
 - 安装 ID 保存在本地；没有临时昵称账号，游客只读，登录后复用服务端账号。
 - 令牌由 Android Keystore 加密。刷新和退出串行处理；每次请求固定服务地址，切服务后旧响应不得恢复会话。
 - 写操作禁用重复点击，服务端继续校验权限和幂等键。网络失败包含状态码和事件 ID。
-- 看板按住宿楼查询，前台间隔刷新；后台停止刷新、3D 和不必要的渲染。服务器公开缓存遵循 HTTP 缓存头。
-- 楼栋、资料、收藏设置和公告缓存五分钟；手动刷新立即重新查询。正式包仅携带 ARM 原生库，调试包额外支持 x86 模拟器。
+- 看板按住宿楼查询，前台间隔刷新；后台停止刷新、3D 和不必要的渲染。动态 JSON 请求不复用 HTTP 缓存。
+- 网站与楼栋目录缓存 30 秒，收藏设置、公告偏好和公告列表缓存五分钟；账号资料与权限每次刷新重新查询，手动刷新清除元数据缓存。正式包仅携带 ARM 原生库，调试包额外支持 x86 模拟器。
 - 3D 以实际 GPU 帧时间和持续压力窗口判断降级，主动限帧不计作掉帧。温度、省电、屏幕刷新率会限制性能目标；降级提示显示三秒。
 - 倒计时是预计时间。到零不会把设备自动改为空闲，也不会伪造“已完成”服务器通知。
 - 公告以原生 Markdown 渲染；聊天图片和视频沿用频道鉴权。附件不使用公开存储链接。

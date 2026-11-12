@@ -169,17 +169,21 @@ class NativeLaundryRoomTest {
                 room.focusMachine(id)
             }
             await("Close-up did not submit a fresh frame") { snapshot(room).renderedFrames > before }
-            // With system animation scale enabled the native camera uses a
-            // bounded easing flight; allow it and the door to settle before capture.
-            var previous: android.graphics.PointF? = null
-            var steadySamples = 0
+            // A stable projected centre also occurs in a still overview or while
+            // the render thread is busy. Verify actual close-up size and flight
+            // completion, including the door, before reading the GPU surface.
             await("Close-up camera did not settle") {
-                val point = onMain { room.machineScreenPosition(id) }
-                val old = previous
-                steadySamples = if (point != null && old != null && kotlin.math.abs(point.x-old.x) < .15f && kotlin.math.abs(point.y-old.y) < .15f) steadySamples + 1 else 0
-                previous = point
-                steadySamples >= 6
+                onMain {
+                    val bounds = room.machineScreenBounds(id)
+                    val stats = room.renderStatistics
+                    bounds != null && !stats.cameraMoving && !stats.doorsAnimating &&
+                        bounds.height() / room.height >= .40f && bounds.width() / room.width >= .28f
+                }
             }
+            val bounds = requireNotNull(onMain { room.machineScreenBounds(id) })
+            assertTrue("Focused machine must stay in the viewport: $bounds", onMain {
+                bounds.centerX() in 0f..room.width.toFloat() && bounds.centerY() in 0f..room.height.toFloat()
+            })
             assertSurfaceContainsRenderedGeometry(room, filename)
             assertNull(snapshot(room).failureEvent)
         }
@@ -225,6 +229,7 @@ class NativeLaundryRoomTest {
         assertTrue(dimensions.first > 0 && dimensions.second > 0)
         val pixels = Bitmap.createBitmap(dimensions.first, dimensions.second, Bitmap.Config.ARGB_8888)
         try {
+            onMain { room.synchronizeRenderingForCapture() }
             var copyResult = PixelCopy.ERROR_SOURCE_NO_DATA
             var colorCount = 0
             val deadline = SystemClock.uptimeMillis() + 20_000

@@ -10,6 +10,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.MainActivity
 import com.laoke.weshirt.data.SecureSession
+import com.laoke.weshirt.platform.push.PushRuntime
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -98,6 +99,14 @@ class DingTalkCallbackTest {
         assertEquals("late-code", DingTalkLoginBridge.consumeReply(app, null)?.authCode)
     }
 
+    @Test fun anonymousPushHousekeepingCannotEraseAnInFlightNativeLogin() {
+        val request = pendingRequest()
+        PushRuntime.clearLocalSession(app)
+        assertTrue("Clearing unsigned notification state must preserve authorization", pending.getBoolean("launched", false))
+        assertTrue(DingTalkLoginBridge.acceptCallback(app, Intent().putExtra("state", request.state).putExtra("authCode", "still-valid-code")))
+        assertEquals("still-valid-code", DingTalkLoginBridge.consumeReply(app, null)?.authCode)
+    }
+
     @Test fun invalidWireCodeAndWebFallbackAreNeverExchanged() {
         for (value in listOf("has space", "x".repeat(2049), "line\nbreak")) {
             val request = pendingRequest()
@@ -132,15 +141,19 @@ class DingTalkCallbackTest {
 
     @Test fun realSdkComponentReturnsToExistingMainActivityAndExchangesOnlyOnce() {
         val exchanged = CountDownLatch(1)
+        val anonymousRefresh = CountDownLatch(1)
         val calls = AtomicInteger()
         val sent = AtomicReference<JSONObject>()
+        val model = AtomicReference<AppViewModel>()
         val origin = "https://login-fixture.invalid"
         val request = pendingRequest()
         app.getSharedPreferences("native_login_origin", Context.MODE_PRIVATE).edit().putString("origin", origin).commit()
         ActivityScenario.launch<MainActivity>(Intent(app, MainActivity::class.java)).use { scenario ->
             scenario.onActivity { activity ->
                 val vm = ViewModelProvider(activity)[AppViewModel::class.java]
+                model.set(vm)
                 vm.api.baseUrl = origin
+                assertTrue("Signed-out ViewModel initialization must not clear the SDK request", pending.getBoolean("launched", false))
                 val client = OkHttpClient.Builder().addInterceptor { chain ->
                     val httpRequest = chain.request()
                     val body = when (httpRequest.url.encodedPath) {
@@ -151,13 +164,28 @@ class DingTalkCallbackTest {
                             "{\"accessToken\":\"fixture-access\",\"refreshToken\":\"fixture-refresh\",\"expiresIn\":900}"
                         }
                         "/api/site" -> "{\"buildings\":[]}"
-                        "/api/auth/me" -> "{\"user\":{\"id\":\"login-fixture\",\"nick\":\"测试账号\"}}"
+                        "/api/auth/me" -> {
+                            assertEquals("Bearer fixture-access", httpRequest.header("Authorization"))
+                            "{\"user\":{\"id\":\"login-fixture\",\"nick\":\"测试账号\",\"dingNick\":\"钉钉测试账号\",\"role\":\"admin\"}}"
+                        }
+                        "/api/user/permissions" -> {
+                            assertEquals("Bearer fixture-access", httpRequest.header("Authorization"))
+                            "{\"adminVisible\":true,\"permissions\":{\"tasks\":{\"view\":true,\"operate\":true}}}"
+                        }
                         else -> "{}"
                     }
                     Response.Builder().request(httpRequest).protocol(Protocol.HTTP_1_1).code(200).message("OK")
                         .body(body.toResponseBody("application/json".toMediaType())).build()
                 }.build()
                 vm.api.javaClass.getDeclaredField("http").apply { isAccessible = true }.set(vm.api, client)
+                // Exercise the same signed-out synchronization that used to erase
+                // pending state. Never recreate or reseed the pending request here.
+                vm.refresh(forceMetadata = true).invokeOnCompletion { anonymousRefresh.countDown() }
+            }
+            assertTrue("The signed-out refresh must finish before the provider returns", anonymousRefresh.await(10, TimeUnit.SECONDS))
+            scenario.onActivity { activity ->
+                assertTrue("Anonymous board synchronization must preserve the pending SDK request", pending.getBoolean("launched", false))
+                assertEquals(origin, app.getSharedPreferences("native_login_origin", Context.MODE_PRIVATE).getString("origin", null))
                 activity.startActivity(callbackIntent(request.state))
             }
             assertTrue("The SDK Activity must trigger the real exchange path", exchanged.await(10, TimeUnit.SECONDS))
@@ -167,9 +195,53 @@ class DingTalkCallbackTest {
             assertEquals(request.state, sent.get().getString("state"))
             assertEquals("fixture-code", sent.get().getString("authCode"))
             assertEquals(request.codeChallenge, DingTalkLoginBridge.challengeFor(sent.get().getString("codeVerifier")))
+            val profileDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while ((model.get().state.value.profile?.id != "login-fixture" || model.get().state.value.loading) && System.nanoTime() < profileDeadline) Thread.sleep(30)
+            val loggedIn = model.get().state.value
+            assertEquals("The successful exchange must load the account shown by the app", "login-fixture", loggedIn.profile?.id)
+            assertEquals("测试账号", loggedIn.profile?.nick)
+            assertEquals("钉钉测试账号", loggedIn.profile?.dingNick)
+            assertTrue("The account's server permissions must be available after login", loggedIn.access.optBoolean("adminVisible"))
+            assertNull("Successful login must not leave a refresh error behind", loggedIn.error)
             scenario.onActivity { it.startActivity(callbackIntent(request.state)) }
             InstrumentationRegistry.getInstrumentation().waitForIdleSync()
             assertEquals("Replayed SDK intents must not exchange a code twice", 1, calls.get())
+        }
+    }
+
+    @Test fun exchangeFailureReturnsToTheAppWithStatusAndEventInsteadOfCreatingASession() {
+        val exchanged = CountDownLatch(1)
+        val model = AtomicReference<AppViewModel>()
+        val origin = "https://login-fixture.invalid"
+        val request = pendingRequest()
+        app.getSharedPreferences("native_login_origin", Context.MODE_PRIVATE).edit().putString("origin", origin).commit()
+        ActivityScenario.launch<MainActivity>(Intent(app, MainActivity::class.java)).use { scenario ->
+            scenario.onActivity { activity ->
+                val vm = ViewModelProvider(activity)[AppViewModel::class.java]
+                model.set(vm)
+                vm.api.baseUrl = origin
+                val client = OkHttpClient.Builder().addInterceptor { chain ->
+                    val httpRequest = chain.request()
+                    val isExchange = httpRequest.url.encodedPath == "/api/mobile/auth/exchange"
+                    if (isExchange) exchanged.countDown()
+                    Response.Builder().request(httpRequest).protocol(Protocol.HTTP_1_1)
+                        .code(if (isExchange) 502 else 200).message(if (isExchange) "Bad Gateway" else "OK")
+                        .body((if (isExchange) "{\"error\":{\"code\":\"provider_unavailable\",\"message\":\"登录服务暂不可用，请重试\",\"eventId\":\"fixture_exchange_failure\"}}" else "{\"buildings\":[]}")
+                            .toResponseBody("application/json".toMediaType())).build()
+                }.build()
+                vm.api.javaClass.getDeclaredField("http").apply { isAccessible = true }.set(vm.api, client)
+                activity.startActivity(callbackIntent(request.state))
+            }
+            assertTrue("The SDK return must reach the real exchange path", exchanged.await(10, TimeUnit.SECONDS))
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (model.get().state.value.error == null && System.nanoTime() < deadline) Thread.sleep(30)
+            val error = model.get().state.value.error.orEmpty()
+            assertTrue("The app must expose the actionable provider failure", error.contains("登录服务暂不可用"))
+            assertTrue(error.contains("状态码 502"))
+            assertTrue(error.contains("事件 fixture_exchange_failure"))
+            assertNull(model.get().session.read())
+            assertNull(model.get().state.value.profile)
+            assertTrue("A failed exchange must still consume the one-time callback locally", pending.all.isEmpty())
         }
     }
 

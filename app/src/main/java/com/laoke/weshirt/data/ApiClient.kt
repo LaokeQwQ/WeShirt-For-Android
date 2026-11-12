@@ -42,7 +42,11 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     suspend fun call(path: String, method: String = "GET", body: JSONObject? = null, auth: Boolean = true, key: String? = null): JSONObject {
         require(path.startsWith("/api/") && !path.contains(".."))
         val (origin, version) = snapshot()
-        val token = if(auth) accessToken(origin, version) else null
+        // Protected calls queued by a previous refresh must stop locally once
+        // login clears its credentials, rather than send an anonymous 401 that
+        // could invalidate the new authorization currently being exchanged.
+        val token = if(auth) accessToken(origin, version)
+            ?: throw ApiException(401, "unauthorized", eventId(), "请先登录") else null
         current(origin, version)
         val signature = "$origin|$version|$method|$path|${body ?: ""}"
         val mutation = method != "GET" && !path.startsWith("/api/mobile/auth/")
@@ -54,16 +58,32 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             return result
         } catch(e: ApiException) { if(e.status in 400..499 && e.status != 408 && e.status != 429) pendingKeys.remove(signature); if(auth && e.status == 401) invalidate(origin, version); throw e }
     }
-    private suspend fun accessToken(origin: String, version: Long): String? = refreshLock.withLock {
-        current(origin, version)
-        val saved = session.read() ?: return@withLock null
-        if(saved.str("origin") != origin) { invalidate(origin, version); return@withLock null }
-        if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@withLock saved.str("accessToken")
-        try {
-            val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
-            synchronized(guard) { current(origin, version); storeSession(next, origin) }
-            next.str("accessToken")
-        } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidate(origin, version); throw e }
+    private suspend fun accessToken(origin: String, version: Long): String? {
+        // An obsolete refresh may still be waiting on the network. Valid tokens
+        // from a new login must not wait behind that previous account's mutex.
+        synchronized(guard) {
+            current(origin, version)
+            val saved = session.read() ?: return null
+            if (saved.str("origin") != origin) { invalidate(origin, version); return null }
+            if (saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return saved.str("accessToken")
+        }
+        return refreshLock.withLock {
+            current(origin, version)
+            val saved = session.read() ?: return@withLock null
+            if(saved.str("origin") != origin) { invalidate(origin, version); return@withLock null }
+            if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@withLock saved.str("accessToken")
+            try {
+                val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
+                synchronized(guard) { current(origin, version); storeSession(next, origin) }
+                next.str("accessToken")
+            } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidate(origin, version); throw e }
+        }
+    }
+    /** A new user authorization supersedes every in-flight request of the old session. */
+    fun beginNativeLogin(origin: String = baseUrl) = synchronized(guard) {
+        val configured = validEndpoint(baseUrl) ?: throw ApiException(0, "endpoint_required", eventId(), "请先设置服务地址")
+        if (origin != configured) throw ApiException(409, "login_origin_changed", eventId(), "服务地址已变更，请重新登录")
+        invalidate(configured, generation)
     }
     fun saveSession(value: JSONObject, origin: String = baseUrl) = synchronized(guard) {
         check(origin == baseUrl) { "Service changed during login" }

@@ -25,35 +25,30 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
-    private var notificationIdentity: String? = null
+    private var notificationRequest: Long? = null
     private var loginResumeFeedback: Job? = null
-    private fun accountIdentity(): String? = vm.state.value.profile?.id?.let { vm.state.value.endpoint + "|" + it }
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val expected = notificationIdentity
-        notificationIdentity = null
-        if (expected != null && expected == accountIdentity()) {
-            if(granted) vm.toggleNotify(true) else vm.notificationPermissionDenied()
-        }
+        val expected = notificationRequest
+        notificationRequest = null
+        if (expected != null) vm.notificationPermissionResult(expected, granted)
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        notificationIdentity = savedInstanceState?.getString("notificationIdentity")
+        notificationRequest = savedInstanceState?.takeIf { it.containsKey("notificationRequest") }?.getLong("notificationRequest")
         enableEdgeToEdge()
         consumeLogin(intent)
         consumeNavigation(intent)
         setContent { WeShirtApp(vm, onLogin = ::login, onRequestNotifications = ::requestNotifications, onRequestBackground = ::requestBackground) }
     }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putString("notificationIdentity", notificationIdentity); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { notificationRequest?.let { outState.putLong("notificationRequest", it) }; super.onSaveInstanceState(outState) }
     private fun requestNotifications() {
-        val identity = accountIdentity() ?: return vm.message("登录后可开启洗衣提醒")
         getSharedPreferences("permission_guidance", MODE_PRIVATE).edit().putBoolean("notificationOffered", true).apply()
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            notificationIdentity = identity
+            notificationRequest = vm.prepareNotificationPermission()
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else vm.toggleNotify(true)
     }
     private fun requestBackground() {
-        if (accountIdentity() == null) return
         val request = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
         try { startActivity(request) }
         catch (_: RuntimeException) {
@@ -90,6 +85,8 @@ class MainActivity : ComponentActivity() {
     private fun login() {
         vm.mutate(null) {
             try {
+                vm.api.beginNativeLogin()
+                vm.clearFeedback()
                 val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)
                 check(getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().putString("origin", vm.api.baseUrl).commit()) { DingTalkLoginBridge.failureMessage("LOGIN_STORAGE_FAILED") }
                 val j = vm.api.call("/api/mobile/auth/challenge", "POST", JSONObject().put("installationId", request.installationId).put("state", request.state).put("codeChallenge", request.codeChallenge).put("platform", "android").put("packageName", "com.laoke.weshirt"), auth = false)
@@ -109,6 +106,10 @@ class MainActivity : ComponentActivity() {
         if(reply.authCode == null) { vm.message(DingTalkLoginBridge.failureMessage(reply.errorCode ?: "LOGIN_CALLBACK_FAILED", reply.eventId)); return }
         vm.mutate("登录成功", wait = true) {
             check(origin == vm.api.baseUrl) { DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId) }
+            // Also isolate callbacks restored after process death or app upgrade.
+            // Old refresh/401 responses must not cancel a valid one-time code.
+            vm.api.beginNativeLogin(origin)
+            vm.clearFeedback()
             val j = vm.api.call("/api/mobile/auth/exchange", "POST", JSONObject().put("challengeId", reply.challengeId).put("state", reply.state).put("codeVerifier", reply.codeVerifier).put("authCode", reply.authCode), auth = false)
             vm.api.saveSession(j, origin)
             vm.platformSessionChanged()

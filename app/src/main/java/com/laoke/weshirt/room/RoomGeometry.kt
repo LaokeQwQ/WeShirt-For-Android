@@ -249,7 +249,9 @@ internal object RoomGeometry {
 
             // Deep stainless drum, rubber gasket, and perforations remain behind
             // the opening, so moving clothes are inside the cabinet instead of on it.
-            detail.cylinder(0f, .53f, .105f, radius - .011f, .012f, rgb(0x536570), segments = 40)
+            // Overlap the tube's inner edge: a smaller cap leaked the white rear
+            // cabinet through a bright crescent around the bottom of the drum.
+            detail.cylinder(0f, .53f, .105f, radius - .004f, .012f, rgb(0x536570), segments = 40)
             detail.tube(0f, .53f, .21f, radius - .006f, .20f, rgb(0x8A9CA4), segments = 40)
             detail.annulus(0f, .53f, .319f, radius - .008f, radius + .025f, rgb(0x26363D), segments = 40)
             detail.annulus(0f, .53f, .334f, radius + .004f, radius + .019f, rgb(0x53656D), segments = 40)

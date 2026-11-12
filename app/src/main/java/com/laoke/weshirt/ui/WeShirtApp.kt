@@ -38,7 +38,6 @@ import kotlinx.coroutines.launch
     WeShirtTheme(state.appearance, state.palette) {
         val snackbar = remember { SnackbarHostState() }
         val lifecycle = LocalLifecycleOwner.current
-        var configure by remember { mutableStateOf(false) }
         var buildingPicker by remember { mutableStateOf(false) }
         var selected by remember { mutableStateOf<Machine?>(null) }
         var backgroundSettings by remember { mutableStateOf(false) }
@@ -68,28 +67,26 @@ import kotlinx.coroutines.launch
             } }
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if(state.endpoint.isBlank()) EmptyPanel("连接你的洗衣房", "先填写已部署的 WeShirt 服务地址。账号、楼栋和洗衣数据由该服务管理。", Icons.Outlined.CloudQueue, "设置服务地址") { configure = true }
-                else if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
+                if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
                 else AnimatedContent(targetState = state.tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(100)) }, label = "page") { tab ->
                     when(tab) {
                         0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message, allow3D = state.building.equals("guiyuan", ignoreCase = true))
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
-                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { configure = true }, { buildingPicker = true }, { backgroundSettings = true })
+                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { buildingPicker = true }, { backgroundSettings = true })
                     }
                 }
             }
         }
-        if(configure) EndpointDialog(state.endpoint, { configure = false }) { vm.configure(it); configure = false }
         if(buildingPicker) AlertDialog(onDismissRequest = { buildingPicker = false }, title = { Text("选择住宿楼") }, text = {
-            Column { if(state.buildings.isEmpty()) Text("暂无可用楼栋，请先检查服务地址并刷新")
+            Column { if(state.buildings.isEmpty()) Text("暂无可用楼栋，请稍后刷新")
                 state.buildings.forEach { b -> TextButton(onClick = { vm.selectBuilding(b.code); buildingPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(b.name); if(b.code == state.building) Icon(Icons.Outlined.Check, null) } }
                 if(state.profile != null) Text("每人仅可自行修改一次，之后请联系管理员。", style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = { TextButton(onClick = { buildingPicker = false }) { Text("返回") } })
         selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
         if (state.announcements.isEmpty()) ReminderPermissionGuidance(state, backgroundSettings, { backgroundSettings = false }, onRequestNotifications, onRequestBackground)
-        OverdueCollectionPrompt(state, vm, enabled = !display && selected == null && state.pendingShare == null && !configure && !buildingPicker && !backgroundSettings && !queueInbox)
+        OverdueCollectionPrompt(state, vm, enabled = !display && selected == null && state.pendingShare == null && !buildingPicker && !backgroundSettings && !queueInbox)
         if (display) DisplayScreen(state) { display = false }
         if (queueInbox && state.profile != null) com.laoke.weshirt.ui.social.QueueNoticeDialog(state, vm) { queueInbox = false }
         state.pendingShare?.takeIf { it.origin == state.endpoint }?.let { share ->
@@ -106,10 +103,6 @@ import kotlinx.coroutines.launch
         Text(title, style = MaterialTheme.typography.headlineSmall); Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if(action != null) Button(onClick = onAction) { Text(action) }
     }
-}
-@Composable private fun EndpointDialog(value: String, close: () -> Unit, save: (String) -> Unit) {
-    var text by remember { mutableStateOf(value) }
-    AlertDialog(onDismissRequest = close, title = { Text("连接服务") }, text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("请填写你使用的 WeShirt 服务地址"); OutlinedTextField(text, { text = it }, label = { Text("https://example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth()); Text("切换服务会退出当前账号。", style = MaterialTheme.typography.bodySmall) } }, dismissButton = { TextButton(onClick = close) { Text("取消") } }, confirmButton = { TextButton(onClick = { save(text) }) { Text("连接") } })
 }
 @Composable fun NativeMarkdown(text: String) {
     val context = LocalContext.current

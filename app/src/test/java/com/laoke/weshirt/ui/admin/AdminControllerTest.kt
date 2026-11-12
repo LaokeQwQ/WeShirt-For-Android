@@ -45,6 +45,7 @@ class AdminControllerTest {
             .protocols(listOf(Protocol.HTTP_1_1)).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false)
             .connectTimeout(3, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS).build()
         api = ApiClient(MemorySession(), temporary, http).apply { baseUrl = server.url("/").newBuilder().host("127.0.0.1").build().toString().trimEnd('/') }
+        api.saveSession(JSONObject().put("accessToken", "fixture-admin-access").put("refreshToken", "fixture-admin-refresh").put("expiresIn", 900))
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 entered.countDown()

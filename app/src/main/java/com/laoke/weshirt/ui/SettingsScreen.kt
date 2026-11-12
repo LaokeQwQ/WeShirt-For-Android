@@ -32,7 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
-@Composable fun SettingsScreen(state: AppState, vm: AppViewModel, login: () -> Unit, requestNotifications: () -> Unit, endpoint: () -> Unit, building: () -> Unit, backgroundSettings: () -> Unit = {}) {
+@Composable fun SettingsScreen(state: AppState, vm: AppViewModel, login: () -> Unit, requestNotifications: () -> Unit, building: () -> Unit, backgroundSettings: () -> Unit = {}) {
     var nick by remember(state.profile?.nick) { mutableStateOf(state.profile?.nick.orEmpty()) }; var avatarMenu by remember { mutableStateOf(false) }
     var logout by remember { mutableStateOf(false) }; var reminderStart by remember(state.reminderStart) { mutableStateOf(state.reminderStart) }; var reminderEnd by remember(state.reminderEnd) { mutableStateOf(state.reminderEnd) }
     var admin by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
@@ -75,22 +75,22 @@ import java.io.ByteArrayOutputStream
         } }
         item { SettingsCard("通知") {
             ToggleRow("系统洗衣提醒", "结束前提醒、排队与被 @ 提示", state.notificationsOn) { if(it) requestNotifications() else vm.toggleNotify(false) }
+            if (state.profile == null) Text("可以先开启通知，登录后才会接收洗衣、排队和聊天提醒。", style = MaterialTheme.typography.bodySmall)
             ToggleRow("开屏公告", "接收所在楼栋和公共公告", state.announcementsOn) { vm.toggleAnnouncements(it) }
             Text("优先使用 FCM，不可用时使用基础 U-Push。实际送达受网络和系统后台限制影响。", style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = backgroundSettings, enabled = state.profile != null) { Text("后台提醒与省电白名单") }
+            TextButton(onClick = backgroundSettings) { Text("后台提醒与省电白名单") }
             Text("结束前提醒", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf(0, 3, 5, 10).forEach { minutes -> FilterChip(state.profile?.notifyLeadMin == minutes, { vm.mutate { vm.api.call("/api/user/notify", "POST", JSONObject().put("leadMin", minutes)) } }, enabled = state.profile != null && !state.busy, label = { Text(if (minutes == 0) "结束时" else "${minutes}分") }) } }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf(0, 3, 5, 10).forEach { minutes -> FilterChip(state.profile?.notifyLeadMin == minutes, { vm.mutate { vm.api.call("/api/user/notify", "POST", JSONObject().put("leadMin", minutes)) } }, enabled = state.profile != null && !state.busy, label = { Text(if (minutes == 0) "结束时" else "${minutes}分") }) } }
             TextButton(onClick = { vm.mutate(null) { val result = vm.api.call("/api/user/test-notify", "POST", JSONObject()); vm.message(result.str("message", result.str("hint", "通知请求已提交，请检查钉钉和系统通知"))) } }, enabled = state.profile != null && !state.busy) { Text("发送测试提醒") }
             FilledTonalButton(onClick = { favoriteSettings = true }, enabled = state.profile != null && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("常用机器与洗衣时段 · ${if (state.favoriteRemindersOn) "提醒已开启" else "提醒已关闭"}") }
         } }
-        item { GeneralSettingsCard(endpoint) }
         item { SettingsCard("显示与性能") {
             Text("外观", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key,label) -> FilterChip(state.appearance == key, { vm.preference("appearance", key) }, label = { Text(label) }) } }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key,label) -> FilterChip(state.appearance == key, { vm.preference("appearance", key) }, label = { Text(label) }) } }
             Text("配色", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("blue" to "蓝", "green" to "绿", "purple" to "紫", "dynamic" to "系统").forEach { (key,label) -> FilterChip(state.palette == key, { vm.preference("palette", key) }, label = { Text(label) }) } }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("blue" to "蓝", "green" to "绿", "purple" to "紫", "dynamic" to "系统").forEach { (key,label) -> FilterChip(state.palette == key, { vm.preference("palette", key) }, label = { Text(label) }) } }
             Text("3D 画质与帧率", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("AUTO" to "自动", "HIGH" to "清晰", "SMOOTH" to "流畅", "BATTERY" to "省电").forEach { (key,label) -> FilterChip(state.quality == key, { vm.preference("quality", key) }, label = { Text(label) }) } }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("AUTO" to "自动", "HIGH" to "清晰", "SMOOTH" to "流畅", "BATTERY" to "省电").forEach { (key,label) -> FilterChip(state.quality == key, { vm.preference("quality", key) }, label = { Text(label) }) } }
             Text("自动模式保持清晰，持续掉帧或温度较高时才调整；回到后台停止渲染。", style = MaterialTheme.typography.bodySmall)
         } }
         item { SettingsCard("隐私") { ToggleRow("匿名性能数据", "不包含聊天、备注、手机号与账号标识", state.telemetryOn, vm::telemetry) } }
@@ -116,16 +116,6 @@ import java.io.ByteArrayOutputStream
         TextButton(onClick = { avatarOwner = owner; avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); avatarMenu = false }) { Text("自定义头像") }
     } }, confirmButton = { TextButton(onClick = { avatarMenu = false }) { Text("取消") } })
     if(logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("退出当前账号？") }, text = { Text("会清理本机账号数据和洗衣通知。") }, confirmButton = { TextButton(onClick = { vm.logout(); logout = false }) { Text("退出登录") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("取消") } })
-}
-@Composable internal fun GeneralSettingsCard(endpoint: () -> Unit) {
-    SettingsCard("通用") {
-        OutlinedButton(onClick = endpoint, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("settings-service-address")) {
-            Icon(Icons.Outlined.Dns, null, Modifier.size(20.dp))
-            Spacer(Modifier.width(10.dp))
-            Text("服务地址设置", Modifier.weight(1f))
-            Icon(Icons.Outlined.ChevronRight, null, Modifier.size(20.dp))
-        }
-    }
 }
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary); content() } } }
 @Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, change: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked, change) } }

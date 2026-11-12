@@ -136,6 +136,15 @@ class RoomGeometryTest {
         }
     }
 
+    @Test fun drumBackOverlapsTheTubeWithoutExposingTheWhiteCabinetAtItsEdge() {
+        for (dryer in listOf(false, true)) {
+            val radius = if (dryer) .23 else .205
+            val meshes = RoomGeometry.machineBodies(listOf(RoomSlot("machine", 0f, 0f, dryer = dryer))).values
+            val edge = firstSurface(meshes, Ray(Vec3(radius - .007, .53, .28), Vec3(0.0, 0.0, -1.0)))
+            assertEquals("The edge must hit the metal drum back rather than the outer cabinet", .169, edge, .005)
+        }
+    }
+
     private fun firstSurface(meshes: Collection<MeshData>, ray: Ray): Double {
         return meshes.flatMap { mesh ->
             fun vertex(index: Int) = Vec3(mesh.positions[index * 3].toDouble(), mesh.positions[index * 3 + 1].toDouble(), mesh.positions[index * 3 + 2].toDouble())

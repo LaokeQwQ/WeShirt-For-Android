@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.PointF
+import android.graphics.RectF
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -67,7 +68,7 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
     val renderStatistics: RoomRenderStatistics get() = RoomRenderStatistics(
         renderedFrames, rejectedFrames, engine != null, swapChain != null && uiHelper?.isReadyToRender == true,
         materials.size, meshes.size, machines.size, latestGpuDurationNanos, rendererFailure, disposed,
-        pendingMaterialCompilations, nativeDiagnostics(),
+        pendingMaterialCompilations, nativeDiagnostics(), cameraGoal != null, doorsMoving(),
     )
 
     private val surfaceView = SurfaceView(context)
@@ -230,19 +231,38 @@ class LaundryRoomView @JvmOverloads constructor(context: Context, attrs: Attribu
 
     /** Door center projected into view coordinates, also usable by native accessibility overlays. */
     fun machineScreenPosition(machineId: String): PointF? {
-        if(viewportWidth <= 0 || viewportHeight <= 0 || disposed) return null
         val position = positions.firstOrNull { it.slot == machineId } ?: return null
+        return projectToScreen(position.doorCenter)?.takeIf { it.x >= 0 && it.x < width && it.y >= 0 && it.y < height }
+    }
+
+    /** Cabinet bounds for native overlays; unlike the centre, these describe apparent size. */
+    fun machineScreenBounds(machineId: String): RectF? {
+        val position = positions.firstOrNull { it.slot == machineId } ?: return null
+        val height = if (position.dryer) 1.05f else .98f
+        val corners = listOf(-.345f, .345f).flatMap { x -> listOf(.025f, height).flatMap { y ->
+            listOf(-.335f, .39f).map { z -> projectToScreen(position.point(x, y, z)) ?: return null }
+        } }
+        return RectF(corners.minOf { it.x }, corners.minOf { it.y }, corners.maxOf { it.x }, corners.maxOf { it.y })
+    }
+
+    // PixelCopy can otherwise read an older presented buffer while Filament's
+    // accepted submissions are still queued on its render thread. Capture alone
+    // needs this barrier; the interactive render loop must remain asynchronous.
+    internal fun synchronizeRenderingForCapture() { engine?.flushAndWait() }
+
+    private fun projectToScreen(point: Vec3): PointF? {
+        if(viewportWidth <= 0 || viewportHeight <= 0 || disposed) return null
         val forward = (target - eye).normalized()
         val right = forward.cross(Vec3(0.0, 1.0, 0.0)).normalized()
         val up = right.cross(forward).normalized()
-        val relative = position.doorCenter - eye
+        val relative = point - eye
         val depth = relative.dot(forward)
         if(depth <= 0) return null
         val halfHeight = tan(Math.toRadians(fieldOfView) / 2)
         val aspect = viewportWidth.toDouble() / viewportHeight
         val x = (relative.dot(right) / (depth * halfHeight * aspect) + 1) / 2 * surfaceView.width
         val y = (1 - relative.dot(up) / (depth * halfHeight)) / 2 * surfaceView.height
-        return PointF(x.toFloat(), y.toFloat()).takeIf { it.x >= 0 && it.x < width && it.y >= 0 && it.y < height }
+        return PointF(x.toFloat(), y.toFloat())
     }
 
     fun setMachines(value: List<RoomMachine>) {

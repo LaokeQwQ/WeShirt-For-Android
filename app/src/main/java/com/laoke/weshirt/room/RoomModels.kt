@@ -43,4 +43,6 @@ data class RoomRenderStatistics(
     val disposed: Boolean,
     val pendingMaterialCompilations: Int = 0,
     val nativeDiagnostics: String = "",
+    val cameraMoving: Boolean = false,
+    val doorsAnimating: Boolean = false,
 )

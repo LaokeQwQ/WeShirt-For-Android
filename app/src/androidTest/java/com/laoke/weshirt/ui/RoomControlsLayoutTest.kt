@@ -97,18 +97,15 @@ class RoomControlsLayoutTest {
         saveScreenshot("native-narrow-machine-list")
     }
 
-    @Test fun serviceAddressLivesInGeneralBeforeDisplayAndStillOpens() {
+    @Test fun settingsHideServiceAddressAndKeepPerformanceReachable() {
         val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as Application
         val vm = AppViewModel(app)
-        var opened = 0
-        compose.setContent { WeShirtTheme("light", "blue") { SettingsScreen(AppState(), vm, {}, {}, { opened++ }, {}) } }
-        compose.onNodeWithTag("settings-sections").performScrollToIndex(2)
-        compose.onNodeWithTag("settings-service-address").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(1, opened) }
-        val general = compose.onNodeWithText("通用").getUnclippedBoundsInRoot()
-        val display = compose.onNodeWithText("显示与性能").assertIsDisplayed().getUnclippedBoundsInRoot()
-        assertTrue("General must be above display and performance", general.bottom <= display.top)
-        saveScreenshot("native-settings-general")
+        compose.setContent { WeShirtTheme("light", "blue") { SettingsScreen(AppState(), vm, {}, {}, {}) } }
+        compose.onNodeWithTag("settings-service-address").assertDoesNotExist()
+        compose.onNodeWithText("服务地址设置").assertDoesNotExist()
+        compose.onNodeWithTag("settings-sections").performScrollToNode(hasText("显示与性能"))
+        compose.onNodeWithText("显示与性能").assertIsDisplayed()
+        saveScreenshot("native-settings-performance")
     }
 
     @Test fun shortLargeTextRoomRetainsActualSceneAndReachableShortcuts() {
@@ -126,6 +123,7 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("room-machine-shortcuts").assertIsDisplayed()
         compose.onNodeWithTag("room-slot:1").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals("native-short-room", chosen) }
+        android.os.SystemClock.sleep(2000)
         saveScreenshot("native-short-room-controls")
     }
 
