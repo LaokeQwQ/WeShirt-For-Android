@@ -22,6 +22,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("preferences", 0)
     val session = SecureSession(app)
     val api = ApiClient(session, app.cacheDir)
+    private val channelInbox = ChannelInbox(api)
+    private var channelsJob: kotlinx.coroutines.Job? = null
     private val refreshMutex = Mutex()
     private var refreshPending = false
     private val mutationMutex = Mutex()
@@ -55,16 +57,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } }
         api.onSessionInvalidated = {
             generation.incrementAndGet()
+            channelInbox.clear(); metadata.clear(); channelsJob?.cancel()
             platform.clearLocal()
             coil.Coil.imageLoader(app).memoryCache?.clear()
-            _state.update { it.copy(profile = null, tasks = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = platform.notificationsEnabled) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = platform.notificationsEnabled) }
         }
         platform.initialize()
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         refresh()
     }
     fun platformSessionChanged() {
-        generation.incrementAndGet(); metadata.clear(); platform.sessionChanged()
+        generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); platform.sessionChanged()
+        _state.update { it.copy(profile = null, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false) }
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         // Apply only an explicit, still-enabled guest request once. An older
         // device preference must not overwrite another account's server choice.
@@ -85,7 +89,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun notificationPermissionDenied() { notificationIntent.incrementAndGet(); prefs.edit().remove("pendingGuestNotifyEnable").commit(); platform.enableNotifications(false); _state.update { it.copy(notificationsOn = false) }; message("系统通知已关闭，你仍可在应用内查看洗衣状态") }
     fun message(text: String) { _state.update { it.copy(info = text) } }
     fun clearFeedback() { _state.update { it.copy(info = null, error = null) } }
-    fun tab(value: Int) { _state.update { it.copy(tab = value) }; if(_state.value.telemetryOn && telemetryBuffer.size < 20) telemetryBuffer.add(JSONObject().put("name","page_view").put("route",route())); refresh() }
+    fun tab(value: Int) {
+        _state.update { it.copy(tab = value) }
+        if (_state.value.telemetryOn && telemetryBuffer.size < 20) telemetryBuffer.add(JSONObject().put("name", "page_view").put("route", route()))
+        // Opening a directory must not wait for the board, queue and notification requests.
+        if (value == 2 && _state.value.profile != null) refreshChannels() else refresh()
+    }
     private fun route() = listOf("/","/task","/board","/settings")[_state.value.tab.coerceIn(0,3)]
     private fun flushTelemetry() {
         if(!_state.value.telemetryOn || telemetryBuffer.isEmpty() || System.currentTimeMillis()-telemetrySentAt < 60_000) return
@@ -119,7 +128,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
     fun refresh(forceMetadata: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
         if (api.baseUrl.isBlank()) return@launch
-        if(forceMetadata) metadata.clear()
+        if(forceMetadata) { metadata.clear(); channelInbox.invalidate(); if (_state.value.tab == 2) refreshChannels() }
         if (!refreshMutex.tryLock()) { refreshPending = true; return@launch }
         val version = generation.get()
         _state.update { it.copy(loading = true) }
@@ -139,6 +148,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             // Publish the board immediately. A queue, profile-preference or notification outage
             // must not leave a successful machine response invisible until every request succeeds.
             _state.update { it.copy(buildings = buildings, building = building, profile = profile, access = access, machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, error = null) }
+            if (_state.value.tab == 2 && signedIn) refreshChannels()
             val problems = mutableListOf<Throwable>()
             fun <T> Result<T>.readOr(previous: T): T = getOrElse { problems += it; previous }
             val p = access.optJSONObject("permissions")
@@ -172,7 +182,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if(version != generation.get()) return@launch
             _state.update { it.copy(announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), favoriteRemindersOn = laundryPrefs.optBoolean("enabled"), reminderStart = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
             if(signedIn) optionalRefresh { loadNoticesNow(version) }.exceptionOrNull()?.let { problems += it }
-            if(_state.value.tab == 2 && signedIn) optionalRefresh { loadChannelsNow(version) }.exceptionOrNull()?.let { problems += it }
             if(_state.value.tab == 1 && signedIn) optionalRefresh { loadSocialNow(version) }.exceptionOrNull()?.let { problems += it }
             if (version == generation.get()) platform.synchronize(_state.value)
             if(building.isNotBlank() && _state.value.announcementsOn) {
@@ -195,7 +204,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun mutate(success: String? = "已保存", wait: Boolean = false, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
         if(wait) mutationMutex.lock() else if(!mutationMutex.tryLock()) return@launch
         _state.update { it.copy(busy = true) }
-        try { block(); metadata.clear(); if(success != null) message(success); refresh() }
+        try { block(); metadata.clear(); channelInbox.invalidate(); if(success != null) message(success); refresh() }
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }
@@ -291,12 +300,45 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val selected = _state.value.channel
         api.call("/api/messages/notices/read", "POST", JSONObject().put("channel", selected))
     }
-    private suspend fun loadChannelsNow(version: Int) {
-        val j = api.call("/api/messages/channels")
-        val channels = j.optJSONArray("channels")?.objects().orEmpty().map { Channel(it.str("code"), it.str("name"), it.str("avatarData"), it.optJSONObject("permissions")?.optBoolean("canMentionAll") == true, it.optJSONObject("permissions")?.optBoolean("canAnnounce") == true, it.optJSONObject("permissions")?.optBoolean("canManageAvatar") == true) }
-        if(version != generation.get()) return
-        _state.update { it.copy(channels = channels, channel = it.channel.takeIf { c -> channels.any { ch -> ch.code == c } } ?: "public") }
-        loadMessagesNow(version)
+    private fun channelAccount(): ChannelAccountScope? = _state.value.profile?.id?.takeIf { it.isNotBlank() }?.let {
+        ChannelAccountScope(_state.value.endpoint, it, generation.get())
+    }
+    fun refreshChannels() {
+        if (channelAccount() == null || channelsJob?.isActive == true) return
+        channelsJob = viewModelScope.launch {
+            val account = channelAccount() ?: return@launch
+            try {
+                val channels = channelInbox.load(account) { channelAccount() == account }
+                if (channelAccount() != account) return@launch
+                _state.update { before ->
+                    val selected = before.channel.takeIf { code -> channels.any { it.code == code } }
+                        ?: channels.firstOrNull()?.code ?: "public"
+                    before.copy(channels = channels, channel = selected,
+                        messages = if (selected == before.channel) before.messages else emptyList())
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (problem: Exception) { if (channelAccount() == account) _state.update { it.copy(error = problem.message ?: "频道加载失败") } }
+        }
+    }
+    /** Called by the foreground conversation viewport, never by directory fetch or prefetch. */
+    suspend fun readVisibleMessages(channel: String, ids: List<String>): Boolean {
+        val account = channelAccount() ?: return false
+        fun current() = channelAccount() == account && _state.value.tab == 2 && _state.value.channel == channel
+        if (!current()) return false
+        // Recheck membership against the current scope; stale UI rows cannot mark another chat read.
+        val visible = visibleIncomingMessageIds(_state.value.messages, ids)
+        return try {
+            val unread = channelInbox.acknowledge(account, channel, visible, ::current) ?: return true
+            if (current()) _state.update { it.copy(
+                channels = it.channels.map { row -> if (row.code == channel) row.copy(unreadCount = unread) else row },
+                messageNotices = it.messageNotices.filterNot { notice -> notice.str("channel") == channel && notice.str("messageId") in visible }
+            ) }
+            true
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) {
+            if (problem is ApiException && problem.status == 404 && current()) refreshMessages()
+            false // Keep unread intact; deleted IDs disappear after refreshing current rows.
+        }
     }
     private suspend fun loadMessagesNow(version: Int, page: Int = 1) {
         val channel = _state.value.channel
@@ -320,7 +362,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun acceptInvite(ticket: String) = mutate("朋友已绑定") { api.call("/api/social/accept", "POST", JSONObject().put("ticket", ticket)) }
     fun assistant(text: String, callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/assistant/chat", "POST", JSONObject().put("input", text)); callback(j.str("reply", j.str("message"))) }
     fun logout() = mutate("已退出登录") {
-        generation.incrementAndGet()
+        generation.incrementAndGet(); channelInbox.clear(); metadata.clear(); channelsJob?.cancel()
         prefs.edit().remove("pendingGuestNotifyEnable").commit()
         com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
         try {
@@ -328,7 +370,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = platform.notificationsEnabled) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = platform.notificationsEnabled) }
         }
     }
 }

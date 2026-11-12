@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -39,6 +41,11 @@ import com.laoke.weshirt.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -46,33 +53,35 @@ import java.util.UUID
 
 @Composable fun ChannelScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
     var directory by remember(state.endpoint, state.profile?.id) { mutableStateOf(state.discussionMachine.isBlank()) }
+    LaunchedEffect(state.endpoint, state.profile?.id, directory) { if (state.profile != null && directory) vm.refreshChannels() }
     LaunchedEffect(state.discussionMachine) { if (state.discussionMachine.isNotBlank()) directory = false }
     var connected by remember { mutableStateOf(false) }
     val owner = LocalLifecycleOwner.current
     LaunchedEffect(state.endpoint, state.profile?.id, state.channel, directory, owner) {
         if (state.profile != null && !directory) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            ChannelRealtime(vm.api).run(state.channel, { vm.refreshMessages() }, { connected = it; vm.channelConnection(it) })
+            coroutineScope {
+                launch {
+                    channelHttpFallback(current = {
+                        val current = vm.state.value
+                        current.tab == 2 && current.channel == state.channel && current.endpoint == state.endpoint && current.profile?.id == state.profile.id
+                    }, connected = { connected }, refresh = { vm.refreshMessages() })
+                }
+                ChannelRealtime(vm.api).run(state.channel, { vm.refreshMessages() }, { connected = it; vm.channelConnection(it) })
+            }
         }
     }
     DisposableEffect(Unit) { onDispose { vm.channelConnection(false) } }
     if (state.profile == null) { EmptyPanel("和楼里的朋友聊聊", "登录后可查看公共频道和自己的住宿楼频道。", Icons.Outlined.ChatBubbleOutline, "钉钉登录", login); return }
     if (directory) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text("选择频道", style = MaterialTheme.typography.headlineSmall); Text("公共频道和你的住宿楼优先显示", style = MaterialTheme.typography.bodySmall) }
-            items(state.channels.sortedBy { when (it.code) { "public" -> 0; state.profile.building -> 1; else -> 2 } }, key = { it.code }) { channel ->
-                Card(onClick = { vm.channel(channel.code); directory = false }, modifier = Modifier.fillMaxWidth()) {
-                    Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        if (channel.avatar.isNotBlank()) AsyncImage(channel.avatar, null, Modifier.size(48.dp).clip(CircleShape)) else Icon(Icons.Outlined.Forum, null, Modifier.size(40.dp))
-                        Column(Modifier.weight(1f)) { Text(channel.name, style = MaterialTheme.typography.titleMedium)
-                            if (state.messageNotices.any { it.str("channel") == channel.code && it.str("readAt").isBlank() }) Text("有人 @ 你", color = androidx.compose.ui.graphics.Color(0xFFD87717), style = MaterialTheme.typography.labelMedium)
-                        }
-                        Icon(Icons.Outlined.ChevronRight, null)
-                    }
-                }
-            }
-        }; return
+        ChannelDirectory(state.channels, state.profile.building, "${state.endpoint}|${state.profile.id}",
+            state.messageNotices.filter { it.str("readAt").isBlank() }.map { it.str("channel") }.toSet(),
+            onSelect = { vm.channel(it.code); directory = false }, retry = vm::refreshChannels)
+        return
     }
     val scope = ChatScope(state.endpoint, state.profile?.id, state.channel, state.discussionMachine)
+    val messageList = key(scope) { rememberLazyListState() }
+    val currentMessages by rememberUpdatedState(state.messages)
+    val acknowledged = remember(scope) { mutableSetOf<String>() }
     val draft = remember(scope) { Any() }
     val currentDraft by rememberUpdatedState(draft)
     var input by remember(scope) { mutableStateOf("") }; var reply by remember(scope) { mutableStateOf<Message?>(null) }
@@ -81,10 +90,39 @@ import java.util.UUID
     var attached by remember(scope) { mutableStateOf<String?>(null) }
     var announcement by remember(scope) { mutableStateOf(false) }
     var channelAvatar by remember(scope) { mutableStateOf(false) }
+    var attachmentModal by remember(scope) { mutableStateOf(false) }
+    var avatarModal by remember(scope) { mutableStateOf(false) }
+    val windowInfo = androidx.compose.ui.platform.LocalWindowInfo.current
+    val minimumVisiblePixels = with(androidx.compose.ui.platform.LocalDensity.current) { 120.dp.roundToPx() }
+    LaunchedEffect(scope, owner) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            snapshotFlow {
+                if (!windowInfo.isWindowFocused || menu != null || media != null || attachmentModal || avatarModal) emptyList()
+                else {
+                    val layout = messageList.layoutInfo
+                    visibleIncomingMessageIds(currentMessages, layout.visibleItemsInfo.filter {
+                        isMessageVisible(it.offset, it.size, layout.viewportStartOffset, layout.viewportEndOffset, minimumVisiblePixels)
+                    }.map { it.key })
+                }
+            }
+                .distinctUntilChanged().collectLatest { visible ->
+                    // Do not acknowledge while a fling is exposing an item for a single frame.
+                    delay(350)
+                    val pending = visible.filterNot { it in acknowledged }
+                    if (pending.isNotEmpty() && scope.matches(vm.state.value) && vm.state.value.tab == 2) {
+                        var attempts = 0
+                        while (attempts++ < 3 && scope.matches(vm.state.value) && vm.state.value.tab == 2) {
+                            if (vm.readVisibleMessages(scope.channel, pending)) { acknowledged.addAll(pending); break }
+                            delay(1_500)
+                        }
+                    }
+                }
+        }
+    }
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { directory = true; vm.channelConnection(false) }) { Text("所有频道") }
+            TextButton(onClick = { directory = true; vm.channelConnection(false); vm.refreshChannels() }) { Text("所有频道") }
             Text(if (connected) "实时连接" else "定期同步", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
             if (state.channels.find { it.code == state.channel }?.canManageAvatar == true) TextButton(onClick = { channelAvatar = !channelAvatar }) { Text("频道头像") }
         }
@@ -97,7 +135,7 @@ import java.util.UUID
                     vm.api.upload("/api/messages/channels/${vm.api.encoded(scope.channel)}/avatar", image, "image/jpeg")
                     channelAvatar = false
                 } finally { cleanup() } }
-            }, onError = vm::message, imagesOnly = true)
+            }, onError = vm::message, imagesOnly = true, onModalVisibility = { avatarModal = it })
             Text("选择或拍摄频道头像", style = MaterialTheme.typography.bodySmall)
         }
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(state.channels, key = { it.code }) { channel -> FilterChip(selected = channel.code == state.channel, onClick = { vm.channel(channel.code) }, label = { Text(channel.name) }) } }
@@ -105,10 +143,10 @@ import java.util.UUID
             Text("仅看 ${state.machines.find { it.id == state.discussionMachine }?.name ?: "这台机器"} 的留言", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
             TextButton(onClick = { vm.channel(state.channel) }) { Text("查看全频道") }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), reverseLayout = true) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("channel-message-list"), state = messageList, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), reverseLayout = true) {
             if(state.messages.isEmpty()) item { Text("还没有消息，来打个招呼吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(state.messages, key = { it.id }) { message ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(Modifier.fillMaxWidth().testTag("channel-message:${message.id}"), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Surface(Modifier.size(40.dp).combinedClickable(onClick = {}, onLongClick = { if(!state.busy && message.mentionRef.isNotBlank()) { mentions = mentions + message.mentionRef; input = (input + "@${message.nick} ").take(200) } }), shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Box(contentAlignment = Alignment.Center) { if(message.avatar.isNotBlank()) AsyncImage(ImageRequest.Builder(context).data(message.avatar).memoryCacheKey("avatar|${scope.endpoint}|${scope.profileId}|${message.avatar}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(), "${message.nick}的头像", Modifier.fillMaxSize()) else Text(message.nick.take(1)) } }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
@@ -154,7 +192,7 @@ import java.util.UUID
                             }
                         } finally { cleanup() }
                     }
-                }, onError = vm::message)
+                }, onError = vm::message, onModalVisibility = { attachmentModal = it })
                 TextField(input, { input = it.take(200) }, enabled = !state.busy, placeholder = { Text("聊点什么 · 长按头像 @") }, modifier = Modifier.weight(1f), maxLines = 4, shape = RoundedCornerShape(24.dp), colors = TextFieldDefaults.colors(focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent, unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
                 IconButton(onClick = {
                     val text = input; val ref = reply?.id; val refs = mentions.toList(); val mentionAll = all; val mediaId = attached; val asAnnouncement = announcement
@@ -162,6 +200,7 @@ import java.util.UUID
                     vm.mutate(null) {
                         if (!scope.matches(vm.state.value) || sentDraft !== currentDraft) throw CancellationException("Chat changed")
                         vm.api.call("/api/messages", "POST", JSONObject().put("channel", scope.channel).put("text", text).put("replyTo", ref).put("mentions", org.json.JSONArray(refs)).put("mentionAll", mentionAll).put("mediaId", mediaId).put("type", if (asAnnouncement) "announcement" else "message").also { if (scope.machineId.isNotBlank()) it.put("machineId", scope.machineId) })
+                        if (scope.matches(vm.state.value)) vm.refreshMessages()
                         // Keep the draft after a failed request or if another conversation replaced it.
                         if (scope.matches(vm.state.value) && sentDraft === currentDraft && input == text && reply?.id == ref &&
                             mentions == refs.toSet() && all == mentionAll && attached == mediaId && announcement == asAnnouncement) {
@@ -182,9 +221,9 @@ import java.util.UUID
             TextButton(onClick = { all = true; input = (input + "@全体成员 ").take(200); menu = null }, enabled = !state.busy) { Text("@ 全体成员") }
         }
         if(message.canPin) {
-            TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}/pin", "POST", JSONObject().put("pinned", !message.pinned)) }; menu = null }, enabled = !state.busy) { Text(if(message.pinned) "取消置顶" else "置顶消息") }
+            TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}/pin", "POST", JSONObject().put("pinned", !message.pinned)); if (scope.matches(vm.state.value)) vm.refreshMessages() }; menu = null }, enabled = !state.busy) { Text(if(message.pinned) "取消置顶" else "置顶消息") }
         }
-        if(message.canDelete) TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}", "DELETE") }; menu = null }, enabled = !state.busy) { Text("删除消息") }
+        if(message.canDelete) TextButton(onClick = { vm.mutate { if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed"); vm.api.call("/api/messages/${vm.api.encoded(message.id)}", "DELETE"); if (scope.matches(vm.state.value)) vm.refreshMessages() }; menu = null }, enabled = !state.busy) { Text("删除消息") }
     } }, confirmButton = { TextButton(onClick = { menu = null }) { Text("取消") } }) }
     media?.let { message -> key(scope.endpoint, scope.profileId, message.mediaId) { MediaDialog(message, scope, vm) { media = null } } }
 }

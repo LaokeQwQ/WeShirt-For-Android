@@ -23,7 +23,24 @@ data class Profile(val id: String, val nick: String, val avatarUrl: String, val 
     companion object { fun parse(j: JSONObject) = Profile(j.str("id"), j.str("nick", "未设置昵称"), j.str("avatarUrl"), j.str("dormBuilding"), j.optInt("dormChangesRemaining", 1), j.str("role", "user"), j.str("dingNick"), j.str("mobile"), j.optBoolean("notifyOn", true), j.optInt("notifyLeadMin")) }
 }
 data class Channel(val code: String, val name: String, val avatar: String, val mentionAll: Boolean,
-                   val canAnnounce: Boolean = false, val canManageAvatar: Boolean = false)
+                   val canAnnounce: Boolean = false, val canManageAvatar: Boolean = false,
+                   val summary: ChannelSummary? = null, val unreadCount: Int = 0) {
+    companion object {
+        fun parse(j: JSONObject) = Channel(j.str("code"), j.str("name"), j.str("avatarData"),
+            j.optJSONObject("permissions")?.optBoolean("canMentionAll") == true,
+            j.optJSONObject("permissions")?.optBoolean("canAnnounce") == true,
+            j.optJSONObject("permissions")?.optBoolean("canManageAvatar") == true,
+            j.optJSONObject("summary")?.let { ChannelSummary(it.str("messageId"), it.str("nick"), it.str("text"), it.str("kind"), it.str("at")) },
+            j.optInt("unreadCount").coerceAtLeast(0))
+    }
+}
+
+data class ChannelSummary(val messageId: String, val nick: String, val text: String, val kind: String, val at: String) {
+    val preview: String get() {
+        val body = when (kind) { "image" -> "[图片]"; "video" -> "[视频]"; else -> text.replace(Regex("\\s+"), " ").trim() }
+        return if (nick.isBlank()) body else "$nick:$body"
+    }
+}
 data class Message(val id: String, val nick: String, val text: String, val avatar: String, val building: String, val role: String, val mentionRef: String, val mine: Boolean, val pinned: Boolean, val mentioned: Boolean, val reply: String, val mediaId: String, val mediaKind: String,
                    val canDelete: Boolean = false, val canPin: Boolean = false, val canMute: Boolean = false, val announcement: Boolean = false) {
     companion object {

@@ -84,6 +84,7 @@ class NativeLaundryRoomTest {
         // Verify the actual initial overview before any selection changes the camera.
         originalMachines().forEach { machine ->
             assertNotNull("Initial framing must show the door for ${machine.slot}", onMain { room.machineScreenPosition(machine.id) })
+            assertNotNull("Physical slot ${machine.slot} must project on its own machine front", onMain { room.machineNumberScreenPosition(machine.id) })
         }
         originalMachines().forEach { machine ->
             // Selection deliberately flies to a close-up. Return to the overview

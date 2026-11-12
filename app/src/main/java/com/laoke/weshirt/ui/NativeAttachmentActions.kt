@@ -30,6 +30,7 @@ fun NativeAttachmentActions(
     onMedia: (Uri, cleanup: () -> Unit) -> Unit,
     onError: (String) -> Unit,
     imagesOnly: Boolean = false,
+    onModalVisibility: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val currentScope by rememberUpdatedState(scopeKey)
@@ -37,9 +38,12 @@ fun NativeAttachmentActions(
     val currentMedia by rememberUpdatedState(onMedia)
     val currentError by rememberUpdatedState(onError)
     var menu by remember { mutableStateOf(false) }
+    val modalVisibility by rememberUpdatedState(onModalVisibility)
     var pendingScope by rememberSaveable { mutableStateOf<String?>(null) }
     var captureName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVideo by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(menu, pendingScope) { modalVisibility(menu || pendingScope != null) }
+    DisposableEffect(Unit) { onDispose { modalVisibility(false) } }
     LaunchedEffect(scopeKey) { menu = false }
     fun failure(message: String) { currentError(clientFailure(IllegalArgumentException(),message)) }
     val directory = remember(context) { File(context.cacheDir, "media-captures").apply {

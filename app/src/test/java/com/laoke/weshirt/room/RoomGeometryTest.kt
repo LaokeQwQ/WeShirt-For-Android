@@ -151,9 +151,38 @@ class RoomGeometryTest {
             val meshes = RoomGeometry.machineBodies(listOf(RoomSlot("D1", 0f, 0f, dryer = dryer))).values
             val frontPoints = meshes.flatMap { it.positions.toList().chunked(3) }.filter { it[2] > .30f }
             assertTrue(frontPoints.isNotEmpty())
-            assertTrue("Readable labels belong to native controls rather than clipping into utility pipes",
+            assertTrue("The front number plate must stay on the cabinet, below the utility pipes",
                 frontPoints.all { it[1] <= height + .05f })
         }
+    }
+
+    @Test fun physicalNumberPlatesUseBackendSlotsAndStayInFrontOfTheCabinetWithoutNewMaterials() {
+        val machines = RoomLayout.slots.reversed().mapIndexed { index, slot ->
+            RoomMachine("opaque-$index", slot.label, "Custom display name $index", RoomMachineState.IDLE, kind = if (slot.dryer) "dryer" else "washer")
+        }
+        val positions = RoomLayout.forMachines(machines)
+        val ink = RoomGeometry.rgb(RoomNumberPlate.inkColor).toList()
+        positions.forEach { slot ->
+            val original = RoomLayout.slots.first { it.label == slot.label }
+            assertEquals(machines.first { it.id == slot.slot }.slot, slot.label)
+            val plate = RoomNumberPlate.mesh(slot)
+            val labelPoints = (0 until plate.vertexCount).filter { plate.colors.slice(it * 4 until it * 4 + 4) == ink }
+                .map { plate.positions.slice(it * 3 until it * 3 + 3) }
+            assertTrue("Every physical slot needs an opaque readable number", labelPoints.isNotEmpty())
+            assertTrue(labelPoints.all { it[0] in -.30f..-.12f && it[2] > .381f })
+            val machineMeshes = RoomGeometry.machineBodies(listOf(slot))
+            assertEquals(setOf(RoomMaterial.ENAMEL, RoomMaterial.METAL), machineMeshes.keys)
+            val batch = machineMeshes.getValue(RoomMaterial.ENAMEL)
+            val worldInk = (0 until batch.vertexCount).filter { batch.colors.slice(it * 4 until it * 4 + 4) == ink }
+            assertEquals(labelPoints.size, worldInk.size)
+            labelPoints.zip(worldInk).forEach { (local, index) ->
+                val expected = original.point(local[0], local[1], local[2])
+                assertEquals(expected.x, batch.positions[index * 3].toDouble(), .00001)
+                assertEquals(expected.z, batch.positions[index * 3 + 2].toDouble(), .00001)
+            }
+        }
+        assertEquals(0, RoomNumberPlate.mesh(RoomSlot("unknown", 0f, label = "arbitrary-name")).vertexCount)
+        assertTrue("Nine labels must remain within a small static vertex budget", positions.sumOf { RoomNumberPlate.mesh(it).vertexCount } < 1500)
     }
 
     @Test fun drumBackOverlapsTheTubeWithoutExposingTheWhiteCabinetAtItsEdge() {
