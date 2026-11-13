@@ -214,6 +214,13 @@ class ChannelInboxIntegrationTest {
         compose.onNodeWithTag("channel-directory").assertIsDisplayed()
         assertTrue("Unread older messages remain visible on return", vm.state.value.channels.single().unreadCount > 0)
         compose.runOnIdle { showWholeApp = true }
+        compose.waitUntil(10_000) { !vm.state.value.loading }
+        compose.waitForIdle()
+        // The first full-app composition may offer notification permission.
+        // Follow the real opt-out path; runs after an earlier offer need no action.
+        if (compose.onAllNodesWithText("暂不开启").fetchSemanticsNodes().isNotEmpty()) {
+            compose.onNodeWithText("暂不开启").assertIsDisplayed().performClick()
+        }
         compose.onNodeWithTag("navigation:4").assertIsDisplayed().performClick()
         compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/assistant/status" } }
         compose.onNodeWithTag("assistant-page").assertIsDisplayed()
