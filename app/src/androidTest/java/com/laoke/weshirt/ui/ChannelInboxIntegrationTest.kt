@@ -50,9 +50,19 @@ class ChannelInboxIntegrationTest {
     private var previous = emptyMap<String, Any?>()
     @Volatile private var replaceVisibleMessage = false
     @Volatile private var sentText = ""
+    private lateinit var imageBytes: ByteArray
+    private val downloadedImageBytes = java.util.concurrent.atomic.AtomicLong()
 
     @Before fun prepare() {
         previous = prefs.all.toMap()
+        // Real, decodable high-entropy pixels keep the PNG above the former
+        // 1 MiB cap without relying on padding that a decoder may ignore.
+        val bitmap = android.graphics.Bitmap.createBitmap(640, 640, android.graphics.Bitmap.Config.ARGB_8888)
+        val random = java.util.Random(731L)
+        bitmap.setPixels(IntArray(640 * 640) { 0xFF000000.toInt() or random.nextInt(0x1000000) }, 0, 640, 0, 0, 640, 640)
+        imageBytes = java.io.ByteArrayOutputStream().use { output -> bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); output.toByteArray() }
+        bitmap.recycle()
+        assertTrue("The image fixture must exercise a valid image larger than 1 MiB", imageBytes.size > 1024 * 1024 && imageBytes.size <= 4 * 1024 * 1024)
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         prefs.edit().clear().putString("endpoint", "").putBoolean("announcements", false).commit()
         val certificate = HeldCertificate.Builder().commonName("localhost").addSubjectAlternativeName("127.0.0.1").build()
@@ -63,6 +73,7 @@ class ChannelInboxIntegrationTest {
                 val path = request.requestUrl!!.encodedPath
                 val signed = request.getHeader("Authorization") == "Bearer channel-fixture"
                 if (path.startsWith("/api/messages") && !signed) return json("{}", 401)
+                if (path == "/api/messages/media/image-fixture") return MockResponse().setHeader("Content-Type", "image/png").setBody(okio.Buffer().write(imageBytes))
                 if (path == "/api/messages" && request.method == "POST") {
                     sentText = JSONObject(request.body.readUtf8()).getString("text")
                     return json("""{"ok":true}""")
@@ -80,12 +91,15 @@ class ChannelInboxIntegrationTest {
                     "/api/tasks" -> { releaseTasks.await(30, TimeUnit.SECONDS); """{"tasks":[]}""" }
                     "/api/machines" -> """{"board":{"dormBuilding":"test","floors":[]}}"""
                     "/api/user/announcements" -> """{"enabled":false}"""
+                    "/api/assistant/status" -> """{"ready":true,"dormBuilding":"test","buildingName":"测试楼","usage":{"dailyRemaining":100,"dailyLimit":1000,"minuteRemaining":30}}"""
+                    "/api/assistant/history" -> """{"messages":[{"role":"assistant","content":"可以帮你查询当前楼栋的空闲机器。"}]}"""
                     "/api/messages/realtime" -> """{"enabled":false}"""
                     "/api/messages/channels" -> """{"channels":[{"code":"public","name":"公共频道","unreadCount":${45 - readIds.size},"summary":{"messageId":"message-0","nick":"李**同学","text":"你好","kind":"text","at":"2030-01-01T00:00:00Z"}}]}"""
                     "/api/messages" -> {
                         val rows = (0 until 45).map { index ->
                             JSONObject().put("id", if (index == 0 && replaceVisibleMessage) "replacement-0" else "message-$index")
                                 .put("nick", "李**同学").put("text", "这是第 $index 条可见性测试消息，只有实际出现在屏幕上才算已读。")
+                                .also { if (index == 0) it.put("media", JSONObject().put("id", "image-fixture").put("kind", "image")) }
                         }.toMutableList()
                         if (sentText.isNotBlank()) rows.add(0, JSONObject().put("id", "sent-message").put("text", sentText).put("nick", "测试同学").put("mine", true))
                         JSONObject().put("messages", JSONArray(rows)).toString()
@@ -98,6 +112,11 @@ class ChannelInboxIntegrationTest {
         server.start(InetAddress.getByName("127.0.0.1"), 0)
         val trust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
         client = OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(), trust.trustManager)
+            .eventListener(object : okhttp3.EventListener() {
+                override fun responseBodyEnd(call: okhttp3.Call, byteCount: Long) {
+                    if (call.request().url.encodedPath == "/api/messages/media/image-fixture") downloadedImageBytes.set(byteCount)
+                }
+            })
             .addInterceptor { chain -> check(chain.request().url.host == "127.0.0.1" && chain.request().url.port == server.port); chain.proceed(chain.request()) }
             .followRedirects(false).followSslRedirects(false).build()
     }
@@ -128,11 +147,14 @@ class ChannelInboxIntegrationTest {
         onMain { vm.api.saveSession(JSONObject().put("accessToken", "channel-fixture").put("expiresIn", 900)); vm.platformSessionChanged() }
         compose.waitUntil(10_000) { vm.state.value.profile?.id == "channel-user" }
         onMain { vm.tab(2) }
+        var showWholeApp by mutableStateOf(false)
         compose.setContent {
             val state by vm.state.collectAsState()
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, 1.4f)) {
-                WeShirtTheme("light", "blue") { Box(Modifier.width(320.dp)) { ChannelScreen(state, vm, {}) } }
+                WeShirtTheme("light", "blue") { Box(Modifier.width(320.dp)) {
+                    if (showWholeApp) WeShirtApp(vm, {}, {}) else ChannelScreen(state, vm, {})
+                } }
             }
         }
         compose.waitUntil(10_000) { vm.state.value.channels.isNotEmpty() }
@@ -158,16 +180,27 @@ class ChannelInboxIntegrationTest {
         assertTrue("Only the native viewport can acknowledge messages", readIds.size in 1..15)
         assertFalse("An off-screen older message must remain unread", "message-44" in readIds)
         assertTrue(requests.filter { it.requestUrl!!.encodedPath.startsWith("/api/messages") }.all { it.getHeader("Authorization") == "Bearer channel-fixture" })
-        // An in-app modal leaves the Activity RESUMED; rows behind it still must not count.
-        compose.onNodeWithContentDescription("添加图片、视频或拍摄").performClick()
-        compose.onNodeWithText("添加附件").assertIsDisplayed()
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-image:message-0", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("channel-image:message-0", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals("The whole image body above 1 MiB must be downloaded before decoding", imageBytes.size.toLong(), downloadedImageBytes.get())
+        assertTrue("Images load through the authenticated attachment API without a user tap", requests.any { it.requestUrl!!.encodedPath == "/api/messages/media/image-fixture" && it.getHeader("Authorization") == "Bearer channel-fixture" })
+        compose.onNodeWithText("点击查看图片").assertDoesNotExist()
+        captureScreen("native-channel-inline-image")
+        // The composer panel stays in the same Activity; rows must not become read while it is open.
+        compose.onNodeWithTag("channel-attachments-toggle").performClick()
+        compose.onNodeWithTag("channel-attachment-panel").assertIsDisplayed()
+        compose.onNodeWithText("图库").assertIsDisplayed()
+        compose.onNodeWithText("拍照").assertIsDisplayed()
+        compose.onNodeWithText("视频 · 30秒内").assertIsDisplayed()
+        compose.onNodeWithText("文件").assertIsDisplayed()
+        captureScreen("native-channel-composer-panel")
         val beforeModal = readIds.toSet()
         replaceVisibleMessage = true
         onMain { vm.refreshMessages() }
         compose.waitUntil(10_000) { vm.state.value.messages.any { it.id == "replacement-0" } }
         android.os.SystemClock.sleep(750)
-        assertEquals("A RESUMED Activity cannot acknowledge messages hidden by the attachment modal", beforeModal, readIds.toSet())
-        compose.onNodeWithText("取消").performClick()
+        assertEquals("Opening the composer panel must not acknowledge newly arriving messages", beforeModal, readIds.toSet())
+        compose.onNodeWithTag("channel-attachments-close").performClick()
         compose.onNodeWithTag("channel-message-list").performScrollToIndex(0)
         compose.waitUntil(10_000) { "replacement-0" in readIds }
 
@@ -180,6 +213,15 @@ class ChannelInboxIntegrationTest {
         compose.onNodeWithText("所有频道").performClick()
         compose.onNodeWithTag("channel-directory").assertIsDisplayed()
         assertTrue("Unread older messages remain visible on return", vm.state.value.channels.single().unreadCount > 0)
+        compose.runOnIdle { showWholeApp = true }
+        compose.onNodeWithTag("navigation:4").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/assistant/status" } }
+        compose.onNodeWithTag("assistant-page").assertIsDisplayed()
+        compose.onNodeWithTag("navigation:4").assertIsSelected()
+        assertTrue("The independent assistant must use the current authenticated account", requests.filter { it.requestUrl!!.encodedPath.startsWith("/api/assistant/") }.all { it.getHeader("Authorization") == "Bearer channel-fixture" })
+        captureScreen("native-assistant-page")
+        compose.onNodeWithTag("navigation:2").performClick()
+        compose.onNodeWithTag("channel-directory").assertIsDisplayed()
     }
 
     private fun captureDirectoryEvidence() {
@@ -187,8 +229,11 @@ class ChannelInboxIntegrationTest {
         // evidence even when the subsequent visibility/bounds checks fail.
         compose.onRoot().printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxMerged", it) }
         compose.onRoot(useUnmergedTree = true).printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxUnmerged", it) }
+        captureScreen("native-channel-directory")
+    }
+    private fun captureScreen(name: String) {
         val image = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        try { image.writeToTestStorage("native-channel-directory") } finally { image.recycle() }
+        try { image.writeToTestStorage(name) } finally { image.recycle() }
     }
 
     private fun json(body: String, status: Int = 200) = MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json").setBody(body)

@@ -163,7 +163,15 @@ import java.util.UUID
                                 if(message.mentioned) Text("有人 @ 你", color = androidx.compose.ui.graphics.Color(0xFFD87717), style = MaterialTheme.typography.labelMedium)
                                 if(message.reply.isNotBlank()) Text(message.reply, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if(message.text.isNotBlank()) Text(message.text)
-                                if(message.mediaId.isNotBlank()) Row { Icon(if(message.mediaKind == "video") Icons.Outlined.PlayCircleOutline else Icons.Outlined.Image, null); Text(if(message.mediaKind == "video") "点击播放视频" else "点击查看图片") }
+                                if (message.mediaId.isNotBlank()) {
+                                    if (message.mediaKind == "image") {
+                                        val visible by remember(messageList, message.id) { derivedStateOf { messageList.layoutInfo.visibleItemsInfo.any { it.key == message.id } } }
+                                        PrivateMessageImage(message.id, message.mediaId, scope.endpoint, scope.profileId.orEmpty(), vm.api, visible,
+                                            current = { scope.matches(vm.state.value) }, open = { media = message })
+                                    } else Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Icon(Icons.Outlined.PlayCircleOutline, null); Text("播放视频")
+                                    }
+                                }
                             }
                         }
                     }
@@ -174,9 +182,7 @@ import java.util.UUID
         if (state.messageNotices.any { it.str("channel") == state.channel && it.str("readAt").isBlank() }) TextButton(onClick = { vm.readChannelNotices() }, enabled = !state.busy) { Text("有人 @ 你 · 标为已读", color = androidx.compose.ui.graphics.Color(0xFFD87717)) }
         if (state.channels.find { it.code == state.channel }?.canAnnounce == true) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(announcement, { announcement = it }, enabled = !state.busy); Text("作为频道公告发送", style = MaterialTheme.typography.bodySmall) }
         if(reply != null || attached != null) Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) { Text(if(attached != null) "已添加附件" else "回复 ${reply?.nick}：${reply?.text?.take(20)}", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall); IconButton(onClick = { reply = null; attached = null }) { Icon(Icons.Outlined.Close, "取消引用或附件") } }
-        Surface(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 8.dp), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-            Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                NativeAttachmentActions(!state.busy, "${scope.endpoint}|${scope.profileId}|${scope.channel}|${scope.machineId}", onMedia = { uri, cleanup ->
+        NativeAttachmentActions(!state.busy, "${scope.endpoint}|${scope.profileId}|${scope.channel}|${scope.machineId}", onMedia = { uri, cleanup ->
                     val target = scope
                     val sentDraft = draft
                     vm.mutate(null, wait = true) {
@@ -192,7 +198,13 @@ import java.util.UUID
                             }
                         } finally { cleanup() }
                     }
-                }, onError = vm::message, onModalVisibility = { attachmentModal = it })
+                }, onError = vm::message, onModalVisibility = { attachmentModal = it }, content = { actions ->
+            Column(Modifier.fillMaxWidth().imePadding()) {
+                Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                    Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = actions.toggle, enabled = actions.enabled, modifier = Modifier.testTag("channel-attachments-toggle")) {
+                            Icon(if (actions.expanded) Icons.Outlined.Close else Icons.Outlined.Add, "添加图片、视频或拍摄")
+                        }
                 TextField(input, { input = it.take(200) }, enabled = !state.busy, placeholder = { Text("聊点什么 · 长按头像 @") }, modifier = Modifier.weight(1f), maxLines = 4, shape = RoundedCornerShape(24.dp), colors = TextFieldDefaults.colors(focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent, unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent))
                 IconButton(onClick = {
                     val text = input; val ref = reply?.id; val refs = mentions.toList(); val mentionAll = all; val mediaId = attached; val asAnnouncement = announcement
@@ -210,6 +222,9 @@ import java.util.UUID
                 }, enabled = !state.busy && (input.isNotBlank() || attached != null)) { Icon(Icons.Outlined.Send, "发送", tint = MaterialTheme.colorScheme.primary) }
             }
         }
+                if (actions.expanded) AttachmentComposerPanel(actions)
+            }
+        })
     }
     menu?.let { message -> AlertDialog(onDismissRequest = { menu = null }, title = { Text("消息操作") }, text = { Column {
         TextButton(onClick = { reply = message; menu = null }, enabled = !state.busy) { Text("回复") }
@@ -283,7 +298,7 @@ private fun decodeMedia(context: android.content.Context, uri: Uri): Pair<ByteAr
     LaunchedEffect(message.mediaId, scope) {
         try {
             if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
-            val downloaded = vm.api.downloadMedia(message.mediaId, if(message.mediaKind == "video") 8L * 1024 * 1024 else 1024L * 1024)
+            val downloaded = vm.api.downloadMedia(message.mediaId, if(message.mediaKind == "video") 8L * 1024 * 1024 else 4L * 1024 * 1024)
             if (!scope.matches(vm.state.value)) { downloaded.delete(); throw CancellationException("Chat changed") }
             file = downloaded
         } catch (cancel: CancellationException) { throw cancel }

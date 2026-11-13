@@ -22,6 +22,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextOverflow
+import com.laoke.weshirt.ui.assistant.AssistantScreen
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -56,28 +59,30 @@ import kotlinx.coroutines.launch
             }
         }
         Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
-            TopAppBar(title = { Column { Text(if(state.tab == 0) "WeShirt" else listOf("洗衣房", "我的洗衣", "频道", "我的")[state.tab], style = MaterialTheme.typography.titleLarge); if(state.tab == 0) Text("把等衣的时间，留给生活", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
+            TopAppBar(title = { Column { Text(if(state.tab == 0) "WeShirt" else when (state.tab) { 1 -> "我的洗衣"; 2 -> "频道"; 4 -> "AI 助手"; else -> "我的" }, style = MaterialTheme.typography.titleLarge); if(state.tab == 0) Text("把等衣的时间，留给生活", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
                 if(state.tab == 0) FilledTonalButton(onClick = { buildingPicker = true }, contentPadding = PaddingValues(horizontal = 12.dp)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(state.buildings.find { it.code == state.building }?.name ?: "选择楼栋") }
                 if (state.tab == 0) IconButton(onClick = { display = true }, enabled = state.building.isNotBlank()) { Icon(Icons.Outlined.Fullscreen, "大屏看板") }
                 IconButton(onClick = { vm.refresh(forceMetadata = true) }, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "刷新") }
             })
         }, bottomBar = {
-            NavigationBar { listOf(Triple("洗衣房", Icons.Outlined.LocalLaundryService, 0), Triple("我的洗衣", Icons.Outlined.Schedule, 1), Triple("频道", Icons.Outlined.ChatBubbleOutline, 2), Triple("我的", Icons.Outlined.PersonOutline, 3)).forEach { (label, icon, index) ->
-                NavigationBarItem(selected = state.tab == index, onClick = { vm.tab(index) }, icon = { BadgedBox(badge = { if(index == 2 && state.messageNotices.any { it.str("readAt").isBlank() }) Badge(containerColor = androidx.compose.ui.graphics.Color(0xFFD87717)) { Text("@") }; if (index == 1 && state.queueNotices.any { it.optBoolean("active") && it.str("readAt").isBlank() }) Badge { Text("!") } }) { Icon(icon, label) } }, label = { Text(label) })
-            } }
+            WeShirtNavigation(state, vm::tab)
+
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
+                if (!state.authReady) SessionRestoringPanel(state, { vm.refresh() })
+                else if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
                 else AnimatedContent(targetState = state.tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(100)) }, label = "page") { tab ->
                     when(tab) {
                         0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message, allow3D = state.building.equals("guiyuan", ignoreCase = true))
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
+                        4 -> AssistantScreen(state, vm, onLogin)
                         else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { buildingPicker = true }, { backgroundSettings = true })
                     }
                 }
             }
         }
+        if (!state.authReady) return@WeShirtTheme
         if(buildingPicker) AlertDialog(onDismissRequest = { buildingPicker = false }, title = { Text("选择住宿楼") }, text = {
             Column { if(state.buildings.isEmpty()) Text("暂无可用楼栋，请稍后刷新")
                 state.buildings.forEach { b -> TextButton(onClick = { vm.selectBuilding(b.code); buildingPicker = false }, modifier = Modifier.fillMaxWidth()) { Text(b.name); if(b.code == state.building) Icon(Icons.Outlined.Check, null) } }
@@ -97,6 +102,30 @@ import kotlinx.coroutines.launch
         state.announcements.firstOrNull()?.let { announcement -> AlertDialog(onDismissRequest = { vm.dismissAnnouncement(false) }, title = { Text(announcement.str("title", "公告")) }, text = { LazyColumn { item { NativeMarkdown(announcement.str("markdown", announcement.str("content"))) } } }, dismissButton = { TextButton(onClick = { vm.dismissAnnouncement(false) }, enabled = !state.busy) { Text("退出") } }, confirmButton = { TextButton(onClick = { vm.dismissAnnouncement(true) }, enabled = !state.busy) { Text("不再提醒并退出") } }) }
     }
 }
+@Composable internal fun WeShirtNavigation(state: AppState, select: (Int) -> Unit) {
+    NavigationBar {
+        listOf(Triple("洗衣房", Icons.Outlined.LocalLaundryService, 0), Triple("我的洗衣", Icons.Outlined.Schedule, 1),
+            Triple("AI 助手", Icons.Outlined.AutoAwesome, 4), Triple("频道", Icons.Outlined.ChatBubbleOutline, 2), Triple("我的", Icons.Outlined.PersonOutline, 3)).forEach { (label, icon, index) ->
+            NavigationBarItem(selected = state.tab == index, onClick = { select(index) }, modifier = Modifier.testTag("navigation:$index"),
+                icon = { BadgedBox(badge = {
+                    if (index == 2 && state.messageNotices.any { it.str("readAt").isBlank() }) Badge(containerColor = androidx.compose.ui.graphics.Color(0xFFD87717)) { Text("@") }
+                    if (index == 1 && state.queueNotices.any { it.optBoolean("active") && it.str("readAt").isBlank() }) Badge { Text("!") }
+                }) { Icon(icon, label) } }, label = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall) })
+        }
+    }
+}
+
+@Composable internal fun SessionRestoringPanel(state: AppState, retry: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(28.dp).testTag("session-restoring"), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(Icons.Outlined.AccountCircle, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(20.dp))
+        Text(if (state.sessionRestoring) "正在恢复账号" else "暂时未能连接", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(10.dp))
+        Text(state.authError ?: "正在同步资料，请稍候。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.authError != null) TextButton(onClick = retry, enabled = !state.sessionRestoring) { Text("重试恢复") }
+    }
+}
+
 @Composable fun EmptyPanel(title: String, subtitle: String, icon: ImageVector, action: String? = null, onAction: () -> Unit = {}) {
     Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Spacer(Modifier.height(32.dp)); Icon(icon, null, Modifier.size(54.dp), tint = MaterialTheme.colorScheme.primary)
