@@ -46,6 +46,7 @@ class ChannelInboxIntegrationTest {
     private val server = MockWebServer()
     private lateinit var client: OkHttpClient
     private val requests = CopyOnWriteArrayList<RecordedRequest>()
+    private val tasksStarted = java.util.concurrent.CountDownLatch(1)
     private val releaseTasks = java.util.concurrent.CountDownLatch(1)
     private val releaseMemory = java.util.concurrent.CountDownLatch(1)
     @Volatile private var memoryRecovered = false
@@ -96,7 +97,7 @@ class ChannelInboxIntegrationTest {
                     "/api/site" -> """{"buildings":[{"code":"test","name":"测试楼"}]}"""
                     "/api/auth/me" -> """{"user":{"id":"channel-user","nick":"测试同学","dormBuilding":"test"}}"""
                     "/api/user/permissions" -> """{"permissions":{"tasks":{"view":true},"queue":{"view":false}}}"""
-                    "/api/tasks" -> { releaseTasks.await(30, TimeUnit.SECONDS); """{"tasks":[]}""" }
+                    "/api/tasks" -> { tasksStarted.countDown(); releaseTasks.await(30, TimeUnit.SECONDS); """{"tasks":[]}""" }
                     "/api/machines" -> """{"board":{"dormBuilding":"test","floors":[]}}"""
                     "/api/user/announcements" -> """{"enabled":false}"""
                     "/api/assistant/status" -> """{"ready":true,"dormBuilding":"test","buildingName":"测试楼","usage":{"dailyRemaining":100,"dailyLimit":1000,"minuteRemaining":30}}"""
@@ -166,9 +167,9 @@ class ChannelInboxIntegrationTest {
                 } }
             }
         }
-        compose.waitUntil(10_000) { vm.state.value.channels.isNotEmpty() }
-        assertTrue("Directory loading must not wait for the blocked tasks response", vm.state.value.loading)
-        assertEquals(1L, releaseTasks.count)
+        compose.waitUntil(10_000) { vm.state.value.channels.isNotEmpty() && tasksStarted.count == 0L }
+        compose.onNodeWithTag("channel-directory").assertIsDisplayed()
+        assertEquals("The real task request must still be blocked when the directory is displayed", 1L, releaseTasks.count)
         releaseTasks.countDown()
         assertTrue("The authenticated directory must preserve its real unread count", vm.state.value.channels.single().unreadCount > 0)
         captureDirectoryEvidence()
