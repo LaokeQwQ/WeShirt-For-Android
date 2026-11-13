@@ -3,6 +3,7 @@ package com.laoke.weshirt.ui.assistant
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
@@ -16,11 +17,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.outlined.AutoAwesome
 import com.laoke.weshirt.ui.EmptyPanel
+import com.laoke.weshirt.ui.SessionRestoringPanel
 import androidx.compose.ui.unit.dp
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.*
 import com.laoke.weshirt.ui.NativeMarkdown
-import com.laoke.weshirt.ui.clientFailure
 import com.laoke.weshirt.ui.user.*
 import kotlinx.coroutines.*
 import org.json.JSONObject
@@ -28,10 +29,15 @@ import org.json.JSONObject
 private data class AssistantConfirmation(val title: String, val message: String, val execute: () -> Unit)
 
 @Composable fun AssistantDialog(state: AppState, vm: AppViewModel, initialSkill: String? = null, close: () -> Unit) {
-    AssistantFeature(state, vm, initialSkill, false, close)
+    if (!state.authReady) {
+        UserFeatureDialog("洗衣助手", close) { SessionRestoringPanel(state) { vm.refresh() } }
+        return
+    }
+    key(state.endpoint, state.profile?.id, state.building) { AssistantFeature(state, vm, initialSkill, false, close) }
 }
 
 @Composable fun AssistantScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
+    if (!state.authReady) { SessionRestoringPanel(state) { vm.refresh() }; return }
     if (state.profile == null) {
         EmptyPanel("洗衣助手", "登录后可询问空闲机器、洗衣建议，管理自己的记忆与提示词。", Icons.Outlined.AutoAwesome, "钉钉登录", login)
         return
@@ -40,7 +46,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
         EmptyPanel("助手暂不可用", "当前账号没有助手查看权限，请联系管理员。", Icons.Outlined.AutoAwesome)
         return
     }
-    key(state.endpoint, state.profile.id) { AssistantFeature(state, vm, null, true, {}) }
+    key(state.endpoint, state.profile.id, state.building) { AssistantFeature(state, vm, null, true, {}) }
 }
 
 @Composable private fun AssistantFrame(embedded: Boolean, close: () -> Unit, refresh: () -> Unit, busy: Boolean,
@@ -58,15 +64,17 @@ private data class AssistantConfirmation(val title: String, val message: String,
 @Composable private fun AssistantFeature(state: AppState, vm: AppViewModel, initialSkill: String?, embedded: Boolean, close: () -> Unit) {
     val session = rememberUserFeatureSession(state, vm)
     val context = LocalContext.current
-    var status by remember(session) { mutableStateOf<JSONObject?>(null) }
-    var messages by remember(session) { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var skills by remember(session) { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var preferences by remember(session) { mutableStateOf<JSONObject?>(null) }
+    val snapshot = state.assistant.takeIf { it.scope?.origin == state.endpoint && it.scope?.userId == state.profile?.id } ?: AssistantSnapshot()
+    val panels = snapshot.panels
+    var status by remember(session) { mutableStateOf(panels["status"]?.data) }
+    var messages by remember(session) { mutableStateOf(panels["history"]?.data?.optJSONArray("messages")?.objects().orEmpty()) }
+    var skills by remember(session) { mutableStateOf(panels["skills"]?.data?.optJSONArray("skills")?.objects().orEmpty()) }
+    var preferences by remember(session) { mutableStateOf(panels["preferences"]?.data) }
     var contextInfo by remember(session) { mutableStateOf<JSONObject?>(null) }
-    var memory by remember(session) { mutableStateOf<JSONObject?>(null) }
+    var memory by remember(session) { mutableStateOf(panels["memory"]?.data) }
     var tab by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(0) }
     var input by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
-    var note by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
+    var note by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(panels["memory"]?.data?.str("note").orEmpty()) }
     var noteDirty by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(false) }
     var title by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
     var description by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
@@ -78,27 +86,37 @@ private data class AssistantConfirmation(val title: String, val message: String,
     val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0
     val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 && input.isNotBlank() && input.length <= 1000 && !session.busy
 
-    fun load() { session.run {
-        status = request("/api/assistant/status")
-        // A failure in one optional panel must not erase the other panels or their drafts.
-        val results = coroutineScope {
-            listOf("/api/assistant/history", "/api/assistant/skills", "/api/assistant/memory", "/api/assistant/preferences").map { path -> async {
-                try { Result.success(request(path)) } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) { Result.failure<JSONObject>(failure) }
-            } }.awaitAll()
+    fun load() { vm.preloadAssistant(force = true) }
+    fun updated(vararg names: String, acceptLocal: Boolean = true) {
+        val keys = names.toSet()
+        if (acceptLocal) keys.forEach { name ->
+            val confirmed = when (name) {
+                "status" -> status
+                "history" -> JSONObject().put("messages", org.json.JSONArray(messages))
+                "skills" -> JSONObject().put("skills", org.json.JSONArray(skills))
+                "memory" -> memory
+                "preferences" -> preferences
+                else -> null
+            }
+            confirmed?.let { vm.acceptAssistantPanel(name, it) }
         }
-        current()
-        results[0].getOrNull()?.let { messages = it.optJSONArray("messages")?.objects().orEmpty() }
-        results[1].getOrNull()?.let { skills = it.optJSONArray("skills")?.objects().orEmpty() }
-        results[2].getOrNull()?.let { memory = it; if (!noteDirty) note = it.str("note") }
-        results[3].getOrNull()?.let { preferences = it }
-        results.firstNotNullOfOrNull { it.exceptionOrNull() }?.let { if (it is Exception) error = clientFailure(it, "部分资料读取失败，可重试") }
-    } }
+        vm.invalidateAssistant(keys)
+        vm.preloadAssistant(force = true, names = keys)
+    }
+    // Each response becomes visible independently. Optional metadata never
+    // holds the conversation behind a single session-wide busy flag.
+    LaunchedEffect(session, panels["status"]) { panels["status"]?.takeIf { !it.loading && it.error == null }?.data?.let { status = it } }
+    LaunchedEffect(session, panels["history"]) { panels["history"]?.takeIf { !it.loading && it.error == null }?.data?.let { messages = it.optJSONArray("messages")?.objects().orEmpty() } }
+    LaunchedEffect(session, panels["skills"]) { panels["skills"]?.takeIf { !it.loading && it.error == null }?.data?.let { skills = it.optJSONArray("skills")?.objects().orEmpty() } }
+    LaunchedEffect(session, panels["preferences"]) { panels["preferences"]?.takeIf { !it.loading && it.error == null }?.data?.let { preferences = it } }
+    LaunchedEffect(session, panels["memory"]) { panels["memory"]?.takeIf { !it.loading && it.error == null }?.data?.let { memory = it; if (!noteDirty) note = it.str("note") } }
     fun updateMemory(body: JSONObject, savedNote: Boolean = false) { session.run {
         val data = request("/api/assistant/memory", "PATCH", body)
         memory = data
         if (savedNote) { note = data.str("note"); noteDirty = false }
+        updated("memory")
     } }
-    LaunchedEffect(session) { load() }
+    LaunchedEffect(session) { vm.preloadAssistant() }
     LaunchedEffect(session, initialSkill) {
         if (!initialSkill.isNullOrBlank()) {
             val incoming = ShareLinks.ticket(initialSkill, "skill")
@@ -110,20 +128,20 @@ private data class AssistantConfirmation(val title: String, val message: String,
     LaunchedEffect(session, usage?.optInt("minuteRemaining", 1), usage?.optInt("dailyRemaining", 0)) {
         if ((usage?.optInt("dailyRemaining") ?: 0) > 0 && usage?.optInt("minuteRemaining", 1) == 0) {
             delay(60_000)
-            session.run(silent = true) { status = request("/api/assistant/status") }
+            vm.preloadAssistant(force = true, names = setOf("status"))
         }
     }
 
     AssistantFrame(embedded, close, ::load, session.busy) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, label = { Text(label) }) }
+                listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, modifier = Modifier.testTag("assistant-tab:$index"), label = { Text(label) }) }
             }
             LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { FeatureError(session) }
-                if (status == null) item { Text(if (session.busy) "正在读取助手资料…" else "助手暂时无法连接，可点击右上角重试。") }
+                item { AssistantPanelFeedback("status", panels["status"], "助手状态") { vm.preloadAssistant(force = true, names = setOf("status")) } }
                 status?.let { info -> item {
-                    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Card(Modifier.fillMaxWidth().testTag("assistant-status-card")) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(info.str("buildingName", "当前住宿楼"), style = MaterialTheme.typography.titleMedium)
                         Text("今日剩余 ${usage?.optInt("dailyRemaining") ?: 0} / ${usage?.optInt("dailyLimit") ?: 0} 次", style = MaterialTheme.typography.bodySmall)
                         when {
@@ -136,12 +154,13 @@ private data class AssistantConfirmation(val title: String, val message: String,
                 } }
                 when (tab) {
                     0 -> {
+                        item { AssistantPanelFeedback("history", panels["history"], "聊天记录") { vm.preloadAssistant(force = true, names = setOf("history")) } }
                         if(contextInfo?.optBoolean("compressed")==true)item{Text("较早的对话已自动压缩，近期问题保留原文；需要时请补充细节。",style=MaterialTheme.typography.bodySmall)}
                         item { Text("技能已自动启用，会按问题使用洗衣知识和当前楼栋只读查询，无需选择。",style=MaterialTheme.typography.bodySmall) }
-                        if (messages.isEmpty()) item { Text("可以询问空闲机器、洗衣建议或你的洗衣安排。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                        items(messages) { message ->
+                        if (messages.isEmpty() && panels["history"]?.data != null && panels["history"]?.loading != true) item { Text("可以询问空闲机器、洗衣建议或你的洗衣安排。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        itemsIndexed(messages) { index, message ->
                             val mine = message.str("role") == "user"
-                            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = if (mine) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer)) {
+                            Card(Modifier.fillMaxWidth().testTag("assistant-message:$index"), colors = CardDefaults.cardColors(containerColor = if (mine) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer)) {
                                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text(if (mine) "你" else "洗衣助手", style = MaterialTheme.typography.labelSmall)
                                     if (mine) Text(message.str("content")) else NativeMarkdown(message.str("content"))
@@ -155,7 +174,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     TextButton(enabled = !session.busy && messages.isNotEmpty(), onClick = {
                                         confirmation = AssistantConfirmation("清空对话？", "会删除当前账号保存的聊天记录，个人记忆单独管理。") {
-                                            session.run { request("/api/assistant/history", "DELETE"); messages = emptyList() }
+                                            session.run { request("/api/assistant/history", "DELETE"); messages = emptyList(); updated("history") }
                                         }
                                     }) { Text("清空对话") }
                                     Button(enabled = canSend, onClick = {
@@ -166,10 +185,11 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                                 val data = request("/api/assistant/chat", "POST", body)
                                                 messages = data.optJSONArray("messages")?.objects().orEmpty(); contextInfo = data.optJSONObject("context")
                                                 status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
+                                                updated("history", "status")
                                                 if (input.trim() == submitted) input = ""
                                             } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
                                                 // Reconcile spent quota after provider failure; keep the typed question intact.
-                                                try { status = request("/api/assistant/status") } catch (cancel: CancellationException) { throw cancel } catch (_: Exception) { }
+                                                updated("status", acceptLocal = false)
                                                 throw failure
                                             }
                                         }
@@ -179,6 +199,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                         }
                     }
                     1 -> {
+                        item { AssistantPanelFeedback("skills", panels["skills"], "技能与分享") { vm.preloadAssistant(force = true, names = setOf("skills")) } }
                         item { Text("Skill 是可复用的提问模板，分享内容不包含聊天、个人记忆或登录凭证。", style = MaterialTheme.typography.bodySmall) }
                         items(skills, key = { it.str("id") }) { skill ->
                             Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -198,6 +219,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                             session.run {
                                                 request("/api/assistant/skills/${vm.api.encoded(skill.str("id"))}", "DELETE")
                                                 skills = skills.filterNot { it.str("id") == skill.str("id") }
+                                                updated("skills")
                                             }
                                         }
                                     }) { Text("删除", color = MaterialTheme.colorScheme.error) }
@@ -214,6 +236,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 session.run {
                                     val created = request("/api/assistant/skills", "POST", body).optJSONObject("skill") ?: throw IllegalStateException("模板保存结果不完整，请刷新确认")
                                     skills = skills + created
+                                    updated("skills")
                                     title = ""; description = ""; prompt = ""; vm.message("Skill 已保存")
                                 }
                             }) { Text("保存模板") }
@@ -225,15 +248,18 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 if (ticket == null) session.error = "分享链接格式不正确，请粘贴完整的 Skill 链接"
                                 else session.run {
                                     val created = request("/api/assistant/skills/import", "POST", JSONObject().put("ticket", ticket)).optJSONObject("skill") ?: throw IllegalStateException("导入结果不完整，请刷新确认")
-                                    skills = skills + created; importLink = ""; vm.message("已导入你的 Skill 副本")
+                                    skills = skills + created; updated("skills"); importLink = ""; vm.message("已导入你的 Skill 副本")
                                 }
                             }) { Text("导入副本") }
                         } }
                     }
                     2 -> {
+                        item { AssistantPanelFeedback("memory", panels["memory"], "个人记忆") { vm.preloadAssistant(force = true, names = setOf("memory")) } }
                         item {
                             val currentMemory = memory
-                            if (currentMemory == null) Text("个人记忆尚未读取，点击右上角刷新重试。")
+                            if (currentMemory == null) {
+                                if (panels["memory"]?.loading != true && panels["memory"]?.error == null) Text("个人记忆尚未读取。")
+                            }
                             else Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text("使用个人记忆", style = MaterialTheme.typography.titleMedium)
@@ -249,15 +275,15 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 Button(enabled = !session.busy, onClick = { updateMemory(JSONObject().put("note", note), true) }) { Text("保存备注") }
                                 OutlinedButton(enabled = !session.busy, onClick = {
                                     confirmation = AssistantConfirmation("清空并关闭个人记忆？", "将删除备注并关闭记忆。以后重新开启时，仅从清空之后的新登记生成习惯。") {
-                                        session.run { memory = request("/api/assistant/memory", "DELETE"); note = ""; noteDirty = false }
+                                        session.run { memory = request("/api/assistant/memory", "DELETE"); note = ""; noteDirty = false; updated("memory") }
                                     }
                                 }) { Text("清空并关闭记忆", color = MaterialTheme.colorScheme.error) }
                             }
                         }
                     }
                     4 -> item {
-                        preferences?.let { current -> AssistantPromptEditor(current,session.busy,save={body->session.run{preferences=request("/api/assistant/preferences","PATCH",body);vm.message("已保存并使用此提示词")}},reset={confirmation=AssistantConfirmation("恢复平台默认提示词？","将删除当前账号的自定义模板，可重新编辑。") {session.run{preferences=request("/api/assistant/preferences","PATCH",JSONObject().put("reset",true))}}}) }
-                            ?: Text("提示词尚未读取，请点击右上角刷新。")
+                        AssistantPanelFeedback("preferences", panels["preferences"], "提示词") { vm.preloadAssistant(force = true, names = setOf("preferences")) }
+                        preferences?.let { current -> AssistantPromptEditor(current,session.busy,save={body->session.run{preferences=request("/api/assistant/preferences","PATCH",body);updated("preferences");vm.message("已保存并使用此提示词")}},reset={confirmation=AssistantConfirmation("恢复平台默认提示词？","将删除当前账号的自定义模板，可重新编辑。") {session.run{preferences=request("/api/assistant/preferences","PATCH",JSONObject().put("reset",true));updated("preferences")}}}) }
                     }
                     3 -> item {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -274,4 +300,21 @@ private data class AssistantConfirmation(val title: String, val message: String,
     }
     shared?.let { ShareCodeDialog(it.first, it.second, "仅包含 Skill 模板，7 天内可导入，不包含聊天或个人记忆。") { shared = null } }
     confirmation?.let { ask -> AlertDialog(onDismissRequest = { confirmation = null }, title = { Text(ask.title) }, text = { Text(ask.message) }, dismissButton = { TextButton(onClick = { confirmation = null }) { Text("取消") } }, confirmButton = { TextButton(enabled = !session.busy, onClick = { confirmation = null; ask.execute() }) { Text("确认") } }) }
+}
+
+@Composable
+internal fun AssistantPanelFeedback(name: String, panel: AssistantPanel?, title: String, retry: () -> Unit) {
+    if (panel?.loading == true) {
+        Text(if (panel.data == null) "正在读取$title…" else "正在更新$title…",
+            Modifier.testTag("assistant-loading:$name"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    panel?.error?.let { failure ->
+        Surface(Modifier.fillMaxWidth().testTag("assistant-error:$name"), shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.errorContainer) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("${title}暂未更新", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onErrorContainer)
+                Text(failure, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                TextButton(onClick = retry, enabled = !panel.loading, modifier = Modifier.testTag("assistant-retry:$name")) { Text("重试$title") }
+            }
+        }
+    }
 }

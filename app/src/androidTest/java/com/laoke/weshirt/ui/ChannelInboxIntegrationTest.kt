@@ -16,6 +16,7 @@ import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.SecureSession
+import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.push.PushRuntime
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.*
@@ -46,6 +47,8 @@ class ChannelInboxIntegrationTest {
     private lateinit var client: OkHttpClient
     private val requests = CopyOnWriteArrayList<RecordedRequest>()
     private val releaseTasks = java.util.concurrent.CountDownLatch(1)
+    private val releaseMemory = java.util.concurrent.CountDownLatch(1)
+    @Volatile private var memoryRecovered = false
     private val readIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var previous = emptyMap<String, Any?>()
     @Volatile private var replaceVisibleMessage = false
@@ -73,6 +76,11 @@ class ChannelInboxIntegrationTest {
                 val path = request.requestUrl!!.encodedPath
                 val signed = request.getHeader("Authorization") == "Bearer channel-fixture"
                 if (path.startsWith("/api/messages") && !signed) return json("{}", 401)
+                if (path == "/api/assistant/memory") {
+                    check(releaseMemory.await(60, TimeUnit.SECONDS))
+                    if (!memoryRecovered) return json("""{"error":{"code":"memory_fixture","message":"记忆资料暂不可用","eventId":"fixture-memory"}}""", 503)
+                    return json("""{"enabled":true,"note":"已恢复的个人备注"}""")
+                }
                 if (path == "/api/messages/media/image-fixture") return MockResponse().setHeader("Content-Type", "image/png").setBody(okio.Buffer().write(imageBytes))
                 if (path == "/api/messages" && request.method == "POST") {
                     sentText = JSONObject(request.body.readUtf8()).getString("text")
@@ -112,6 +120,7 @@ class ChannelInboxIntegrationTest {
         server.start(InetAddress.getByName("127.0.0.1"), 0)
         val trust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
         client = OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(), trust.trustManager)
+            .readTimeout(65, TimeUnit.SECONDS)
             .eventListener(object : okhttp3.EventListener() {
                 override fun responseBodyEnd(call: okhttp3.Call, byteCount: Long) {
                     if (call.request().url.encodedPath == "/api/messages/media/image-fixture") downloadedImageBytes.set(byteCount)
@@ -122,7 +131,7 @@ class ChannelInboxIntegrationTest {
     }
 
     @After fun cleanup() {
-        releaseTasks.countDown()
+        releaseTasks.countDown(); releaseMemory.countDown()
         onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow(); server.shutdown()
@@ -225,8 +234,24 @@ class ChannelInboxIntegrationTest {
         compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/assistant/status" } }
         compose.onNodeWithTag("assistant-page").assertIsDisplayed()
         compose.onNodeWithTag("navigation:4").assertIsSelected()
+        compose.waitUntil(10_000) { vm.state.value.assistant.panels["history"]?.data != null }
+        compose.onNodeWithTag("assistant-status-card").assertIsDisplayed()
+        compose.onNodeWithTag("assistant-message:0").assertIsDisplayed()
+        assertEquals("The state card and conversation must not wait for optional memory", 1L, releaseMemory.count)
+        assertEquals("Opening the assistant must join the existing background preload", 1, requests.count { it.requestUrl!!.encodedPath == "/api/assistant/memory" })
         assertTrue("The independent assistant must use the current authenticated account", requests.filter { it.requestUrl!!.encodedPath.startsWith("/api/assistant/") }.all { it.getHeader("Authorization") == "Bearer channel-fixture" })
         captureScreen("native-assistant-page")
+        releaseMemory.countDown()
+        compose.waitUntil(10_000) { vm.state.value.assistant.panels["memory"]?.error != null }
+        compose.onNodeWithTag("assistant-tab:2").performScrollTo().performClick()
+        compose.onNodeWithTag("assistant-error:memory").assertIsDisplayed()
+        val otherPanels = requests.count { it.requestUrl!!.encodedPath.startsWith("/api/assistant/") && it.requestUrl!!.encodedPath != "/api/assistant/memory" }
+        memoryRecovered = true
+        compose.onNodeWithTag("assistant-retry:memory").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { vm.state.value.assistant.panels["memory"]?.data?.str("note") == "已恢复的个人备注" }
+        compose.onNodeWithText("已恢复的个人备注").performScrollTo().assertIsDisplayed()
+        assertEquals("A panel retry must not reload unrelated assistant panels", otherPanels, requests.count { it.requestUrl!!.encodedPath.startsWith("/api/assistant/") && it.requestUrl!!.encodedPath != "/api/assistant/memory" })
+        captureScreen("native-assistant-partial-retry")
         compose.onNodeWithTag("navigation:2").performClick()
         compose.onNodeWithTag("channel-directory").assertIsDisplayed()
     }

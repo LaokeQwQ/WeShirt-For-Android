@@ -17,7 +17,7 @@ android {
         applicationId = "com.laoke.weshirt"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
+        versionCode = 8
         versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["timeout_msec"] = "90000"

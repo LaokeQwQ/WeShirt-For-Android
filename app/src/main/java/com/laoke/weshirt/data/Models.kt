@@ -75,5 +75,6 @@ data class AppState(
     val tab: Int = 0, val appearance: String = "system", val palette: String = "blue", val quality: String = "AUTO",
     val announcementsOn: Boolean = true, val telemetryOn: Boolean = false, val notificationsOn: Boolean = false,
     val favoriteRemindersOn: Boolean = false, val reminderStart: String = "19:00", val reminderEnd: String = "22:00",
-    val authReady: Boolean = true, val sessionRestoring: Boolean = false, val authError: String? = null
+    val authReady: Boolean = true, val sessionRestoring: Boolean = false, val authError: String? = null,
+    val boardFromCache: Boolean = false, val assistant: AssistantSnapshot = AssistantSnapshot()
 )

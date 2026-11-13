@@ -8,6 +8,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -17,6 +19,9 @@ import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.push.PushRuntime
 import com.laoke.weshirt.ui.SettingsScreen
 import com.laoke.weshirt.ui.WeShirtTheme
+import com.laoke.weshirt.ui.WeShirtApp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Response
@@ -42,8 +47,14 @@ class SessionRecoveryIntegrationTest {
     private val prefs get() = app.getSharedPreferences("preferences", 0)
     private val models = ViewModelStore()
     private val release = CountDownLatch(1)
+    private val replacementBoardRelease = CountDownLatch(1)
+    private val replacementBoardStarted = CountDownLatch(1)
+    private val replacementIdentityRelease = CountDownLatch(1)
+    private val replacementIdentityStarted = CountDownLatch(1)
     private var previous = emptyMap<String, Any?>()
     @Volatile private var profileStatus = 503
+    @Volatile private var blockReplacementBoard = false
+    @Volatile private var blockReplacementIdentity = false
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
     private val origin = "https://recovery.invalid"
@@ -51,7 +62,7 @@ class SessionRecoveryIntegrationTest {
     @Before fun prepare() {
         previous = prefs.all.toMap()
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
-        prefs.edit().clear().putString("endpoint", origin).putBoolean("announcements", false).putBoolean("nativePushConsent", false).commit()
+        prefs.edit().clear().putString("endpoint", origin).putString("building", "test").putBoolean("announcements", false).putBoolean("nativePushConsent", false).commit()
         client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             check(request.url.host == "recovery.invalid")
@@ -61,16 +72,26 @@ class SessionRecoveryIntegrationTest {
             var status = 200
             val body = when (path) {
                 "/api/auth/me" -> {
-                    check(request.header("Authorization") == "Bearer saved-access")
-                    check(release.await(10, TimeUnit.SECONDS))
-                    status = profileStatus
-                    if (status == 200) """{"user":{"id":"saved-user","nick":"最新昵称","dormBuilding":"test"}}"""
-                    else """{"error":{"code":"recovery_fixture","message":"账号暂不可用"}}"""
+                    if (request.header("Authorization") == "Bearer replacement-access") {
+                        if (blockReplacementIdentity) { replacementIdentityStarted.countDown(); check(replacementIdentityRelease.await(20, TimeUnit.SECONDS)) }
+                        """{"user":{"id":"replacement-user","nick":"替换账号","dormBuilding":"test"}}"""
+                    } else {
+                        check(request.header("Authorization") == "Bearer saved-access")
+                        check(release.await(20, TimeUnit.SECONDS))
+                        status = profileStatus
+                        if (status == 200) """{"user":{"id":"saved-user","nick":"最新昵称","dormBuilding":"test"}}"""
+                        else """{"error":{"code":"recovery_fixture","message":"账号暂不可用"}}"""
+                    }
                 }
                 "/api/site" -> """{"buildings":[{"code":"test","name":"测试楼"}]}"""
-                "/api/machines" -> """{"board":{"dormBuilding":"test","floors":[]}}"""
+                "/api/machines" -> {
+                    if (blockReplacementBoard) { replacementBoardStarted.countDown(); check(replacementBoardRelease.await(20, TimeUnit.SECONDS)) }
+                    """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
+                }
+                "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
                 "/api/user/test-notify" -> """{"ok":true,"accepted":true,"channel":"mobile","provider":"fcm"}"""
+                "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"expired_fixture","message":"fixture expired"}}""" }
                 else -> "{}"
             }
             Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(status).message("fixture")
@@ -79,7 +100,7 @@ class SessionRecoveryIntegrationTest {
     }
 
     @After fun cleanup() {
-        release.countDown(); onMain { models.clear() }
+        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow()
         prefs.edit().clear().apply { previous.forEach { (key, value) -> when (value) {
@@ -109,7 +130,7 @@ class SessionRecoveryIntegrationTest {
         compose.onNodeWithText("钉钉登录").assertDoesNotExist()
         release.countDown()
         compose.waitUntil(10_000) { !vm.state.value.sessionRestoring }
-        assertTrue(vm.state.value.authReady)
+        assertFalse("Cached display identity must not authorize private features after a failed restore", vm.state.value.authReady)
         assertEquals("缓存昵称", vm.state.value.profile?.nick)
         assertEquals("saved-access", SecureSession(app).read()?.str("accessToken"))
         assertNotNull(vm.state.value.authError)
@@ -149,6 +170,78 @@ class SessionRecoveryIntegrationTest {
         compose.waitUntil(10_000) { vm.state.value.authReady && SecureSession(app).read() == null }
         compose.onNodeWithText("钉钉登录").assertIsDisplayed()
         assertNull(vm.state.value.profile)
+    }
+
+    @Test fun rememberedPublicRoomLoadsWhileIdentityIsBlockedAndPrivateActionsWaitForVerification() {
+        saved(true)
+        val vm = model()
+        compose.setContent { WeShirtApp(vm, {}, {}) }
+        compose.waitUntil(10_000) { requests.any { it.first == "/api/machines" } && vm.state.value.machines.any { it.id == "public-machine" } && !vm.state.value.boardFromCache }
+        assertEquals("test", vm.state.value.building)
+        assertTrue(vm.state.value.sessionRestoring); assertFalse(vm.state.value.authReady)
+        compose.onNodeWithText("测试洗衣机", substring = true).assertIsDisplayed()
+        assertFalse(requests.any { it.first.startsWith("/api/assistant/") })
+        onMain { vm.favorite(vm.state.value.machines.single()); vm.preloadAssistant(); vm.refreshMessages(); vm.refreshChannels() }
+        compose.waitForIdle()
+        assertFalse(requests.any { it.first == "/api/user/favorites/toggle" || it.first.startsWith("/api/assistant/") || it.first.startsWith("/api/messages") })
+        compose.onNodeWithTag("navigation:4").performClick()
+        compose.onNodeWithText("正在恢复账号").assertIsDisplayed()
+        compose.onNodeWithText("钉钉登录").assertDoesNotExist()
+        profileStatus = 200; release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["history"]?.data != null }
+        assertEquals("saved-user", vm.state.value.assistant.scope?.userId)
+        assertNotNull(SecureSession(app).read())
+    }
+
+    @Test fun replacementSessionRestoresBeforeOldIdentityReturnsAndOldFinallyCannotClearNewLoading() {
+        saved(true)
+        val vm = model()
+        compose.waitUntil(10_000) { requests.any { it.first == "/api/auth/me" } && vm.state.value.machines.isNotEmpty() && !vm.state.value.loading }
+        val oldPass = onMain { vm.refresh() }
+        blockReplacementBoard = true
+        onMain {
+            vm.api.saveSession(JSONObject().put("accessToken", "replacement-access").put("refreshToken", "replacement-refresh").put("expiresIn", 600)
+                .put("user", JSONObject().put("id", "replacement-user").put("nick", "替换账号").put("dormBuilding", "test")))
+            vm.platformSessionChanged()
+        }
+        compose.waitUntil(5_000) { replacementBoardStarted.count == 0L && vm.state.value.authReady && vm.state.value.profile?.id == "replacement-user" }
+        assertEquals("The old identity request is still blocked while the replacement is already verified", 1L, release.count)
+        assertTrue("The new public board is deliberately unfinished", vm.state.value.loading)
+        profileStatus = 401; release.countDown()
+        compose.waitUntil(5_000) { oldPass.isCompleted }
+        assertTrue("An old finally block must not clear the replacement board's loading flag", vm.state.value.loading)
+        assertEquals("replacement-user", vm.state.value.profile?.id)
+        assertEquals("replacement-access", SecureSession(app).read()?.str("accessToken"))
+        assertTrue(vm.state.value.authReady)
+        replacementBoardRelease.countDown()
+        compose.waitUntil(5_000) { !vm.state.value.loading }
+        assertEquals("replacement-user", vm.state.value.assistant.scope?.userId)
+    }
+
+    @Test fun backgroundInvalidationWaitsForMainAndQueuedOldFailureCannotClearReplacementSession() {
+        saved(true); profileStatus = 200; release.countDown()
+        val vm = model()
+        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.profile?.id == "saved-user" && !vm.state.value.loading }
+        blockReplacementIdentity = true
+        onMain {
+            // Holding Main until the IO call completes makes callback dispatch and
+            // the later account fence deterministic, without any real network.
+            val background = FutureTask { runBlocking(Dispatchers.IO) { runCatching { vm.api.call("/api/session-fixture-expired") } } }
+            Thread(background, "session-invalidation-fixture").start()
+            assertTrue(background.get(5, TimeUnit.SECONDS).isFailure)
+            assertNull(SecureSession(app).read())
+            assertEquals("IO must not mutate Main-owned caches before its dispatched callback runs", "saved-user", vm.state.value.profile?.id)
+            vm.api.saveSession(JSONObject().put("accessToken", "replacement-access").put("refreshToken", "replacement-refresh").put("expiresIn", 600)
+                .put("user", JSONObject().put("id", "replacement-user").put("nick", "替换账号").put("dormBuilding", "test")))
+            vm.platformSessionChanged()
+        }
+        compose.waitUntil(5_000) { replacementIdentityStarted.count == 0L }
+        compose.waitForIdle()
+        assertEquals("The queued invalidation belongs to the old session", "replacement-user", vm.state.value.profile?.id)
+        assertFalse(vm.state.value.authReady); assertTrue(vm.state.value.sessionRestoring)
+        assertEquals("replacement-access", SecureSession(app).read()?.str("accessToken"))
+        replacementIdentityRelease.countDown()
+        compose.waitUntil(5_000) { vm.state.value.authReady && vm.state.value.profile?.id == "replacement-user" }
     }
 
     private fun <T> onMain(block: () -> T): T {

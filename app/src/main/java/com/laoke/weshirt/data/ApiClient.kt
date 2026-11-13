@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class ApiException(val status: Int, val code: String, val eventId: String, message: String) : IOException("$message\n状态码 $status · 事件 $eventId")
+internal data class ApiSessionFence(val origin: String, val revision: Long)
 
 /** Bind the origin before acquiring credentials. Late responses cannot revive an old session. */
 class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHttpClient? = null) {
@@ -31,6 +32,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             field = normalized
         }
     var onSessionInvalidated: (() -> Unit)? = null
+    internal fun sessionFence(): ApiSessionFence = synchronized(guard) { ApiSessionFence(baseUrl, generation) }
     var onMetric: ((path: String, elapsedMs: Long, status: Int) -> Unit)? = null
     private val refreshLock = Mutex()
     private val pendingKeys = ConcurrentHashMap<String, String>()

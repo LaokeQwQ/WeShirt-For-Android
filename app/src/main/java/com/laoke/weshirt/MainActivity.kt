@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun login() {
-        vm.mutate(null) {
+        vm.mutate(null, allowRestoring = true) {
             try {
                 vm.api.beginNativeLogin()
                 vm.clearFeedback()
@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().clear().commit()
         if(origin == null || origin != vm.api.baseUrl) { vm.message(DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId)); return }
         if(reply.authCode == null) { vm.message(DingTalkLoginBridge.failureMessage(reply.errorCode ?: "LOGIN_CALLBACK_FAILED", reply.eventId)); return }
-        vm.mutate("登录成功", wait = true) {
+        vm.mutate("登录成功", wait = true, allowRestoring = true) {
             check(origin == vm.api.baseUrl) { DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId) }
             // Also isolate callbacks restored after process death or app upgrade.
             // Old refresh/401 responses must not cancel a valid one-time code.

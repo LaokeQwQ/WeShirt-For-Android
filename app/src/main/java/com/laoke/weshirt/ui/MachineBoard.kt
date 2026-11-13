@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -117,9 +118,9 @@ fun MachineBoard(
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 chunk.forEach { (label, count) ->
                                     Surface(Modifier.weight(1f), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(16.dp)) {
-                                        Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             Text(count.toString(), style = MaterialTheme.typography.titleLarge, color = when (label) { "空闲" -> MaterialTheme.colorScheme.primary; "故障" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurface })
-                                            Text(label, style = MaterialTheme.typography.labelSmall)
+                                            Text(label, Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                                         }
                                     }
                                 }
@@ -135,10 +136,11 @@ fun MachineBoard(
         }
         item(key = "board-controls", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("最快可用", style = MaterialTheme.typography.titleMedium)
-                Text("按设备状态与预计结束时间排序", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("显示方式", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(Modifier.weight(1f)) {
+                        Text("最快可用", style = MaterialTheme.typography.titleMedium)
+                        Text("空闲优先 · 按预计结束排序", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     IconToggleButton(checked = !cards, onCheckedChange = { cards = false }, modifier = Modifier.size(48.dp).testTag("machine-layout-list")) {
                         Icon(Icons.Outlined.ViewList, "列表视图", tint = if (!cards) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -195,32 +197,29 @@ fun MachineBoard(
 }
 
 @Composable
-private fun BoardMachineItem(machine: Machine, favorite: Boolean, status: MachineBoardStatus, cards: Boolean, onClick: () -> Unit) {
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("machine:${machine.id}"), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+internal fun BoardMachineItem(machine: Machine, favorite: Boolean, status: MachineBoardStatus, cards: Boolean, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("machine:${machine.id}"), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (cards) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    MachineIcon(machine)
+                    MachineNumber(machine)
                     Spacer(Modifier.weight(1f))
-                    if (favorite) Icon(Icons.Outlined.Star, "已收藏", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-                    Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    MachineFavorite(machine.id, favorite)
                 }
-                Text(machine.name.ifBlank { "未命名设备" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                MachineStatusBadge(status)
-                status.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                MachineName(machine)
             } else {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    MachineIcon(machine)
+                    MachineNumber(machine)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(machine.name.ifBlank { "未命名设备" }, modifier = Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-                            if (favorite) Icon(Icons.Outlined.Star, "已收藏", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                        }
-                        MachineStatusBadge(status)
-                        status.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        MachineName(machine)
                     }
-                    Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    MachineFavorite(machine.id, favorite)
                 }
+            }
+            FlowRow(Modifier.fillMaxWidth().testTag("machine-status-line:${machine.id}"), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                MachineStatusBadge(status)
+                status.detail?.let { Text(it, Modifier.testTag("machine-remaining:${machine.id}"), style = if (status.state == MachineBoardState.RUNNING) MaterialTheme.typography.labelLarge else MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant) }
             }
             if (machine.originalName.isNotBlank() && machine.originalName != machine.name) Text("原名：${machine.originalName}", maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val care = listOfNotNull("已用消毒液".takeIf { machine.disinfectant }, "已自清洁".takeIf { machine.selfCleaned }).joinToString(" · ")
@@ -232,10 +231,26 @@ private fun BoardMachineItem(machine: Machine, favorite: Boolean, status: Machin
 }
 
 @Composable
-private fun MachineIcon(machine: Machine) {
-    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Icon(if (machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService, null, Modifier.padding(9.dp).size(24.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun MachineNumber(machine: Machine) {
+    Surface(Modifier.width(52.dp).heightIn(min = 58.dp).testTag("machine-slot:${machine.id}"), shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer) {
+        Column(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(machine.slot.ifBlank { "—" }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Icon(if (machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService, null, Modifier.size(16.dp))
+        }
     }
+}
+
+@Composable
+private fun MachineName(machine: Machine) {
+    Text(machine.name.ifBlank { "未命名设备" }, Modifier.testTag("machine-name:${machine.id}"), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+    Text(listOf(if (machine.kind == "dryer") "烘干" else if (machine.kind == "washer") "洗衣" else "其他设备", machine.floorName.ifBlank { machine.floorCode }).filter { it.isNotBlank() }.joinToString(" · "),
+        Modifier.testTag("machine-type:${machine.id}"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+@Composable
+private fun MachineFavorite(id: String, favorite: Boolean) {
+    Icon(if (favorite) Icons.Outlined.Star else Icons.Outlined.ChevronRight, if (favorite) "已收藏" else null,
+        Modifier.size(24.dp).testTag("machine-favorite:$id"), tint = if (favorite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
 }
 
 @Composable

@@ -247,7 +247,7 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
     var active by remember { mutableStateOf(true) }
     DisposableEffect(Unit) { onDispose { active = false } }
     ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), sheetMaxWidth = 560.dp) {
-        MachineSheetFrame(machine, machine.id in state.favorites, !state.busy && !session.busy, close,
+        MachineSheetFrame(machine, machine.id in state.favorites, state.authReady && !state.busy && !session.busy, close,
             favoriteClick = { if(state.profile == null) login() else favoriteConfirmation = frozen },
             register = { if(state.profile == null) login() else { registrationError = null; registering = true } }) {
             session.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
@@ -259,16 +259,20 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
             if(machine.disinfectant || machine.selfCleaned) Text(listOfNotNull("已使用消毒液".takeIf { machine.disinfectant }, "已做自清洁".takeIf { machine.selfCleaned }).joinToString(" · "))
             if(machine.health.isNotBlank()) Text(machine.health, color = MaterialTheme.colorScheme.error)
             if(machine.suspectedUncollected) Text("疑似未取衣 · 请先确认现场情况", color = MaterialTheme.colorScheme.tertiary)
-            OutlinedButton(onClick = { if(state.profile == null) login() else commentsVisible = true }, modifier = Modifier.fillMaxWidth()) { Text("查看这台机器的留言") }
-            if(machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
+            if (!state.authReady) {
+                Text(if (state.sessionRestoring) "账号正在后台恢复，机器状态可正常查看。" else "账号暂未恢复，机器状态可正常查看。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (state.authError != null) TextButton(onClick = { vm.refresh() }, enabled = !state.sessionRestoring) { Text("重试恢复账号") }
+            }
+            OutlinedButton(onClick = { if(state.profile == null) login() else commentsVisible = true }, enabled = state.authReady, modifier = Modifier.fillMaxWidth()) { Text("查看这台机器的留言") }
+            if(state.authReady && machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) {
                 OutlinedButton(onClick = { if(state.profile == null) login() else contact = true }, enabled = !state.busy && !session.busy, modifier = Modifier.fillMaxWidth()) { Text("联系使用者") }
             }
-            MachineFeedback(machine, state, vm, session, login)
-            OutlinedButton(onClick = { moreActions = !moreActions }, modifier = Modifier.fillMaxWidth().testTag("machine-more-actions")) { Text(if (moreActions) "收起排队与现场反馈" else "排队预约与现场反馈") }
-            if (moreActions) MachineActions(machine, state, vm, session, login)
+            if (state.authReady) MachineFeedback(machine, state, vm, session, login)
+            OutlinedButton(onClick = { moreActions = !moreActions }, enabled = state.authReady, modifier = Modifier.fillMaxWidth().testTag("machine-more-actions")) { Text(if (moreActions) "收起排队与现场反馈" else "排队预约与现场反馈") }
+            if (state.authReady && moreActions) MachineActions(machine, state, vm, session, login)
         }
     }
-    if(registering) RegisterDialog(machine, state.busy || session.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
+    if(registering && state.authReady) RegisterDialog(machine, state.busy || session.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
         registrationError = null
         try {
             session.validate(frozen, "tasks")
@@ -276,12 +280,12 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
                 onSuccess = { if (active) { registering = false; currentClose() } }, onFailure = { if (active) registrationError = it })
         } catch (problem: Exception) { registrationError = clientFailure(problem, "机器已变化，请重新核对") }
     }
-    favoriteConfirmation?.let { target -> AlertDialog(onDismissRequest = { favoriteConfirmation = null }, title = { Text(if (machine.id in state.favorites) "取消收藏机器？" else "收藏这台机器？") }, text = { Text(target.machine.name) }, confirmButton = { TextButton(enabled = !state.busy && !session.busy, onClick = {
+    favoriteConfirmation?.takeIf { state.authReady }?.let { target -> AlertDialog(onDismissRequest = { favoriteConfirmation = null }, title = { Text(if (machine.id in state.favorites) "取消收藏机器？" else "收藏这台机器？") }, text = { Text(target.machine.name) }, confirmButton = { TextButton(enabled = !state.busy && !session.busy, onClick = {
         favoriteConfirmation = null
         session.run(target, "") { request(target, "/api/user/favorites/toggle", org.json.JSONObject().put("machineId", target.machine.id), resource = ""); feedback = "常用机器已更新" }
     }) { Text("确认") } }, dismissButton = { TextButton(onClick = { favoriteConfirmation = null }) { Text("取消") } }) }
-    if (contact && machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) key(machine.occupantId) { com.laoke.weshirt.ui.social.ContactUserDialog(machine.occupantId, machine.id, state, vm) { contact = false } }
-    if (commentsVisible) MachineCommentsDialog(machine, state, vm) { commentsVisible = false }
+    if (state.authReady && contact && machine.occupantId.isNotBlank() && machine.occupantId != state.profile?.id) key(machine.occupantId) { com.laoke.weshirt.ui.social.ContactUserDialog(machine.occupantId, machine.id, state, vm) { contact = false } }
+    if (state.authReady && commentsVisible) MachineCommentsDialog(machine, state, vm) { commentsVisible = false }
 }
 
 /** Header and primary action stay reachable while the details scroll, including short landscape windows. */
