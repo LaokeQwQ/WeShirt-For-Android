@@ -67,6 +67,10 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("room-slot:2").assertIsNotEnabled()
         compose.onNodeWithTag("room-slot:1").performClick()
         compose.runOnIdle { assertEquals("washer-business-id", chosen) }
+        compose.onNodeWithTag("room-favorites").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+        val common = compose.onNodeWithTag("room-favorites").getUnclippedBoundsInRoot()
+        val facility = compose.onNodeWithTag("room-facilities").getUnclippedBoundsInRoot()
+        assertTrue("Common machines and information must not overlap", common.right <= facility.left || common.bottom <= facility.top)
         saveScreenshot("native-narrow-shortcuts")
     }
 
@@ -90,6 +94,12 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag("machine-filter-dryer"))
         compose.onNodeWithTag("machine-filter-dryer").performClick().assertIsSelected()
         compose.onNodeWithTag("machine:long-name-machine").assertDoesNotExist()
+        compose.onNodeWithTag("machine-filter-favorites").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+        val dryerFilter = compose.onNodeWithTag("machine-filter-dryer").getUnclippedBoundsInRoot()
+        val favoriteFilter = compose.onNodeWithTag("machine-filter-favorites").getUnclippedBoundsInRoot()
+        assertEquals(dryerFilter.top, favoriteFilter.top)
+        assertTrue("Two-column filters must have separate touch bounds", dryerFilter.right <= favoriteFilter.left)
+        compose.onNodeWithTag("machine-filter-favorites").performClick().assertIsSelected()
         compose.onNodeWithTag("machine-filter-washer").performClick().assertIsSelected()
         compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag("machine:long-name-machine"))
         compose.onNodeWithTag("machine:long-name-machine").assertIsDisplayed().performClick()

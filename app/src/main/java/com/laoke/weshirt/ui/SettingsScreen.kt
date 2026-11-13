@@ -59,10 +59,15 @@ import java.io.ByteArrayOutputStream
         item { SettingsCard("资料与账号") {
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 Surface(Modifier.size(64.dp).clip(CircleShape).clickable(enabled = state.profile != null) { avatarMenu = true }, color = MaterialTheme.colorScheme.secondaryContainer) { if(state.profile?.avatarUrl?.isNotBlank() == true) AsyncImage(state.profile.avatarUrl, "点击修改头像", Modifier.fillMaxSize()) else Icon(Icons.Outlined.PersonOutline, "头像", Modifier.padding(14.dp)) }
-                Column { Text(state.profile?.nick ?: "还未登录", style = MaterialTheme.typography.titleLarge); Text(if(state.profile != null) "钉钉账号已关联" else "登录后同步你的洗衣记录", style = MaterialTheme.typography.bodySmall) }
+                Column { Text(if (!state.authReady) "正在恢复账号" else state.profile?.nick ?: "还未登录", style = MaterialTheme.typography.titleLarge); Text(if (!state.authReady) "正在确认本机登录状态" else if(state.profile != null) "钉钉账号已关联" else "登录后同步你的洗衣记录", style = MaterialTheme.typography.bodySmall) }
             }
-            if(state.profile == null) Button(onClick = login, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("钉钉登录") }
+            if (!state.authReady) {
+                Text(state.authError ?: "请稍候，恢复完成后会显示账号资料。", style = MaterialTheme.typography.bodySmall)
+                if (!state.sessionRestoring) OutlinedButton(onClick = { vm.refresh() }, enabled = !state.busy) { Text("重试恢复账号") }
+            }
+            else if(state.profile == null) Button(onClick = login, modifier = Modifier.fillMaxWidth(), enabled = !state.busy) { Text("钉钉登录") }
             else {
+                state.authError?.let { Text(it, style = MaterialTheme.typography.bodySmall); TextButton(onClick = { vm.refresh() }) { Text("重试同步账号") } }
                 OutlinedTextField(nick, { nick = it.take(16) }, label = { Text("昵称") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Button(onClick = { vm.nick(nick) }, enabled = !state.busy && nick.isNotBlank()) { Text("保存") }; OutlinedButton(onClick = { vm.randomNick { nick = it } }, enabled = !state.busy) { Text("随机昵称") } }
                 TextButton(onClick = building, enabled = !state.busy && (state.profile.changesLeft > 0 || state.profile.building.isBlank())) { Icon(Icons.Outlined.Apartment, null); Text("住宿楼 · ${state.buildings.find { it.code == state.building }?.name ?: "请选择"}") }
@@ -81,7 +86,10 @@ import java.io.ByteArrayOutputStream
             TextButton(onClick = backgroundSettings) { Text("后台提醒与省电白名单") }
             Text("结束前提醒", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(5.dp)) { listOf(0, 3, 5, 10).forEach { minutes -> FilterChip(state.profile?.notifyLeadMin == minutes, { vm.mutate { vm.api.call("/api/user/notify", "POST", JSONObject().put("leadMin", minutes)) } }, enabled = state.profile != null && !state.busy, label = { Text(if (minutes == 0) "结束时" else "${minutes}分") }) } }
-            TextButton(onClick = { vm.mutate(null) { val result = vm.api.call("/api/user/test-notify", "POST", JSONObject()); vm.message(result.str("message", result.str("hint", "通知请求已提交，请检查钉钉和系统通知"))) } }, enabled = state.profile != null && !state.busy) { Text("发送测试提醒") }
+            TextButton(onClick = { if (!state.notificationsOn) requestNotifications() else vm.testMobileNotification() },
+                enabled = state.authReady && state.profile != null && !state.busy,
+                modifier = Modifier.testTag("mobile-test-notification")) { Text("测试本机推送") }
+            Text("仅测试当前手机的 FCM/U-Push；服务商接受请求不代表已送达。", style = MaterialTheme.typography.bodySmall)
             FilledTonalButton(onClick = { favoriteSettings = true }, enabled = state.profile != null && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("常用机器与洗衣时段 · ${if (state.favoriteRemindersOn) "提醒已开启" else "提醒已关闭"}") }
         } }
         item { SettingsCard("显示与性能") {

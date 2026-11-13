@@ -13,6 +13,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.material.icons.outlined.AutoAwesome
+import com.laoke.weshirt.ui.EmptyPanel
 import androidx.compose.ui.unit.dp
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.*
@@ -25,6 +28,34 @@ import org.json.JSONObject
 private data class AssistantConfirmation(val title: String, val message: String, val execute: () -> Unit)
 
 @Composable fun AssistantDialog(state: AppState, vm: AppViewModel, initialSkill: String? = null, close: () -> Unit) {
+    AssistantFeature(state, vm, initialSkill, false, close)
+}
+
+@Composable fun AssistantScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
+    if (state.profile == null) {
+        EmptyPanel("洗衣助手", "登录后可询问空闲机器、洗衣建议，管理自己的记忆与提示词。", Icons.Outlined.AutoAwesome, "钉钉登录", login)
+        return
+    }
+    if (state.access.optJSONObject("permissions")?.optJSONObject("assistant")?.optBoolean("view", true) == false) {
+        EmptyPanel("助手暂不可用", "当前账号没有助手查看权限，请联系管理员。", Icons.Outlined.AutoAwesome)
+        return
+    }
+    key(state.endpoint, state.profile.id) { AssistantFeature(state, vm, null, true, {}) }
+}
+
+@Composable private fun AssistantFrame(embedded: Boolean, close: () -> Unit, refresh: () -> Unit, busy: Boolean,
+                                      content: @Composable (PaddingValues) -> Unit) {
+    if (!embedded) UserFeatureDialog("洗衣助手", close, actions = { IconButton(onClick = refresh, enabled = !busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") } }, content = content)
+    else Column(Modifier.fillMaxSize().testTag("assistant-page")) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("问问洗衣助手", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            IconButton(onClick = refresh, enabled = !busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) { content(PaddingValues()) }
+    }
+}
+
+@Composable private fun AssistantFeature(state: AppState, vm: AppViewModel, initialSkill: String?, embedded: Boolean, close: () -> Unit) {
     val session = rememberUserFeatureSession(state, vm)
     val context = LocalContext.current
     var status by remember(session) { mutableStateOf<JSONObject?>(null) }
@@ -83,7 +114,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
         }
     }
 
-    UserFeatureDialog("洗衣助手", close, actions = { IconButton(onClick = ::load, enabled = !session.busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") } }) { padding ->
+    AssistantFrame(embedded, close, ::load, session.busy) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, label = { Text(label) }) }

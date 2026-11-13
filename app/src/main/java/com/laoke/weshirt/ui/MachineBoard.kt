@@ -146,16 +146,24 @@ fun MachineBoard(
                         Icon(Icons.Outlined.GridView, "卡片视图", tint = if (cards) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("all" to "全部", "washer" to "洗衣", "dryer" to "烘干").forEach { (kind, label) ->
-                        FilterChip(
-                            selected = filter == kind,
-                            onClick = { filter = kind },
-                            label = { Text(label) },
-                            modifier = Modifier.heightIn(min = 48.dp).testTag("machine-filter-$kind")
-                        )
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val columns = if (maxWidth < 360.dp || LocalDensity.current.fontScale > 1.2f) 2 else 4
+                    val filters = listOf("all" to "全部", "washer" to "洗衣", "dryer" to "烘干", "favorites" to "常用")
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        filters.chunked(columns).forEach { row ->
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                row.forEach { (kind, label) ->
+                                    FilterChip(
+                                        selected = if (kind == "favorites") onlyFavorites else filter == kind,
+                                        onClick = { if (kind == "favorites") onlyFavorites = !onlyFavorites else filter = kind },
+                                        label = { Text(label, maxLines = 1) },
+                                        modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("machine-filter-$kind"),
+                                        leadingIcon = if (kind == "favorites") { { Icon(Icons.Outlined.Star, null, Modifier.size(18.dp)) } } else null
+                                    )
+                                }
+                            }
+                        }
                     }
-                    FilterChip(selected = onlyFavorites, onClick = { onlyFavorites = !onlyFavorites }, label = { Text("常用") }, modifier = Modifier.heightIn(min = 48.dp).testTag("machine-filter-favorites"))
                 }
                 if (floors.any { it.first.isNotBlank() }) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = floor == null, onClick = { floor = null }, label = { Text("本楼全部") }, modifier = Modifier.heightIn(min = 48.dp).testTag("machine-floor-all"))

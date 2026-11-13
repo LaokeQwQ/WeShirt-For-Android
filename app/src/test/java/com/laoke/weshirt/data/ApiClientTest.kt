@@ -347,4 +347,37 @@ class ApiClientTest {
         }
         assertEquals("The stale protected child must not issue an anonymous HTTP request", 1, server.requestCount)
     }
+
+    @Test fun transientProfileFailureKeepsEncryptedIdentityAndValidCredentials() = runBlocking {
+        valid()
+        api.cacheProfile(JSONObject().put("id", "saved-user").put("nick", "已保存昵称"))
+        val before = sessions.read().toString()
+        val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.enqueue(json("""{"error":{"code":"unavailable","message":"稍后重试"}}""").setResponseCode(503))
+        try { api.call("/api/auth/me"); fail("Expected a transient error") } catch (e: ApiException) { assertEquals(503, e.status) }
+        assertEquals(before, sessions.read().toString())
+        assertEquals("已保存昵称", api.cachedProfile()?.nick)
+        assertEquals(0, invalidations.get())
+        assertEquals("Bearer valid-access", server.takeRequest().getHeader("Authorization"))
+    }
+
+    @Test fun refreshingCredentialsPreservesFullProfileOnlyForTheSameAccountAndLogoutClearsIt() = runBlocking {
+        expired()
+        sessions.save(sessions.read()!!.put("user", JSONObject().put("id", "saved-user")))
+        api.cacheProfile(JSONObject().put("id", "saved-user").put("nick", "缓存资料").put("dingNick", "关联昵称"))
+        server.enqueue(json(JSONObject(refreshed).put("user", JSONObject().put("id", "saved-user")).toString()))
+        server.enqueue(json("""{"user":{"id":"saved-user"}}"""))
+        api.call("/api/auth/me")
+        assertEquals("关联昵称", api.cachedProfile()?.dingNick)
+        assertEquals("new-access", sessions.read()?.str("accessToken"))
+        api.saveSession(JSONObject(refreshed).put("user", JSONObject().put("id", "next-user").put("nick", "新账号")))
+        assertEquals("next-user", api.cachedProfile()?.id)
+        assertEquals("", api.cachedProfile()?.dingNick)
+        api.cacheProfile(JSONObject().put("id", "saved-user").put("nick", "迟到旧资料"))
+        assertEquals("next-user", api.cachedProfile()?.id)
+        api.beginNativeLogin()
+        assertNull(api.cachedProfile())
+        assertNull(sessions.read())
+    }
 }

@@ -74,7 +74,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@withLock saved.str("accessToken")
             try {
                 val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
-                synchronized(guard) { current(origin, version); storeSession(next, origin) }
+                synchronized(guard) { current(origin, version); storeSession(next, origin, saved) }
                 next.str("accessToken")
             } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidate(origin, version); throw e }
         }
@@ -90,7 +90,20 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         generation++
         storeSession(value, origin)
     }
-    private fun storeSession(value: JSONObject, origin: String) { session.save(JSONObject(value.toString()).put("origin", origin).put("expiresAt", System.currentTimeMillis() + value.optLong("expiresIn", 900) * 1000)) }
+    /** The profile lives inside the encrypted credentials, never in ordinary preferences. */
+    fun cachedProfile(): Profile? = synchronized(guard) { cachedSessionProfile(session.read(), baseUrl)?.let(Profile::parse) }
+    fun cacheProfile(profile: JSONObject) = synchronized(guard) {
+        val saved = session.read() ?: return@synchronized
+        if (saved.str("origin") != baseUrl || profile.str("id").isBlank()) return@synchronized
+        val bound = saved.optJSONObject("user")?.str("id").orEmpty()
+        if (bound.isNotBlank() && bound != profile.str("id")) return@synchronized
+        if (saved.optJSONObject("profile")?.toString() == profile.toString()) return@synchronized
+        session.save(JSONObject(saved.toString()).put("profile", JSONObject(profile.toString())))
+    }
+    private fun storeSession(value: JSONObject, origin: String, previous: JSONObject? = null) {
+        session.save(sessionWithProfile(value, origin, previous)
+            .put("expiresAt", System.currentTimeMillis() + value.optLong("expiresIn", 900) * 1000))
+    }
     private fun invalidate(origin: String, version: Long) = synchronized(guard) { if(origin == baseUrl && version == generation) { generation++; session.clear(); pendingKeys.clear(); clearMedia(); onSessionInvalidated?.invoke() } }
     suspend fun logout() = refreshLock.withLock {
         val (origin, version) = snapshot()

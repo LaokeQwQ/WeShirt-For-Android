@@ -281,8 +281,9 @@ internal object RoomGeometry {
                 body.cylinder(.231f, .105f, .356f, .028f, .006f, enamel, segments = 24)
                 body.box(-.078f, .105f, .35f, .28f, .005f, .005f, rgb(0xBCC7C9))
             }
-            // Machine numbers are native screen-space controls. World-space
-            // seven-segment letters clipped into these pipes and vanished at oblique angles.
+            // Readable physical slot numbers sit on the drawer front, clear of
+            // the door and pipes. Merge them into this static material batch.
+            body.append(RoomNumberPlate.mesh(slot), RoomSlot("decal", 0f, 0f))
             // The Web room places dosing equipment and utility lines behind each
             // washer. Keep these static details batched in the same two materials.
             if (!slot.dryer) {

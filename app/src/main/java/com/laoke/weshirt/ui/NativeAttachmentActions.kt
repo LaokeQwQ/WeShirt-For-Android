@@ -13,7 +13,13 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.*
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -30,6 +36,8 @@ fun NativeAttachmentActions(
     onMedia: (Uri, cleanup: () -> Unit) -> Unit,
     onError: (String) -> Unit,
     imagesOnly: Boolean = false,
+    onModalVisibility: (Boolean) -> Unit = {},
+    content: (@Composable (AttachmentActions) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val currentScope by rememberUpdatedState(scopeKey)
@@ -37,9 +45,12 @@ fun NativeAttachmentActions(
     val currentMedia by rememberUpdatedState(onMedia)
     val currentError by rememberUpdatedState(onError)
     var menu by remember { mutableStateOf(false) }
+    val modalVisibility by rememberUpdatedState(onModalVisibility)
     var pendingScope by rememberSaveable { mutableStateOf<String?>(null) }
     var captureName by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVideo by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(menu, pendingScope) { modalVisibility(menu || pendingScope != null) }
+    DisposableEffect(Unit) { onDispose { modalVisibility(false) } }
     LaunchedEffect(scopeKey) { menu = false }
     fun failure(message: String) { currentError(clientFailure(IllegalArgumentException(),message)) }
     val directory = remember(context) { File(context.cacheDir, "media-captures").apply {
@@ -92,15 +103,56 @@ fun NativeAttachmentActions(
         if (required.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) launchCamera()
         else permissions.launch(required.toTypedArray())
     }
-    IconButton(onClick = { menu = true }, enabled = enabled && pendingScope == null) { Icon(Icons.Outlined.Add, "添加图片、视频或拍摄") }
-    if (menu) AlertDialog(onDismissRequest = { menu = false }, title = { Text("添加附件") }, text = {
-        androidx.compose.foundation.layout.Column {
-            TextButton(onClick = { if (currentEnabled && pendingScope == null) { menu = false; pendingScope = scopeKey; gallery.launch(PickVisualMediaRequest(if (imagesOnly) ActivityResultContracts.PickVisualMedia.ImageOnly else ActivityResultContracts.PickVisualMedia.ImageAndVideo)) } },enabled=enabled && pendingScope==null) { Text("从相册选择") }
-            TextButton(onClick = { capture(false) },enabled=enabled && pendingScope==null) { Text("相机拍照") }
-            if (!imagesOnly) TextButton(onClick = { capture(true) },enabled=enabled && pendingScope==null) { Text("录制视频（最多30秒）") }
-            TextButton(onClick = { if (currentEnabled && pendingScope == null) { menu = false; pendingScope = scopeKey; document.launch(if (imagesOnly) arrayOf("image/*") else arrayOf("image/*", "video/mp4", "video/quicktime")) } },enabled=enabled && pendingScope==null) { Text("从文件选择") }
+    val available = enabled && pendingScope == null
+    val actions = AttachmentActions(menu, available,
+        toggle = { menu = !menu }, close = { menu = false },
+        gallery = { if (currentEnabled && pendingScope == null) { menu = false; pendingScope = scopeKey; gallery.launch(PickVisualMediaRequest(if (imagesOnly) ActivityResultContracts.PickVisualMedia.ImageOnly else ActivityResultContracts.PickVisualMedia.ImageAndVideo)) } },
+        photo = { capture(false) }, video = { capture(true) },
+        file = { if (currentEnabled && pendingScope == null) { menu = false; pendingScope = scopeKey; document.launch(if (imagesOnly) arrayOf("image/*") else arrayOf("image/*", "video/mp4", "video/quicktime")) } })
+    if (content != null) content(actions)
+    else {
+        IconButton(onClick = actions.toggle, enabled = available) { Icon(Icons.Outlined.Add, "添加图片、视频或拍摄") }
+        if (menu) AlertDialog(onDismissRequest = actions.close, title = { Text("添加附件") }, text = {
+            Column {
+                TextButton(onClick = actions.gallery, enabled = available) { Text("从相册选择") }
+                TextButton(onClick = actions.photo, enabled = available) { Text("相机拍照") }
+                if (!imagesOnly) TextButton(onClick = actions.video, enabled = available) { Text("录制视频（最多30秒）") }
+                TextButton(onClick = actions.file, enabled = available) { Text("从文件选择") }
+            }
+        }, confirmButton = { TextButton(onClick = actions.close) { Text("取消") } })
+    }
+}
+
+/** Uses the same permission-scoped launchers in dialogs and the channel's inline composer panel. */
+data class AttachmentActions(val expanded: Boolean, val enabled: Boolean, val toggle: () -> Unit, val close: () -> Unit,
+                             val gallery: () -> Unit, val photo: () -> Unit, val video: () -> Unit, val file: () -> Unit)
+
+@Composable
+internal fun AttachmentComposerPanel(actions: AttachmentActions) {
+    Surface(Modifier.fillMaxWidth().testTag("channel-attachment-panel"), color = MaterialTheme.colorScheme.surfaceContainerLow, shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("添加内容", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                IconButton(onClick = actions.close, modifier = Modifier.size(40.dp).testTag("channel-attachments-close")) { Icon(Icons.Outlined.Close, "收起附件面板") }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    listOf(Triple("图库", Icons.Outlined.PhotoLibrary, actions.gallery), Triple("拍照", Icons.Outlined.PhotoCamera, actions.photo)),
+                    listOf(Triple("视频 · 30秒内", Icons.Outlined.Videocam, actions.video), Triple("文件", Icons.Outlined.InsertDriveFile, actions.file))
+                ).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        row.forEach { (title, icon, click) ->
+                            FilledTonalButton(onClick = click, enabled = actions.enabled, modifier = Modifier.weight(1f).heightIn(min = 64.dp), shape = RoundedCornerShape(18.dp), contentPadding = PaddingValues(10.dp)) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                    Icon(icon, null, Modifier.size(24.dp)); Text(title, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
-    }, confirmButton = { TextButton(onClick = { menu = false }) { Text("取消") } })
+    }
 }
 
 private data class CaptureRequest(val uri: Uri, val video: Boolean)

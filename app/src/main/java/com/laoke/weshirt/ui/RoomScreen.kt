@@ -79,7 +79,7 @@ import kotlinx.coroutines.delay
         if(allow3D) RoomViewModeSwitch(showing3D, projection.hasBoundMachines,
             showRoom = { rendererUnavailable = false; threeD = true }, showList = { threeD = false })
         if(showing3D) {
-            Box(Modifier.fillMaxWidth().let { if (compact) it.height((roomHeight - 172.dp).coerceAtLeast(180.dp)) else it.weight(1f) }.padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).testTag("native-room-scene")) {
+            Box(Modifier.fillMaxWidth().let { if (compact) it.height((roomHeight - 188.dp).coerceAtLeast(180.dp)) else it.weight(1f) }.padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).testTag("native-room-scene")) {
                 AndroidView(factory = { context -> LaundryRoomView(context).also { view ->
                     renderer = view
                     view.onMachineSelected = { id -> currentMachines.find { it.id == id }?.let { selectedMachineId = id; currentOnMachine(it) } ?: currentOnQuality("该机位尚未绑定设备，请在机器列表选择") }
@@ -182,10 +182,14 @@ internal fun RoomViewModeSwitch(showing3D: Boolean, roomAvailable: Boolean, show
 @Composable
 internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: String?, onlyFavorites: Boolean, onFavorites: () -> Unit, onSelect: (RoomMachine) -> Unit, onFacilities: () -> Unit, compact: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-        if (!compact) Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("机位快捷选择", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-            FilterChip(onlyFavorites, onFavorites, label = { Text("常用") }, modifier = Modifier.heightIn(min = 48.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
-            IconButton(onClick = onFacilities, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.Info, "设施须知") }
+        // Keep common machines out of the horizontally scrolling slot strip.
+        // FlowRow wraps at narrow widths and large font scales instead of squeezing its label.
+        FlowRow(Modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("room-shortcut-actions"),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+            itemVerticalAlignment = Alignment.CenterVertically) {
+            if (!compact) Text("机位快捷选择", style = MaterialTheme.typography.labelLarge)
+            FilterChip(onlyFavorites, onFavorites, label = { Text("常用机器", maxLines = 1) }, modifier = Modifier.heightIn(min = 48.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
+            IconButton(onClick = onFacilities, modifier = Modifier.size(48.dp).testTag("room-facilities")) { Icon(Icons.Outlined.Info, "设施须知") }
         }
         LazyRow(Modifier.fillMaxWidth().testTag("room-machine-shortcuts"), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(machines, key = { it.id }) { machine ->
@@ -219,10 +223,7 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp)
                 ) { Text(machine.slot, style = MaterialTheme.typography.titleMedium, maxLines = 1) }
             }
-            if (compact) {
-                item("favorites") { FilterChip(onlyFavorites, onFavorites, label = { Text("常用") }, modifier = Modifier.heightIn(min = 52.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) }) }
-                item("facilities") { IconButton(onClick = onFacilities, modifier = Modifier.size(52.dp)) { Icon(Icons.Outlined.Info, "设施须知") } }
-            }
+
         }
     }
 }
