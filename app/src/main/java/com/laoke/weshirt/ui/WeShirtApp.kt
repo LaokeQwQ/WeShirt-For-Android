@@ -53,14 +53,14 @@ import kotlinx.coroutines.launch
         LaunchedEffect(state.endpoint, state.profile?.id, state.queueNotices) {
             val fresh = state.queueNotices.filter { it.optBoolean("active") && it.str("readAt").isBlank() && it.str("id") !in seenQueueNotices }
             fresh.forEach { seenQueueNotices.add(it.str("id")) }
-            if (state.profile?.notifyOn != false && fresh.isNotEmpty() && !display) {
+            if (state.authReady && state.profile?.notifyOn != false && fresh.isNotEmpty() && !display) {
                 val newest = fresh.first()
                 if (snackbar.showSnackbar(newest.str("title", "预约提醒") + " · " + newest.str("machineName"), "查看", duration = SnackbarDuration.Long) == SnackbarResult.ActionPerformed) queueInbox = true
             }
         }
         Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
             TopAppBar(title = { Column { Text(if(state.tab == 0) "WeShirt" else when (state.tab) { 1 -> "我的洗衣"; 2 -> "频道"; 4 -> "AI 助手"; else -> "我的" }, style = MaterialTheme.typography.titleLarge); if(state.tab == 0) Text("把等衣的时间，留给生活", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }, actions = {
-                if(state.tab == 0) FilledTonalButton(onClick = { buildingPicker = true }, contentPadding = PaddingValues(horizontal = 12.dp)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(state.buildings.find { it.code == state.building }?.name ?: "选择楼栋") }
+                if(state.tab == 0) FilledTonalButton(onClick = { buildingPicker = true }, enabled = state.authReady, contentPadding = PaddingValues(horizontal = 12.dp)) { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)); Text(state.buildings.find { it.code == state.building }?.name ?: "选择楼栋") }
                 if (state.tab == 0) IconButton(onClick = { display = true }, enabled = state.building.isNotBlank()) { Icon(Icons.Outlined.Fullscreen, "大屏看板") }
                 IconButton(onClick = { vm.refresh(forceMetadata = true) }, enabled = !state.loading) { Icon(Icons.Outlined.Refresh, "刷新") }
             })
@@ -69,7 +69,7 @@ import kotlinx.coroutines.launch
 
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if (!state.authReady) SessionRestoringPanel(state, { vm.refresh() })
+                if (!state.authReady && (state.tab != 0 || state.building.isBlank())) SessionRestoringPanel(state, { vm.refresh() })
                 else if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
                 else AnimatedContent(targetState = state.tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(100)) }, label = "page") { tab ->
                     when(tab) {
@@ -82,6 +82,10 @@ import kotlinx.coroutines.launch
                 }
             }
         }
+        // Machine data is public. Account restoration must not hold the room or
+        // its read-only details behind the private-feature gate.
+        selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
+        if (display) DisplayScreen(state) { display = false }
         if (!state.authReady) return@WeShirtTheme
         if(buildingPicker) AlertDialog(onDismissRequest = { buildingPicker = false }, title = { Text("选择住宿楼") }, text = {
             Column { if(state.buildings.isEmpty()) Text("暂无可用楼栋，请稍后刷新")
@@ -89,10 +93,8 @@ import kotlinx.coroutines.launch
                 if(state.profile != null) Text("每人仅可自行修改一次，之后请联系管理员。", style = MaterialTheme.typography.bodySmall)
             }
         }, confirmButton = { TextButton(onClick = { buildingPicker = false }) { Text("返回") } })
-        selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
         if (state.announcements.isEmpty()) ReminderPermissionGuidance(state, backgroundSettings, { backgroundSettings = false }, onRequestNotifications, onRequestBackground)
         OverdueCollectionPrompt(state, vm, enabled = !display && selected == null && state.pendingShare == null && !buildingPicker && !backgroundSettings && !queueInbox)
-        if (display) DisplayScreen(state) { display = false }
         if (queueInbox && state.profile != null) com.laoke.weshirt.ui.social.QueueNoticeDialog(state, vm) { queueInbox = false }
         state.pendingShare?.takeIf { it.origin == state.endpoint }?.let { share ->
             if (state.profile == null) AlertDialog(onDismissRequest = vm::dismissShare, title = { Text(if (share.kind == "skill") "导入洗衣助手 Skill" else "朋友邀请") }, text = { Text("登录当前服务后可以查看邀请；确认后才会添加。") }, confirmButton = { TextButton(onClick = onLogin, enabled = !state.busy) { Text("钉钉登录") } }, dismissButton = { TextButton(onClick = vm::dismissShare) { Text("取消") } })

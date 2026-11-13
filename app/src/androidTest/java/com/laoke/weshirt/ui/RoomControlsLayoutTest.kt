@@ -102,7 +102,16 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("machine-filter-favorites").performClick().assertIsSelected()
         compose.onNodeWithTag("machine-filter-washer").performClick().assertIsSelected()
         compose.onNodeWithTag("machine-board").performScrollToNode(hasTestTag("machine:long-name-machine"))
-        compose.onNodeWithTag("machine:long-name-machine").assertIsDisplayed().performClick()
+        val card = compose.onNodeWithTag("machine:long-name-machine").assertIsDisplayed()
+        val bounds = card.getUnclippedBoundsInRoot()
+        val slot = compose.onNodeWithTag("machine-slot:long-name-machine", useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+        val name = compose.onNodeWithTag("machine-name:long-name-machine", useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+        val favorite = compose.onNodeWithTag("machine-favorite:long-name-machine", useUnmergedTree = true).assertIsDisplayed().getUnclippedBoundsInRoot()
+        assertTrue("The physical number, two-line name and favorite must have separate columns", slot.right <= name.left && name.right <= favorite.left)
+        assertTrue("A long name and favorite must stay inside the narrow row", name.right <= bounds.right && favorite.right <= bounds.right)
+        compose.onNode(hasText("1") and hasAnyAncestor(hasTestTag("machine-slot:long-name-machine")), useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithTag("machine-type:long-name-machine", useUnmergedTree = true).assertTextContains("洗衣")
+        card.performClick()
         compose.runOnIdle { assertEquals("long-name-machine", chosen) }
         saveScreenshot("native-narrow-machine-list")
     }

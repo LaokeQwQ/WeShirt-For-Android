@@ -39,7 +39,7 @@ internal class UserFeatureSession(private val vm: AppViewModel, private val scop
     private var active = true
     private var job: Job? = null
     fun current() {
-        if (!active || userId == null || vm.state.value.endpoint != endpoint || vm.api.baseUrl != endpoint || vm.state.value.profile?.id != userId) throw CancellationException("Account or service changed")
+        if (!active || userId == null || !vm.state.value.authReady || vm.state.value.endpoint != endpoint || vm.api.baseUrl != endpoint || vm.state.value.profile?.id != userId) throw CancellationException("Account or service changed")
     }
     suspend fun request(path: String, method: String = "GET", body: JSONObject? = null, auth: Boolean = true): JSONObject {
         current()

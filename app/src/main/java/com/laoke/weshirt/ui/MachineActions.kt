@@ -21,7 +21,7 @@ import java.util.UUID
 
 /** Compare a frozen confirmation with the current account, room, machine and occupant. */
 internal data class MachineActionSnapshot(val endpoint:String,val userId:String?,val building:String,val machine:Machine) {
-    fun sameTarget(state:AppState) = userId != null && endpoint == state.endpoint && userId == state.profile?.id && building == state.building && state.machines.any { it.id == machine.id && it == machine }
+    fun sameTarget(state:AppState) = state.authReady && userId != null && endpoint == state.endpoint && userId == state.profile?.id && building == state.building && state.machines.any { it.id == machine.id && it == machine }
 }
 internal class MachineActionSession(private val vm:AppViewModel,private val scope:CoroutineScope,private val binding:String) {
     var busy by mutableStateOf(false); private set
@@ -29,7 +29,7 @@ internal class MachineActionSession(private val vm:AppViewModel,private val scop
     var feedback by mutableStateOf<String?>(null)
     private var active = true
     private var job:Job?=null
-    fun current() = active && vm.state.value.let { it.endpoint+"|"+it.profile?.id+"|"+it.building == binding }
+    fun current() = active && vm.state.value.let { it.authReady && it.endpoint+"|"+it.profile?.id+"|"+it.building == binding }
     fun validate(frozen:MachineActionSnapshot,resource:String) {
         if(!current() || vm.api.baseUrl != frozen.endpoint) throw CancellationException("Account or service changed")
         if(!frozen.sameTarget(vm.state.value)) throw ApiException(409,"machine_changed","client_${UUID.randomUUID()}","机器或登记人已变化，请重新核对后确认")

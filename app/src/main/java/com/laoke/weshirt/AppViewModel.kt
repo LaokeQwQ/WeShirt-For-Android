@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.laoke.weshirt.data.*
 import com.laoke.weshirt.platform.PlatformCoordinator
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,8 +27,11 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     val session = SecureSession(app)
     val api = ApiClient(session, app.cacheDir, client)
     private val channelInbox = ChannelInbox(api)
+    private val publicRooms = PublicRoomCache(java.io.File(app.cacheDir, "public-rooms"))
+    private val assistantPreloader = AssistantPreloader({ path -> api.call(path) })
     private var channelsJob: kotlinx.coroutines.Job? = null
-    private val refreshMutex = Mutex()
+    private var refreshJob: Job? = null
+    private var refreshGeneration = -1
     private var refreshPending = false
     private val mutationMutex = Mutex()
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
@@ -51,7 +57,11 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         api.baseUrl = _state.value.endpoint
         if (session.read()?.str("origin")?.let { it != api.baseUrl } == true) session.clear()
         val restoring = session.read() != null
-        _state.update { it.copy(profile = api.cachedProfile(), authReady = !restoring, sessionRestoring = restoring) }
+        val cachedProfile = api.cachedProfile()
+        _state.update { it.copy(profile = cachedProfile, building = it.building.ifBlank { cachedProfile?.building.orEmpty() }, authReady = !restoring, sessionRestoring = restoring) }
+        publicRooms.read(api.baseUrl, _state.value.building)?.let { cached ->
+            _state.update { it.copy(machines = cached.machines, updatedAt = cached.updatedAt, boardWarning = cached.warning, boardFromCache = true) }
+        }
         api.onMetric = { path, duration, status -> viewModelScope.launch {
             if(_state.value.telemetryOn) {
                 val safePath = when { path.matches(Regex("/api/tasks/[^/]+/take")) -> "/api/tasks/:id/take"; path.matches(Regex("/api/tasks/[^/]+")) -> "/api/tasks/:id"; path in setOf("/api/machines","/api/tasks","/api/auth/me","/api/messages","/api/queue","/api/occupancy","/api/user/profile","/api/user/notify") -> path; else -> "/api/other" }
@@ -59,26 +69,33 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             }
         } }
         api.onSessionInvalidated = {
-            generation.incrementAndGet()
-            channelInbox.clear(); metadata.clear(); channelsJob?.cancel()
-            platform.clearLocal()
-            coil.Coil.imageLoader(app).memoryCache?.clear()
-            _state.update { it.copy(profile = null, tasks = emptyList(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+            // Registration and reminder callers may invalidate from IO. Mutable UI
+            // caches belong to Main, and a queued old failure must not erase a new login.
+            val invalidated = api.sessionFence()
+            val account = generation.get()
+            viewModelScope.launch(Dispatchers.Main.immediate) {
+                if (api.sessionFence() != invalidated || generation.get() != account || session.read() != null) return@launch
+                generation.incrementAndGet()
+                channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
+                platform.clearLocal()
+                coil.Coil.imageLoader(app).memoryCache?.clear()
+                _state.update { it.copy(profile = null, tasks = emptyList(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+                refresh()
+            }
         }
         platform.initialize()
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         refresh()
     }
     fun platformSessionChanged() {
-        generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); platform.sessionChanged()
+        generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); assistantPreloader.clear(); platform.sessionChanged()
         val restoring = session.read() != null
         _state.update { it.copy(profile = api.cachedProfile(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false,
-            tasks = emptyList(), social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(),
+            tasks = emptyList(), social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(),
             authReady = !restoring, sessionRestoring = restoring, authError = null) }
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         // Apply only an explicit, still-enabled guest request once. An older
         // device preference must not overwrite another account's server choice.
-        if (prefs.getBoolean("pendingGuestNotifyEnable", false) && platform.notificationsEnabled) toggleNotify(true)
         refresh()
     }
     fun prepareNotificationPermission(): Long {
@@ -99,8 +116,9 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         _state.update { it.copy(tab = value.takeIf { index -> index in 0..4 } ?: 0) }
         if (_state.value.telemetryOn && telemetryBuffer.size < 20) telemetryBuffer.add(JSONObject().put("name", "page_view").put("route", route()))
         // Opening a directory must not wait for the board, queue and notification requests.
-        if (value == 2 && _state.value.profile != null) refreshChannels()
-        else if (value != 4 || !_state.value.authReady) refresh()
+        if (value == 2 && _state.value.profile != null && _state.value.authReady) refreshChannels()
+        else if (value == 4 && _state.value.authReady) preloadAssistant()
+        else refresh()
     }
     private fun route() = nativeTabRoute(_state.value.tab)
     private fun flushTelemetry() {
@@ -130,95 +148,194 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
     }
     fun selectBuilding(code: String) {
-        if (_state.value.profile == null) { generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) }; refresh() }
-        else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList()) } }
+        if (!_state.value.authReady && _state.value.profile != null) { message("账号仍在恢复，绑定住宿楼请稍后重试"); return }
+        if (_state.value.profile == null) { generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); val cached = publicRooms.read(api.baseUrl, code); _state.update { it.copy(building = code, machines = cached?.machines.orEmpty(), updatedAt = cached?.updatedAt, boardWarning = cached?.warning, boardFromCache = cached != null) }; refresh() }
+        else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation.incrementAndGet(); assistantPreloader.clear(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList(), updatedAt = null, boardWarning = null, boardFromCache = false, assistant = AssistantSnapshot()) } }
     }
+    /** Public room and authenticated features never wait for one another. */
     fun refresh(forceMetadata: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
-        if (api.baseUrl.isBlank()) { _state.update { it.copy(authReady = session.read() == null, sessionRestoring = false) }; return@launch }
-        if(forceMetadata) { metadata.clear(); channelInbox.invalidate(); if (_state.value.tab == 2) refreshChannels() }
-        if (!refreshMutex.tryLock()) { refreshPending = true; return@launch }
+        beginRefresh(forceMetadata).join()
+    }
+    /** Runs on the model's Main scope. A replaced generation never owns the new pass's loading state. */
+    private fun beginRefresh(forceMetadata: Boolean): Job {
+        if (forceMetadata) { metadata.clear(); channelInbox.invalidate(); invalidateAssistant() }
         val version = generation.get()
-        val signedIn = session.read() != null
-        var authResolved = !signedIn
-        _state.update { it.copy(loading = true, sessionRestoring = signedIn && !it.authReady, authError = null) }
-        try {
-            // Resolve identity independently of the board and optional features.
-            // A slow public query must not masquerade as a logged-out account.
-            val profile = if (signedIn) {
-                val user = api.call("/api/auth/me").optJSONObject("user")
-                    ?: throw ApiException(502, "profile_missing", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂未返回，请重试")
-                if (user.str("id").isBlank()) throw ApiException(502, "profile_invalid", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂不可用，请重试")
-                if (version != generation.get()) return@launch
-                api.cacheProfile(user)
-                Profile.parse(user)
-            } else null
-            if (version != generation.get()) return@launch
-            authResolved = true
-            _state.update { it.copy(profile = profile, authReady = true, sessionRestoring = false, authError = null) }
-            val site = metadata("/api/site", auth = false, ttlMs = 30_000)
-            if(version != generation.get()) return@launch
-            val buildings = site.optJSONArray("buildings")?.objects().orEmpty().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
-            // Permission revocation takes effect on the next refresh; never reuse metadata cache here.
-            val access = if(signedIn) api.call("/api/user/permissions") else JSONObject()
-            val building = profile?.building?.takeIf { b -> buildings.any { it.code == b } } ?: _state.value.building.takeIf { b -> buildings.any { it.code == b } }.orEmpty()
-            val incoming = if (building.isNotBlank()) parseBoardSnapshot(api.call("/api/machines?dorm=${api.encoded(building)}", auth = false), building) else BoardSnapshot(emptyList(), null)
-            if(version != generation.get()) return@launch
-            val before = _state.value
-            val board = preferLatestBoard(incoming, building, before.building, before.machines, before.updatedAt)
-            // Publish the board immediately. A queue, profile-preference or notification outage
-            // must not leave a successful machine response invisible until every request succeeds.
-            _state.update { it.copy(buildings = buildings, building = building, profile = profile, access = access, machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, error = null) }
-            if (_state.value.tab == 2 && signedIn) refreshChannels()
-            val problems = mutableListOf<Throwable>()
-            fun <T> Result<T>.readOr(previous: T): T = getOrElse { problems += it; previous }
-            val p = access.optJSONObject("permissions")
-            val mayReadTasks = signedIn && p?.optJSONObject("tasks")?.optBoolean("view", true) != false
-            val mayReadQueue = signedIn && building.isNotBlank() && p?.optJSONObject("queue")?.optBoolean("view", true) != false
-            val extra = coroutineScope {
-                val tasks = async { optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) } }
-                val occupancy = async { optionalRefresh { if (building.isNotBlank()) api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false) else JSONObject() } }
-                val queue = async { optionalRefresh { if (mayReadQueue) api.call("/api/queue?dorm=${api.encoded(building)}") else JSONObject().put("queue", JSONArray()) } }
-                Triple(tasks.await(), occupancy.await(), queue.await())
-            }
-            if(version != generation.get()) return@launch
-            val tasks = extra.first.map { response ->
-                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
-                response.optJSONArray("tasks")?.objects().orEmpty().map { LaundryTask.parse(it).copy(clockOffsetMs = offset) }
-            }.readOr(if (mayReadTasks) _state.value.tasks else emptyList())
-            val queues = extra.third.map { it.optJSONArray("queue")?.objects().orEmpty() }.readOr(if (mayReadQueue) _state.value.queues else emptyList())
-            val occupancy = extra.second.getOrNull()?.optJSONObject("occupancy")
-            extra.second.exceptionOrNull()?.let { problems += it }
-            val machines = board.machines.map { machine ->
-                if (occupancy == null) machine else {
-                    val o = occupancy.optJSONObject(machine.id); val care = o?.optJSONObject("care")
-                    machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant, selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = o?.str("userId").orEmpty(), suspectedUncollected = machine.suspectedUncollected || o?.optBoolean("suspectedUncollected") == true)
+        refreshJob?.takeIf { it.isActive && refreshGeneration == version }?.let { current ->
+            refreshPending = true
+            return current
+        }
+        refreshJob?.cancel()
+        refreshPending = false
+        val task = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                if (api.baseUrl.isBlank()) { _state.update { it.copy(authReady = session.read() == null, sessionRestoring = false) }; return@launch }
+                _state.update { it.copy(loading = true) }
+                coroutineScope {
+                    val room = async { refreshPublicRoom(version) }
+                    val account = async { refreshAccount(version) }
+                    room.await(); account.await()
+                }
+            } finally {
+                if (refreshGeneration == version && refreshJob === coroutineContext[Job]) {
+                    refreshJob = null
+                    _state.update { it.copy(loading = false) }
+                    flushTelemetry()
+                    if (refreshPending && viewModelScope.coroutineContext[Job]?.isActive == true) {
+                        refreshPending = false
+                        refresh()
+                    }
                 }
             }
-            if(version != generation.get()) return@launch
-            _state.update { it.copy(machines = machines, tasks = tasks, queues = queues) }
-            val laundryPrefs = optionalRefresh { if(signedIn) metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() else JSONObject() }.readOr(JSONObject().put("favorites", JSONArray(_state.value.favorites.toList())).put("enabled", _state.value.favoriteRemindersOn).put("timeWindows", JSONArray().put(JSONObject().put("start", _state.value.reminderStart).put("end", _state.value.reminderEnd))))
-            val announcementPrefs = optionalRefresh { if(signedIn) metadata("/api/user/announcements") else JSONObject().put("enabled", prefs.getBoolean("announcements", true)) }.readOr(JSONObject().put("enabled", _state.value.announcementsOn))
-            val favs = laundryPrefs.optJSONArray("favorites") ?: JSONArray()
-            if(version != generation.get()) return@launch
-            _state.update { it.copy(announcementsOn = announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true), announcements = if (announcementPrefs.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList(), favorites = (0 until favs.length()).map { favs.optString(it) }.toSet(), favoriteRemindersOn = laundryPrefs.optBoolean("enabled"), reminderStart = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00", reminderEnd = laundryPrefs.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") }
-            if(signedIn) optionalRefresh { loadNoticesNow(version) }.exceptionOrNull()?.let { problems += it }
-            if(_state.value.tab == 1 && signedIn) optionalRefresh { loadSocialNow(version) }.exceptionOrNull()?.let { problems += it }
-            if (version == generation.get()) platform.synchronize(_state.value)
-            if(building.isNotBlank() && _state.value.announcementsOn) {
-                val announcements = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { announcementPrefs.optJSONObject("dismissed")?.str(it.str("id")) != it.str("version") && prefs.getString("dismiss.${profile?.id ?: "guest"}.${it.str("id")}", null) != it.str("version") && !seenAnnouncements.contains(it.str("id") + ":" + it.str("version")) }
-                if(version == generation.get()) _state.update { it.copy(announcements = if (it.announcementsOn && prefs.getBoolean("announcements", true)) announcements else emptyList()) }
-            }
-            if (version == generation.get() && problems.isNotEmpty()) _state.update { it.copy(error = "机器状态已更新，部分附加信息暂未刷新。\n" + problems.first().message.orEmpty()) }
-        } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            if (version == generation.get()) {
-                val cached = if (signedIn && !authResolved && session.read() != null) api.cachedProfile() ?: _state.value.profile else null
-                _state.update { if (signedIn && !authResolved && session.read() != null) it.copy(
-                    profile = cached, authReady = cached != null, sessionRestoring = false,
-                    authError = "账号恢复暂未完成，已保留本机登录状态。请检查网络后重试。",
-                    error = e.message ?: "账号恢复暂未完成") else it.copy(error = e.message ?: "加载失败") }
-            }
         }
-        finally { _state.update { it.copy(loading = false) }; refreshMutex.unlock(); flushTelemetry(); if(refreshPending) { refreshPending = false; refresh() } }
+        refreshGeneration = version
+        refreshJob = task
+        task.start()
+        return task
+    }
+    private suspend fun refreshPublicRoom(version: Int) {
+        try {
+            coroutineScope {
+                // Query the remembered room immediately, even while site metadata or auth is slow.
+                val building = _state.value.building
+                val board = async { if (building.isNotBlank()) refreshPublicBoard(version, building) }
+                val site = async { optionalRefresh {
+                    val response = metadata("/api/site", auth = false, ttlMs = 30_000)
+                    val rows = response.optJSONArray("buildings") ?: throw ApiException(502, "site_missing", "client_" + UUID.randomUUID().toString().replace("-", ""), "楼栋目录暂未返回，请重试")
+                    val buildings = rows.objects().filter { it.optBoolean("enabled", true) }.map { Building(it.str("code"), it.str("name")) }
+                    if (version == generation.get()) _state.update { before ->
+                        if (before.building.isNotBlank() && buildings.none { it.code == before.building })
+                            before.copy(buildings = buildings, building = "", machines = emptyList(), updatedAt = null, boardFromCache = false, boardWarning = "原住宿楼当前不可用，请重新选择。")
+                        else before.copy(buildings = buildings)
+                    }
+                } }
+                board.await()
+                // Optional metadata cannot erase a successfully published board or its diagnostics.
+                site.await().exceptionOrNull()?.let { problem -> if (version == generation.get()) _state.update { it.copy(error = problem.message ?: "楼栋目录暂未更新") } }
+            }
+        } finally { if (version == generation.get()) _state.update { it.copy(loading = false) } }
+    }
+    private suspend fun refreshPublicBoard(version: Int, building: String) {
+        try {
+            val incoming = parseBoardSnapshot(api.call("/api/machines?dorm=${api.encoded(building)}", auth = false), building)
+            if (version != generation.get() || _state.value.building != building) return
+            val before = _state.value
+            val board = preferLatestBoard(incoming, building, before.building, before.machines, before.updatedAt)
+            _state.update { it.copy(machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, boardFromCache = false, error = null) }
+            publicRooms.save(api.baseUrl, building, board)
+            // Public care/status details are independent from session recovery too.
+            val occupancy = optionalRefresh { api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") }
+            if (version == generation.get() && _state.value.building == building) {
+                occupancy.getOrNull()?.let { rows -> _state.update { current -> current.copy(machines = current.machines.map { machine ->
+                    val row = rows.optJSONObject(machine.id); val care = row?.optJSONObject("care")
+                    machine.copy(note = care?.str("note") ?: machine.note, disinfectant = care?.optBoolean("useDisinfectant") ?: machine.disinfectant,
+                        selfCleaned = care?.optBoolean("selfCleaned") ?: machine.selfCleaned, occupantId = row?.str("userId").orEmpty(),
+                        suspectedUncollected = machine.suspectedUncollected || row?.optBoolean("suspectedUncollected") == true)
+                }) } }
+                occupancy.exceptionOrNull()?.let { problem -> _state.update { it.copy(boardWarning = "机器状态已更新，公开登记信息暂未更新。\n" + problem.message.orEmpty()) } }
+            }
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) {
+            if (version == generation.get() && _state.value.building == building) _state.update { it.copy(
+                boardWarning = (if (it.machines.isNotEmpty()) "当前显示上次公开状态，更新暂未完成，请以现场为准。\n" else "机器状态暂未获取，可重试。\n") + problem.message.orEmpty()) }
+        }
+    }
+    private suspend fun refreshAccount(version: Int) {
+        val signedIn = session.read() != null
+        val previouslyVerified = _state.value.authReady && signedIn
+        if (!signedIn) {
+            if (version == generation.get()) { _state.update { it.copy(profile = null, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
+            return
+        }
+        _state.update { it.copy(sessionRestoring = !it.authReady, authError = null) }
+        try {
+            val user = api.call("/api/auth/me").optJSONObject("user")
+                ?: throw ApiException(502, "profile_missing", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂未返回，请重试")
+            if (user.str("id").isBlank()) throw ApiException(502, "profile_invalid", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂不可用，请重试")
+            // Restore authorization as well as display identity. A cached profile grants no access.
+            val access = api.call("/api/user/permissions")
+            if (version != generation.get()) return
+            api.cacheProfile(user)
+            val profile = Profile.parse(user)
+            val target = profile.building.takeIf { it.isNotBlank() && (_state.value.buildings.isEmpty() || _state.value.buildings.any { row -> row.code == it }) } ?: _state.value.building
+            val changed = target != _state.value.building
+            val cached = if (changed) publicRooms.read(api.baseUrl, target) else null
+            _state.update { it.copy(profile = profile, authReady = true, sessionRestoring = false, authError = null, access = access,
+                building = target, machines = if (changed) cached?.machines.orEmpty() else it.machines,
+                updatedAt = if (changed) cached?.updatedAt else it.updatedAt,
+                boardWarning = if (changed) cached?.warning else it.boardWarning,
+                boardFromCache = if (changed) cached != null else it.boardFromCache) }
+            if (target.isNotBlank()) prefs.edit().putString("building", target).apply()
+            if (prefs.getBoolean("pendingGuestNotifyEnable", false) && platform.notificationsEnabled) toggleNotify(true)
+            if (changed && target.isNotBlank()) viewModelScope.launch { refreshPublicBoard(version, target) }
+            if (_state.value.tab == 2) refreshChannels()
+            preloadAssistant()
+            val permissions = access.optJSONObject("permissions")
+            val mayReadTasks = permissions?.optJSONObject("tasks")?.optBoolean("view", true) != false
+            val mayReadQueue = target.isNotBlank() && permissions?.optJSONObject("queue")?.optBoolean("view", true) != false
+            val results = coroutineScope {
+                val tasks = async { optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) } }
+                val queue = async { optionalRefresh { if (mayReadQueue) api.call("/api/queue?dorm=${api.encoded(target)}") else JSONObject().put("queue", JSONArray()) } }
+                val laundry = async { optionalRefresh { metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() } }
+                val announcements = async { optionalRefresh { metadata("/api/user/announcements") } }
+                listOf(tasks.await(), queue.await(), laundry.await(), announcements.await())
+            }
+            if (version != generation.get() || !_state.value.authReady) return
+            results[0].getOrNull()?.let { response ->
+                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
+                _state.update { it.copy(tasks = response.optJSONArray("tasks")?.objects().orEmpty().map { row -> LaundryTask.parse(row).copy(clockOffsetMs = offset) }) }
+            }
+            if (!mayReadTasks) _state.update { it.copy(tasks = emptyList()) }
+            results[1].getOrNull()?.let { response -> _state.update { it.copy(queues = response.optJSONArray("queue")?.objects().orEmpty()) } }
+            if (!mayReadQueue) _state.update { it.copy(queues = emptyList()) }
+            results[2].getOrNull()?.let { laundry -> _state.update { it.copy(
+                favorites = laundry.optJSONArray("favorites")?.let { array -> (0 until array.length()).map { array.optString(it) }.toSet() }.orEmpty(),
+                favoriteRemindersOn = laundry.optBoolean("enabled"), reminderStart = laundry.optJSONArray("timeWindows")?.optJSONObject(0)?.str("start", "19:00") ?: "19:00",
+                reminderEnd = laundry.optJSONArray("timeWindows")?.optJSONObject(0)?.str("end", "22:00") ?: "22:00") } }
+            val announcementPrefs = results[3].getOrNull()
+            announcementPrefs?.let { settings -> _state.update { it.copy(announcementsOn = settings.optBoolean("enabled", true) && prefs.getBoolean("announcements", true),
+                announcements = if (settings.optBoolean("enabled", true) && prefs.getBoolean("announcements", true)) it.announcements else emptyList()) } }
+            optionalRefresh { loadNoticesNow(version) }
+            if (_state.value.tab == 1) optionalRefresh { loadSocialNow(version) }
+            if (version == generation.get()) platform.synchronize(_state.value)
+            refreshAnnouncements(version, announcementPrefs)
+            val problem = results.firstNotNullOfOrNull { it.exceptionOrNull() }
+            if (version == generation.get() && problem != null) _state.update { it.copy(error = "部分账号信息暂未刷新。\n" + problem.message.orEmpty()) }
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) {
+            if (version == generation.get() && session.read() != null) _state.update { it.copy(profile = api.cachedProfile() ?: it.profile,
+                authReady = previouslyVerified, sessionRestoring = false,
+                authError = "账号恢复暂未完成，已保留本机登录状态。洗衣房可继续查看，请稍后重试。\n" + problem.message.orEmpty()) }
+        }
+    }
+    private suspend fun refreshAnnouncements(version: Int, settings: JSONObject?) {
+        val building = _state.value.building
+        if (building.isBlank() || !_state.value.announcementsOn) return
+        optionalRefresh {
+            val rows = metadata("/api/announcements?dorm=${api.encoded(building)}", auth = false).optJSONArray("announcements")?.objects().orEmpty().filter { row ->
+                settings?.optJSONObject("dismissed")?.str(row.str("id")) != row.str("version") &&
+                    prefs.getString("dismiss.${_state.value.profile?.id ?: "guest"}.${row.str("id")}", null) != row.str("version") && !seenAnnouncements.contains(row.str("id") + ":" + row.str("version")) }
+            if (version == generation.get() && building == _state.value.building) _state.update { it.copy(announcements = if (it.announcementsOn) rows else emptyList()) }
+        }
+    }
+    private fun assistantScope(): AssistantScope? = _state.value.takeIf { it.authReady }?.profile?.id?.takeIf(String::isNotBlank)?.let {
+        AssistantScope(_state.value.endpoint, it, generation.get())
+    }
+    fun invalidateAssistant(names: Set<String> = AssistantPreloader.NAMES) { assistantScope()?.let { assistantPreloader.invalidate(it, names) } }
+    fun acceptAssistantPanel(name: String, value: JSONObject) {
+        val account = assistantScope() ?: return
+        if (_state.value.access.optJSONObject("permissions")?.optJSONObject("assistant")?.optBoolean("view", true) == false) return
+        val panel = assistantPreloader.accept(account, name, value)
+        _state.update { it.copy(assistant = AssistantSnapshot(account, (it.assistant.takeIf { snapshot -> snapshot.scope == account }?.panels.orEmpty()) + (name to panel))) }
+    }
+    fun preloadAssistant(force: Boolean = false, names: Set<String> = AssistantPreloader.NAMES): kotlinx.coroutines.Job = viewModelScope.launch {
+        val account = assistantScope() ?: return@launch
+        if (_state.value.access.optJSONObject("permissions")?.optJSONObject("assistant")?.optBoolean("view", true) == false) {
+            assistantPreloader.clear(); _state.update { it.copy(assistant = AssistantSnapshot()) }; return@launch
+        }
+        if (_state.value.assistant.scope != account) _state.update { it.copy(assistant = AssistantSnapshot(account)) }
+        assistantPreloader.load(account, names, force, { assistantScope() == account }) { name, panel ->
+            if (assistantScope() == account) _state.update { it.copy(assistant = AssistantSnapshot(account, it.assistant.panels + (name to panel))) }
+        }
     }
     private val seenAnnouncements = mutableSetOf<String>()
     fun dismissAnnouncement(permanent: Boolean) = mutate(null) {
@@ -229,8 +346,10 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
         seenAnnouncements.add(a.str("id") + ":" + a.str("version")); _state.update { it.copy(announcements = it.announcements.drop(1)) }
     }
-    fun mutate(success: String? = "已保存", wait: Boolean = false, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
+    fun mutate(success: String? = "已保存", wait: Boolean = false, allowRestoring: Boolean = false, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
+        if (!allowRestoring && session.read() != null && !_state.value.authReady) { message("账号仍在恢复，请稍后重试此操作"); return@launch }
         if(wait) mutationMutex.lock() else if(!mutationMutex.tryLock()) return@launch
+        if (!allowRestoring && session.read() != null && !_state.value.authReady) { mutationMutex.unlock(); return@launch }
         _state.update { it.copy(busy = true) }
         try { block(); metadata.clear(); channelInbox.invalidate(); if(success != null) message(success); refresh() }
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
@@ -311,6 +430,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     }
     fun dismissShare() { _state.update { it.copy(pendingShare = null) } }
     fun refreshMessages(): kotlinx.coroutines.Job = viewModelScope.launch {
+        if (!_state.value.authReady || _state.value.profile == null) return@launch
         if (!messagesLock.tryLock()) { messagesPending = true; return@launch }
         try { val version = generation.get(); loadMessagesNow(version); loadNoticesNow(version) }
         catch(cancel: CancellationException) { throw cancel }
@@ -318,6 +438,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
     }
     fun moreMessages() = viewModelScope.launch {
+        if (!_state.value.authReady || _state.value.profile == null) return@launch
         if (!messagesLock.tryLock()) return@launch
         try { if (_state.value.messagesHasMore) loadMessagesNow(generation.get(), _state.value.messagesPage + 1) }
         catch(cancel: CancellationException) { throw cancel }
@@ -325,6 +446,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
     }
     private suspend fun loadNoticesNow(version: Int) {
+        if (!_state.value.authReady || _state.value.profile == null || version != generation.get()) return
         val (notices, queueNotices) = coroutineScope {
             val messages = async { api.call("/api/messages/notices").optJSONArray("notices")?.objects().orEmpty() }
             val queue = async { api.call("/api/queue/notices").optJSONArray("notices")?.objects().orEmpty().take(30) }
@@ -336,7 +458,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         val selected = _state.value.channel
         api.call("/api/messages/notices/read", "POST", JSONObject().put("channel", selected))
     }
-    private fun channelAccount(): ChannelAccountScope? = _state.value.profile?.id?.takeIf { it.isNotBlank() }?.let {
+    private fun channelAccount(): ChannelAccountScope? = _state.value.takeIf { it.authReady }?.profile?.id?.takeIf { it.isNotBlank() }?.let {
         ChannelAccountScope(_state.value.endpoint, it, generation.get())
     }
     fun refreshChannels() {
@@ -377,6 +499,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
     }
     private suspend fun loadMessagesNow(version: Int, page: Int = 1) {
+        if (!_state.value.authReady || _state.value.profile == null) return
         val channel = _state.value.channel
         val machineId = _state.value.discussionMachine
         val filter = if (machineId.isNotBlank()) "&machineId=${api.encoded(machineId)}" else ""
@@ -397,8 +520,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     fun invite(callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/social/invite", "POST", JSONObject().put("kind", "friend")); callback(j.str("url", j.str("link", j.str("ticket")))) }
     fun acceptInvite(ticket: String) = mutate("朋友已绑定") { api.call("/api/social/accept", "POST", JSONObject().put("ticket", ticket)) }
     fun assistant(text: String, callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/assistant/chat", "POST", JSONObject().put("input", text)); callback(j.str("reply", j.str("message"))) }
-    fun logout() = mutate("已退出登录") {
-        generation.incrementAndGet(); channelInbox.clear(); metadata.clear(); channelsJob?.cancel()
+    fun logout() = mutate("已退出登录", allowRestoring = true) {
+        generation.incrementAndGet(); channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
         prefs.edit().remove("pendingGuestNotifyEnable").commit()
         com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
         try {
@@ -406,7 +529,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
         }
     }
 }
