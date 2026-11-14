@@ -135,35 +135,45 @@ class NativePlatformTest {
 
     @Test fun logoutCancelsScheduledWorkAndErasesPrivateWidgetAndLoginState() = runBlocking {
         grantNotifications()
-        val origin = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
-            app.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString("endpoint", null))
-        SecureSession(app).save(JSONObject().put("origin", origin)
-            .put("accessToken", "ma1.widget-logout-fixture.test-secret").put("user", JSONObject().put("id", "widget-logout-fixture")))
-        PushRuntime.initialize(app, PushConfiguration(consent = true))
-        PushRuntime.onSessionAvailable(app)
-        val task = TaskProgress("instrumented-task", 1, "测试洗衣机", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)
-        LaundryReminders.schedule(app, task)
-        assertTrue(notices.updateProgress(task))
-        awaitNotifications("The progress notification must be visible before testing logout") { active ->
-            active.count { it.tag == "progress:${task.taskId}" } == 1
-        }
-        LaundryWidgetStore.update(app, LaundryWidgetSnapshot("测试楼", 2, 3, 0, System.currentTimeMillis(), "测试洗衣机", task.estimatedFinishAtMillis))
-        DingTalkLoginBridge.createRequest(app, "instrumented-installation")
-        assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).contains("snapshot"))
-        assertTrue(WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).any { !it.state.isFinished })
+        val preferences = app.getSharedPreferences("preferences", Context.MODE_PRIVATE)
+        val oldEndpoint = preferences.getString("endpoint", null)
+        preferences.edit().putString("endpoint", "https://widget.invalid").commit()
+        try {
+            val origin = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
+                preferences.getString("endpoint", null))
+            SecureSession(app).save(JSONObject().put("origin", origin)
+                .put("accessToken", "ma1.widget-logout-fixture.test-secret").put("user", JSONObject().put("id", "widget-logout-fixture")))
+            PushRuntime.initialize(app, PushConfiguration(consent = true))
+            PushRuntime.onSessionAvailable(app)
+            val task = TaskProgress("instrumented-task", 1, "测试洗衣机", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)
+            LaundryReminders.schedule(app, task)
+            assertTrue(notices.updateProgress(task))
+            awaitNotifications("The progress notification must be visible before testing logout") { active ->
+                active.count { it.tag == "progress:${task.taskId}" } == 1
+            }
+            assertTrue("A real matching encrypted test session must own the widget snapshot",
+                LaundryWidgetStore.update(app, LaundryWidgetSnapshot("测试楼", 2, 3, 0, System.currentTimeMillis(), "测试洗衣机", task.estimatedFinishAtMillis)))
+            DingTalkLoginBridge.createRequest(app, "instrumented-installation")
+            assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).contains("snapshot"))
+            assertTrue(WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).any { !it.state.isFinished })
 
-        PushRuntime.logout(app)
+            PushRuntime.logout(app)
 
-        assertFalse(PushRuntime.isSessionActive(app))
-        assertTrue(awaitNotifications("Logout must cancel all visible notifications") { it.isEmpty() }.isEmpty())
-        assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).all.isEmpty())
-        assertTrue(app.getSharedPreferences("native_login_pending", Context.MODE_PRIVATE).all.isEmpty())
-        assertTrue(app.getSharedPreferences("laundry_reminder_state", Context.MODE_PRIVATE).all.isEmpty())
-        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-        while (WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).any { !it.state.isFinished } && System.nanoTime() < deadline) {
-            Thread.sleep(50) // Cancellation is asynchronous inside WorkManager's real database executor.
+            assertFalse(PushRuntime.isSessionActive(app))
+            assertTrue(awaitNotifications("Logout must cancel all visible notifications") { it.isEmpty() }.isEmpty())
+            assertTrue(app.getSharedPreferences("laundry_widget_snapshot", Context.MODE_PRIVATE).all.isEmpty())
+            assertTrue(app.getSharedPreferences("native_login_pending", Context.MODE_PRIVATE).all.isEmpty())
+            assertTrue(app.getSharedPreferences("laundry_reminder_state", Context.MODE_PRIVATE).all.isEmpty())
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).any { !it.state.isFinished } && System.nanoTime() < deadline) {
+                Thread.sleep(50) // Cancellation is asynchronous inside WorkManager's real database executor.
+            }
+            assertTrue(WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).all { it.state.isFinished })
+        } finally {
+            val edit = preferences.edit()
+            if (oldEndpoint == null) edit.remove("endpoint") else edit.putString("endpoint", oldEndpoint)
+            edit.commit()
         }
-        assertTrue(WorkManager.getInstance(app).getWorkInfosByTag("laundry_reminder").get(10, TimeUnit.SECONDS).all { it.state.isFinished })
     }
 
     @Test fun serverAndLocalTaskEventsShareOneCardAndConfirmationReplacesTheEstimate() {

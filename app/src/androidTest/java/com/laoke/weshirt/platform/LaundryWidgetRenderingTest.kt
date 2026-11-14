@@ -184,77 +184,93 @@ class LaundryWidgetRenderingTest {
     }
 
     @Test fun attachedHostActuallyFlipsOnlyRunningDrumAndRefreshIsAnIndependentImmutableBroadcast() {
-        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-            val provider = LaundryWidgetProvider()
-            val now = System.currentTimeMillis()
-            lateinit var root: View
-            var firstFrame = -1
-            scenario.onActivity { activity ->
-                val host = FrameLayout(activity)
-                activity.setContentView(host)
-                root = provider.render(activity, 902, task(now), WidgetSize.WIDE, now).apply(activity, host)
-                host.addView(root, FrameLayout.LayoutParams(dp(activity, 320), dp(activity, 180)))
-            }
-            instrumentation.waitForIdleSync()
-            // ProgressBar starts its Animatable in drawTrack(), after attachment.
-            // An idle message queue alone does not guarantee that the first host
-            // frame has been laid out and drawn.
-            val firstFrameDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
-            var hostDrawn = false
-            while (!hostDrawn && android.os.SystemClock.elapsedRealtime() < firstFrameDeadline) {
-                scenario.onActivity {
-                    val overlay = root.findViewById<ProgressBar>(R.id.widget_activity)
-                    hostDrawn = root.isLaidOut && root.width > 0 && root.height > 0 &&
-                        overlay.isShown && isRunning(overlay.indeterminateDrawable)
-                }
-                if (!hostDrawn) Thread.sleep(100)
-            }
-            assertTrue("The host must draw its first running activity frame", hostDrawn)
-            scenario.onActivity {
-                val flipper = root.findViewById<ViewFlipper>(R.id.widget_drum_active)
-                assertTrue(flipper.isShown)
-                assertTrue(flipper.isFlipping)
-                firstFrame = flipper.displayedChild
-                val activity = root.findViewById<ProgressBar>(R.id.widget_activity)
-                assertTrue(activity.isShown)
-                assertTrue("The host must animate the activity overlay", isRunning(activity.indeterminateDrawable))
-                val known = root.findViewById<ProgressBar>(R.id.widget_progress)
-                assertEquals(50, known.progress)
-                assertEquals("Activity is an overlay on the same progress track", rect(root, known), rect(root, activity))
-            }
-            // A real ViewFlipper timer, not a test-driven showNext(), advances the drum.
-            val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
-            var advanced = false
-            while (!advanced && android.os.SystemClock.elapsedRealtime() < deadline) {
-                Thread.sleep(100)
-                scenario.onActivity { advanced = root.findViewById<ViewFlipper>(R.id.widget_drum_active).displayedChild != firstFrame }
-            }
-            assertTrue("The attached host must advance the drum on its own", advanced)
-            val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
-            try {
+        // CI disables animator duration globally. Opt this animation test in,
+        // then restore the emulator's setting even when an assertion fails.
+        val durationScale = shell("settings get global animator_duration_scale")
+        try {
+            shell("settings put global animator_duration_scale 1")
+            val scaleDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
+            while (!android.animation.ValueAnimator.areAnimatorsEnabled() && android.os.SystemClock.elapsedRealtime() < scaleDeadline)
+                Thread.sleep(50)
+            assertTrue("This test must opt into system animations before attaching the host", android.animation.ValueAnimator.areAnimatorsEnabled())
+            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+                val provider = LaundryWidgetProvider()
+                val now = System.currentTimeMillis()
+                lateinit var root: View
+                var firstFrame = -1
                 scenario.onActivity { activity ->
-                    val refresh = provider.refreshPendingIntent(activity, 902)
-                    assertTrue(refresh.isBroadcast)
-                    if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(refresh.isImmutable)
-                    assertEquals(activity.packageName, refresh.creatorPackage)
-                    assertTrue(root.findViewById<View>(R.id.widget_refresh).performClick())
-                    val request = Intent(activity, LaundryWidgetProvider::class.java).setAction(LaundryWidgetProvider.ACTION_REFRESH)
-                        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 902)
-                    assertEquals(902, provider.acceptedRefreshId(activity, request, intArrayOf(902)))
-                    assertNull(provider.acceptedRefreshId(activity, request, intArrayOf(903)))
-                    assertNull(provider.acceptedRefreshId(activity, Intent(request).setComponent(null), intArrayOf(902)))
-                    assertNull(provider.acceptedRefreshId(activity, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(902)))
-                    captureView(root, "native-widget-attached-running")
+                    val host = FrameLayout(activity)
+                    activity.setContentView(host)
+                    root = provider.render(activity, 902, task(now), WidgetSize.WIDE, now).apply(activity, host)
+                    host.addView(root, FrameLayout.LayoutParams(dp(activity, 320), dp(activity, 180)))
                 }
                 instrumentation.waitForIdleSync()
-                assertEquals("The refresh button must not launch the app", 0, monitor.hits)
-            } finally { instrumentation.removeMonitor(monitor) }
-            scenario.onActivity { activity ->
-                provider.render(activity, 902, LaundryWidgetSnapshot("Test building", 9, 0, 0, now), WidgetSize.WIDE, now).reapply(activity, root)
-                assertNull("Idle redraw detaches the timer rather than hiding a live flipper", root.findViewById<ViewFlipper>(R.id.widget_drum_active))
-                assertEquals(View.VISIBLE, root.findViewById<View>(R.id.widget_drum_static).visibility)
-                assertEquals(View.GONE, root.findViewById<View>(R.id.widget_activity).visibility)
-                captureView(root, "native-widget-attached-idle")
+                // ProgressBar starts its Animatable in drawTrack(), after attachment.
+                // An idle message queue alone does not guarantee that the first host
+                // frame has been laid out and drawn.
+                val firstFrameDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
+                var hostDrawn = false
+                while (!hostDrawn && android.os.SystemClock.elapsedRealtime() < firstFrameDeadline) {
+                    scenario.onActivity {
+                        val overlay = root.findViewById<ProgressBar>(R.id.widget_activity)
+                        hostDrawn = root.isLaidOut && root.width > 0 && root.height > 0 &&
+                            overlay.isShown && isRunning(overlay.indeterminateDrawable)
+                    }
+                    if (!hostDrawn) Thread.sleep(100)
+                }
+                assertTrue("The host must draw its first running activity frame", hostDrawn)
+                scenario.onActivity {
+                    val flipper = root.findViewById<ViewFlipper>(R.id.widget_drum_active)
+                    assertTrue(flipper.isShown)
+                    assertTrue(flipper.isFlipping)
+                    firstFrame = flipper.displayedChild
+                    val activity = root.findViewById<ProgressBar>(R.id.widget_activity)
+                    assertTrue(activity.isShown)
+                    assertTrue("The host must animate the activity overlay", isRunning(activity.indeterminateDrawable))
+                    val known = root.findViewById<ProgressBar>(R.id.widget_progress)
+                    assertEquals(50, known.progress)
+                    assertEquals("Activity is an overlay on the same progress track", rect(root, known), rect(root, activity))
+                }
+                // A real ViewFlipper timer, not a test-driven showNext(), advances the drum.
+                val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
+                var advanced = false
+                while (!advanced && android.os.SystemClock.elapsedRealtime() < deadline) {
+                    Thread.sleep(100)
+                    scenario.onActivity { advanced = root.findViewById<ViewFlipper>(R.id.widget_drum_active).displayedChild != firstFrame }
+                }
+                assertTrue("The attached host must advance the drum on its own", advanced)
+                val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
+                try {
+                    scenario.onActivity { activity ->
+                        val refresh = provider.refreshPendingIntent(activity, 902)
+                        assertTrue(refresh.isBroadcast)
+                        if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(refresh.isImmutable)
+                        assertEquals(activity.packageName, refresh.creatorPackage)
+                        assertTrue(root.findViewById<View>(R.id.widget_refresh).performClick())
+                        val request = Intent(activity, LaundryWidgetProvider::class.java).setAction(LaundryWidgetProvider.ACTION_REFRESH)
+                            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 902)
+                        assertEquals(902, provider.acceptedRefreshId(activity, request, intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, request, intArrayOf(903)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setComponent(null), intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(902)))
+                        captureView(root, "native-widget-attached-running")
+                    }
+                    instrumentation.waitForIdleSync()
+                    assertEquals("The refresh button must not launch the app", 0, monitor.hits)
+                } finally { instrumentation.removeMonitor(monitor) }
+                scenario.onActivity { activity ->
+                    provider.render(activity, 902, LaundryWidgetSnapshot("Test building", 9, 0, 0, now), WidgetSize.WIDE, now).reapply(activity, root)
+                    assertNull("Idle redraw detaches the timer rather than hiding a live flipper", root.findViewById<ViewFlipper>(R.id.widget_drum_active))
+                    assertEquals(View.VISIBLE, root.findViewById<View>(R.id.widget_drum_static).visibility)
+                    assertEquals(View.GONE, root.findViewById<View>(R.id.widget_activity).visibility)
+                    captureView(root, "native-widget-attached-idle")
+                }
+            }
+        } finally {
+            if (durationScale == "null") shell("settings delete global animator_duration_scale")
+            else {
+                require(durationScale.matches(Regex("[0-9]+(?:\\.[0-9]+)?")))
+                shell("settings put global animator_duration_scale $durationScale")
             }
         }
     }
@@ -289,5 +305,8 @@ class LaundryWidgetRenderingTest {
     private fun captureView(view: View, name: String) {
         val image = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
         try { view.draw(Canvas(image)); image.writeToTestStorage(name) } finally { image.recycle() }
+    }
+    private fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use {
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText().trim()
     }
 }

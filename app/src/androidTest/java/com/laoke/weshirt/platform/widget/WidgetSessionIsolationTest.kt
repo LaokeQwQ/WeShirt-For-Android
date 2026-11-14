@@ -45,7 +45,12 @@ class WidgetSessionIsolationTest {
         val serverCertificates = HandshakeCertificates.Builder().heldCertificate(certificate).build()
         val trust = HandshakeCertificates.Builder().addTrustedCertificate(certificate.certificate).build()
         server = MockWebServer().apply { useHttps(serverCertificates.sslSocketFactory(), false); start(InetAddress.getByName("127.0.0.1"), 0) }
-        origin = server.url("/").toString().trimEnd('/')
+        // Android may reverse the bound loopback address back to "localhost".
+        // Use the literal IP covered by this certificate, without weakening TLS.
+        val address = server.url("/").newBuilder().host("127.0.0.1").build()
+        assertEquals("127.0.0.1", address.host)
+        assertTrue(certificate.certificate.subjectAlternativeNames.any { it[0] == 7 && it[1] == address.host })
+        origin = address.toString().trimEnd('/')
         client = OkHttpClient.Builder().sslSocketFactory(trust.sslSocketFactory(), trust.trustManager)
             .protocols(listOf(Protocol.HTTP_1_1)).retryOnConnectionFailure(false)
             .followRedirects(false).followSslRedirects(false).callTimeout(6, TimeUnit.SECONDS).build()
