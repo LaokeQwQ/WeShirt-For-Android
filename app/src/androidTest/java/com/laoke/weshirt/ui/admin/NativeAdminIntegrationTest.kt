@@ -6,6 +6,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
@@ -52,6 +54,7 @@ class NativeAdminIntegrationTest {
     private val requests = CopyOnWriteArrayList<RecordedRequest>()
     private val closes = AtomicInteger()
     @Volatile private var residentCanOperate = true
+    private var dismissKeyboard: () -> Unit = {}
 
     @Before fun prepare() {
         check(BuildConfig.DEBUG) { "This fixture requires the debug-only endpoint override" }
@@ -130,7 +133,9 @@ class NativeAdminIntegrationTest {
         compose.onNodeWithContentDescription("复制用户 ID").performScrollTo().assertIsDisplayed()
         compose.onNode(hasText("昵称") and hasSetTextAction()).performScrollTo().performTextClearance()
         compose.onNode(hasText("昵称") and hasSetTextAction()).performTextInput("更新的测试昵称")
-        Espresso.closeSoftKeyboard()
+        // The admin UI is a Compose Dialog with its own focused window. Espresso's
+        // global root picker may select the deliberately unfocused base activity.
+        compose.runOnIdle { dismissKeyboard() }
         compose.onNodeWithText("保存昵称与通知偏好").performScrollTo().assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithText("删除用户").performScrollTo().assertIsDisplayed()
         assertReadOnlyAuthenticatedRequests()
@@ -178,6 +183,9 @@ class NativeAdminIntegrationTest {
         compose.setContent {
             val state by vm.state.collectAsState()
             var open by remember { mutableStateOf(true) }
+            val focus = LocalFocusManager.current
+            val keyboard = LocalSoftwareKeyboardController.current
+            SideEffect { dismissKeyboard = { focus.clearFocus(force = true); keyboard?.hide() } }
             WeShirtTheme("light", "blue") {
                 if (open) NativeAdminScreen(state, vm) { closes.incrementAndGet(); open = false }
                 else Text("后台已关闭", Modifier.testTag("admin-closed"))

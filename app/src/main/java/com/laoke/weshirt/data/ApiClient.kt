@@ -35,6 +35,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     internal fun sessionFence(): ApiSessionFence = synchronized(guard) { ApiSessionFence(baseUrl, generation) }
     var onMetric: ((path: String, elapsedMs: Long, status: Int) -> Unit)? = null
     private val refreshLock = Mutex()
+    private fun sharedRefreshLock(origin: String) = refreshLocks.getOrPut("${session.installationId}\u0000$origin") { Mutex() }
     private val pendingKeys = ConcurrentHashMap<String, String>()
     private val mediaDir = File(cacheDir, "private-media").apply { mkdirs() }
     private val http = client ?: OkHttpClient.Builder().cache(Cache(File(cacheDir, "public-http"), 12L * 1024 * 1024)).connectTimeout(12, TimeUnit.SECONDS).readTimeout(25, TimeUnit.SECONDS).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
@@ -47,38 +48,48 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         // Protected calls queued by a previous refresh must stop locally once
         // login clears its credentials, rather than send an anonymous 401 that
         // could invalidate the new authorization currently being exchanged.
-        val token = if(auth) accessToken(origin, version)
+        val authorization = if(auth) accessSession(origin, version)
             ?: throw ApiException(401, "unauthorized", eventId(), "请先登录") else null
+        val token = authorization?.str("accessToken")
         current(origin, version)
-        val signature = "$origin|$version|$method|$path|${body ?: ""}"
+        val account = authorization?.optJSONObject("user")?.str("id").orEmpty()
+        val signature = "$origin|$version|$account|$method|$path|${body ?: ""}"
         val mutation = method != "GET" && !path.startsWith("/api/mobile/auth/")
         val requestKey = key ?: if(mutation) pendingKeys.getOrPut(signature) { UUID.randomUUID().toString() } else null
         try {
             val result = raw(origin, path, method, body, token, requestKey)
-            current(origin, version)
+            if (authorization != null) currentAuthorization(origin, version, authorization) else current(origin, version)
             pendingKeys.remove(signature)
             return result
-        } catch(e: ApiException) { if(e.status in 400..499 && e.status != 408 && e.status != 429) pendingKeys.remove(signature); if(auth && e.status == 401) invalidate(origin, version); throw e }
+        } catch(e: ApiException) { if(e.status in 400..499 && e.status != 408 && e.status != 429) pendingKeys.remove(signature); if(authorization != null && e.status == 401) invalidateProtected(origin, version, authorization); throw e }
     }
-    private suspend fun accessToken(origin: String, version: Long): String? {
+    private suspend fun accessSession(origin: String, version: Long): JSONObject? {
         // An obsolete refresh may still be waiting on the network. Valid tokens
         // from a new login must not wait behind that previous account's mutex.
         synchronized(guard) {
             current(origin, version)
             val saved = session.read() ?: return null
-            if (saved.str("origin") != origin) { invalidate(origin, version); return null }
-            if (saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return saved.str("accessToken")
+            if (saved.str("origin") != origin) throw CancellationException("Session origin changed")
+            if (saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return saved
         }
         return refreshLock.withLock {
-            current(origin, version)
-            val saved = session.read() ?: return@withLock null
-            if(saved.str("origin") != origin) { invalidate(origin, version); return@withLock null }
-            if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@withLock saved.str("accessToken")
-            try {
-                val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
-                synchronized(guard) { current(origin, version); storeSession(next, origin, saved) }
-                next.str("accessToken")
-            } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidate(origin, version); throw e }
+            // Different clients in this process share the same rotating server
+            // credential. A losing 401 must never arrive before a winner is saved.
+            sharedRefreshLock(origin).withLock shared@ {
+                current(origin, version)
+                val saved = session.read() ?: return@shared null
+                if(saved.str("origin") != origin) throw CancellationException("Session origin changed")
+                if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@shared saved
+                try {
+                    val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
+                    synchronized(guard) {
+                        current(origin, version)
+                        val stored = sessionValue(next, origin, saved)
+                        if (!session.compareAndSetCredentials(saved, stored)) throw CancellationException("Session credentials changed during refresh")
+                        stored
+                    }
+                } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidateCaptured(origin, version, saved); throw e }
+            }
         }
     }
     /** A new user authorization supersedes every in-flight request of the old session. */
@@ -100,17 +111,41 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         val bound = saved.optJSONObject("user")?.str("id").orEmpty()
         if (bound.isNotBlank() && bound != profile.str("id")) return@synchronized
         if (saved.optJSONObject("profile")?.toString() == profile.toString()) return@synchronized
-        session.save(JSONObject(saved.toString()).put("profile", JSONObject(profile.toString())))
+        session.compareAndSet(saved, JSONObject(saved.toString()).put("profile", JSONObject(profile.toString())))
+        Unit
     }
+    private fun sessionValue(value: JSONObject, origin: String, previous: JSONObject? = null) =
+        sessionWithProfile(value, origin, previous).put("expiresAt", System.currentTimeMillis() + value.optLong("expiresIn", 900) * 1000)
     private fun storeSession(value: JSONObject, origin: String, previous: JSONObject? = null) {
-        session.save(sessionWithProfile(value, origin, previous)
-            .put("expiresAt", System.currentTimeMillis() + value.optLong("expiresIn", 900) * 1000))
+        session.save(sessionValue(value, origin, previous))
+    }
+    /** A response from another instance's old credentials cannot clear a rotation or a new login. */
+    private fun invalidateCaptured(origin: String, version: Long, expected: JSONObject?) = synchronized(guard) {
+        if (origin != baseUrl || version != generation) return@synchronized
+        if (!session.compareAndSetCredentials(expected, null)) throw CancellationException("Session credentials changed before invalidation")
+        generation++; pendingKeys.clear(); clearMedia(); onSessionInvalidated?.invoke()
+    }
+    /** A protected 401 may arrive while another client has rotated remotely but
+     * has not received the new credentials yet. Let that refresh publish first. */
+    private suspend fun invalidateProtected(origin: String, version: Long, expected: JSONObject) =
+        sharedRefreshLock(origin).withLock { invalidateCaptured(origin, version, expected) }
+    /** Profile caching is not an account change; access/refresh credentials are. */
+    private fun currentAuthorization(origin: String, version: Long, expected: JSONObject) = synchronized(guard) {
+        current(origin, version)
+        val saved = session.read()
+        if (saved == null || saved.str("origin") != expected.str("origin") ||
+            saved.str("accessToken") != expected.str("accessToken") || saved.str("refreshToken") != expected.str("refreshToken"))
+            throw CancellationException("Session credentials changed during request")
     }
     private fun invalidate(origin: String, version: Long) = synchronized(guard) { if(origin == baseUrl && version == generation) { generation++; session.clear(); pendingKeys.clear(); clearMedia(); onSessionInvalidated?.invoke() } }
     suspend fun logout() = refreshLock.withLock {
         val (origin, version) = snapshot()
-        try { session.read()?.let { raw(origin, "/api/mobile/auth/logout", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", it.str("refreshToken")), null, null) } }
-        finally { invalidate(origin, version) }
+        sharedRefreshLock(origin).withLock {
+            current(origin, version)
+            val saved = session.read()
+            try { saved?.let { raw(origin, "/api/mobile/auth/logout", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", it.str("refreshToken")), null, null) } }
+            finally { invalidateCaptured(origin, version, saved) }
+        }
     }
     private suspend fun raw(origin: String, path: String, method: String, body: JSONObject?, token: String?, key: String?): JSONObject {
         val requestId = eventId()
@@ -138,7 +173,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             }
         } catch(e: ApiException) { throw e } catch(e: IOException) { throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) } }
     }
-    suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessToken(origin,version) }
+    suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessSession(origin,version)?.str("accessToken") }
     /** Only a short-lived channel ticket is sent to the configured relay, never an access token. */
     fun channelSocket(config: JSONObject, listener: okhttp3.WebSocketListener): okhttp3.WebSocket {
         val (origin, version) = snapshot()
@@ -160,16 +195,18 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     suspend fun upload(path: String, bytes: ByteArray, mime: String): JSONObject {
         require(path.startsWith("/api/messages/") && !path.contains("..") && bytes.size <= 8 * 1024 * 1024)
         val (origin,version) = snapshot()
-        val token = accessToken(origin,version) ?: throw ApiException(401,"unauthorized",eventId(),"请先登录")
+        val authorization = accessSession(origin,version) ?: throw ApiException(401,"unauthorized",eventId(),"请先登录")
+        val token = authorization.str("accessToken")
         current(origin,version)
-        return execute(Request.Builder().url(origin + path).header("Authorization","Bearer $token").header("Cache-Control","no-store").header("Idempotency-Key",UUID.randomUUID().toString()).post(bytes.toRequestBody(mime.toMediaType())).build(),eventId()).also { current(origin,version) }
+        return execute(Request.Builder().url(origin + path).header("Authorization","Bearer $token").header("Cache-Control","no-store").header("Idempotency-Key",UUID.randomUUID().toString()).post(bytes.toRequestBody(mime.toMediaType())).build(),eventId()).also { currentAuthorization(origin,version,authorization) }
     }
     fun encoded(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
     /** Export is kept in memory until a user-selected document is written. */
     suspend fun adminCsv(path: String): String {
         require(path.substringBefore('?') in setOf("/api/admin/audit-logs.csv", "/api/admin/users.csv") && !path.contains("..") && !path.contains('#'))
         val (origin, version) = snapshot()
-        val token = accessToken(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
+        val authorization = accessSession(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
+        val token = authorization.str("accessToken")
         current(origin, version)
         val trace = eventId()
         try {
@@ -181,7 +218,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                     val source = body.source(); source.request(MAX_RESPONSE + 1)
                     if (source.buffer.size > MAX_RESPONSE) throw IOException("oversized response")
                     val text = body.string()
-                    current(origin, version)
+                    currentAuthorization(origin, version, authorization)
                     if (!response.isSuccessful) {
                         val error = runCatching { JSONObject(text).optJSONObject("error") }.getOrNull()
                         throw ApiException(response.code, error?.str("code", "export_failed") ?: "export_failed",
@@ -193,14 +230,15 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                 }
             }
         } catch (cancel: CancellationException) { throw cancel }
-        catch (problem: ApiException) { if (problem.status == 401) invalidate(origin, version); throw problem }
+        catch (problem: ApiException) { if (problem.status == 401) invalidateProtected(origin, version, authorization); throw problem }
         catch (_: IOException) { throw ApiException(0, "export_failed", trace, "文件导出未完成，请重试") }
     }
     fun clearMedia() { mediaDir.listFiles()?.forEach { it.delete() } }
     suspend fun downloadMedia(mediaId: String, maxBytes: Long = 8L * 1024 * 1024): File {
         require(mediaId.matches(Regex("[A-Za-z0-9_-]{1,100}")) && maxBytes in 1..8L*1024*1024)
         val (origin,version) = snapshot()
-        val token = accessToken(origin,version) ?: throw ApiException(401,"unauthorized",eventId(),"请先登录")
+        val authorization = accessSession(origin,version) ?: throw ApiException(401,"unauthorized",eventId(),"请先登录")
+        val token = authorization.str("accessToken")
         current(origin,version)
         val temp = File(mediaDir, UUID.randomUUID().toString())
         return try { withContext(Dispatchers.IO) {
@@ -212,13 +250,16 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                     if(body.contentLength() > maxBytes) throw IOException("Attachment too large")
                     body.byteStream().use { input -> temp.outputStream().use { output ->
                         val buffer = ByteArray(16*1024); var total = 0L
-                        while(true) { val count = input.read(buffer); if(count < 0) break; total += count; if(total > maxBytes) throw IOException("Attachment too large"); current(origin,version); output.write(buffer,0,count) }
+                        while(true) { val count = input.read(buffer); if(count < 0) break; total += count; if(total > maxBytes) throw IOException("Attachment too large"); currentAuthorization(origin,version,authorization); output.write(buffer,0,count) }
                     } }
                 }
-                current(origin,version); temp
+                currentAuthorization(origin,version,authorization); temp
             } catch(e: CancellationException) { temp.delete(); throw e } catch(e: ApiException) { temp.delete(); throw e } catch(_: IOException) { temp.delete(); throw ApiException(0,"media_error",trace,"附件下载未完成") }
         } } catch (cancel: CancellationException) { temp.delete(); throw cancel }
     }
     private fun eventId() = "client_" + UUID.randomUUID().toString().replace("-", "")
-    companion object { private const val MAX_RESPONSE = 2L * 1024 * 1024 }
+    companion object {
+        private const val MAX_RESPONSE = 2L * 1024 * 1024
+        private val refreshLocks = ConcurrentHashMap<String, Mutex>()
+    }
 }

@@ -17,7 +17,8 @@ class LaundryWidgetStateTest {
         val old = snapshot(now - 600_001)
         assertEquals(WidgetFreshness.OUTDATED, LaundryWidgetState.freshness(old, now))
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(old, now))
-        assertEquals(WidgetFreshness.RECENT, LaundryWidgetState.freshness(snapshot(now - 600_000), now))
+        assertEquals(WidgetFreshness.OUTDATED, LaundryWidgetState.freshness(snapshot(now - 600_000), now))
+        assertEquals(WidgetFreshness.RECENT, LaundryWidgetState.freshness(snapshot(now - 599_999), now))
     }
 
     @Test fun missingAndImplausibleTimesNeverBecomeLiveCounts() {
@@ -50,5 +51,21 @@ class LaundryWidgetStateTest {
     @Test fun externalNamesCannotInsertExtraRowsOrUnboundedText() {
         assertEquals("Washer 01", LaundryWidgetState.safeLabel("  Washer \n01\t  "))
         assertEquals(100, LaundryWidgetState.safeLabel("x".repeat(1000)).length)
+    }
+
+    @Test fun elapsedTimeAdvancesRealProgressButNeverTurnsTheTaskIntoIdle() {
+        val known = snapshot(finish = now + 480_000).copy(taskStartedAtMillis = now - 480_000)
+        assertEquals(50, LaundryWidgetState.progressPercent(known, now))
+        assertEquals(75, LaundryWidgetState.progressPercent(known, now + 240_000))
+        assertEquals(100, LaundryWidgetState.progressPercent(known, now + 480_000))
+        assertEquals(WidgetTaskState.AWAITING_CONFIRMATION, LaundryWidgetState.taskState(known, now + 480_000))
+        org.junit.Assert.assertNull(LaundryWidgetState.progressPercent(known.copy(taskStartedAtMillis = known.taskEstimatedFinishAtMillis), now))
+    }
+
+    @Test fun refreshFailureDoesNotTurnAnOldEmptyTaskListIntoIdle() {
+        val empty = snapshot().copy(taskMachineName = null, taskEstimatedFinishAtMillis = null)
+        assertEquals(WidgetTaskState.NONE, LaundryWidgetState.taskState(empty, now))
+        assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(empty.copy(taskUnverified = true), now))
+        assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(empty.copy(updatedAtMillis = now - 700_000), now))
     }
 }
