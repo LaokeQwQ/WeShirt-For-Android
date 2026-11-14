@@ -18,6 +18,8 @@ import com.google.firebase.FirebaseApp
 import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.MainActivity
 import com.laoke.weshirt.AppViewModel
+import com.laoke.weshirt.data.SecureSession
+import com.laoke.weshirt.data.serviceEndpoint
 import com.laoke.weshirt.platform.login.DingTalkLoginBridge
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
@@ -26,6 +28,7 @@ import com.laoke.weshirt.platform.push.*
 import com.laoke.weshirt.platform.widget.LaundryWidgetSnapshot
 import com.laoke.weshirt.platform.widget.LaundryWidgetStore
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -43,6 +46,7 @@ class NativePlatformTest {
     private val notices get() = LaundryNotifications(app)
 
     @Before fun prepare() {
+        SecureSession(app).clear()
         runBlocking { PushRuntime.logout(app) }
         awaitNotifications("Notifications from the previous session must be cancelled") { it.isEmpty() }
         PushRuntime.initialize(app, PushConfiguration(consent = false))
@@ -50,6 +54,7 @@ class NativePlatformTest {
 
     @After fun cleanup() {
         runBlocking { PushRuntime.logout(app) }
+        SecureSession(app).clear()
         awaitNotifications("Notifications must be cancelled after the test") { it.isEmpty() }
         app.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit().remove("nativePushConsent").commit()
     }
@@ -130,6 +135,10 @@ class NativePlatformTest {
 
     @Test fun logoutCancelsScheduledWorkAndErasesPrivateWidgetAndLoginState() = runBlocking {
         grantNotifications()
+        val origin = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
+            app.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString("endpoint", null))
+        SecureSession(app).save(JSONObject().put("origin", origin)
+            .put("accessToken", "ma1.widget-logout-fixture.test-secret").put("user", JSONObject().put("id", "widget-logout-fixture")))
         PushRuntime.initialize(app, PushConfiguration(consent = true))
         PushRuntime.onSessionAvailable(app)
         val task = TaskProgress("instrumented-task", 1, "测试洗衣机", System.currentTimeMillis(), System.currentTimeMillis() + 600_000)

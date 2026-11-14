@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_drum_active" android:layout_width="match_parent" android:layout_height="match_parent" android:autoStart="true" android:flipInterval="900" android:animateFirstView="false" android:importantForAccessibility="no">
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_drum_0" android:importantForAccessibility="no" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_drum_1" android:importantForAccessibility="no" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_drum_2" android:importantForAccessibility="no" />
+</ViewFlipper>

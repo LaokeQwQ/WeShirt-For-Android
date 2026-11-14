@@ -4,4 +4,8 @@
     <color name="widget_text_primary">#E2EEE7</color>
     <color name="widget_text_secondary">#ADBCB3</color>
     <color name="widget_accent">#8DD8B7</color>
+    <color name="widget_machine_body">#354C42</color>
+    <color name="widget_machine_outline">#7E9C8D</color>
+    <color name="widget_machine_glass">#132A22</color>
+    <color name="widget_machine_cloth">#DEAF73</color>
 </resources>
