@@ -19,6 +19,8 @@
     <string name="widget_no_task">No active laundry</string>
     <string name="widget_idle_detail">Your next task will appear here.</string>
     <string name="widget_remaining">%1$d min left</string>
+    <string name="widget_expected_finish">Due %1$s</string>
+    <string name="widget_updated_compact">Updated %1$s</string>
     <string name="widget_awaiting">Finishing soon</string>
     <string name="widget_awaiting_detail">Waiting for device confirmation.</string>
     <string name="widget_ready_for_pickup">Ready to collect</string>

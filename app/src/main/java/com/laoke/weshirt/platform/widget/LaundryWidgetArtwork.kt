@@ -10,6 +10,7 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import kotlin.math.cos
+import kotlin.math.PI
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -48,6 +49,9 @@ internal object LaundryWidgetArtwork {
         // artwork below the bitmap allowance of common 720p launchers.
         val scale = min(1.5f, min(256f / logicalWidth, 384f / logicalHeight))
         return bitmap((logicalWidth * scale).roundToInt(), (logicalHeight * scale).roundToInt()) { canvas, paint ->
+            // Composite first, then apply opacity once: overlapping glows and
+            // borders must not make any background pixel more opaque than 75%.
+            val cardLayer = canvas.saveLayerAlpha(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), 191)
             canvas.scale(scale, scale)
             val bounds = RectF(.6f, .6f, logicalWidth - .6f, logicalHeight - .6f)
             val radius = min(28f, logicalHeight / 3f)
@@ -75,6 +79,7 @@ internal object LaundryWidgetArtwork {
             paint.strokeWidth = 1f
             paint.color = alpha(palette.outline, if (palette.dark) 110 else 92)
             canvas.drawRoundRect(bounds, radius, radius, paint)
+            canvas.restoreToCount(cardLayer)
         }
     }
 
@@ -259,33 +264,63 @@ internal object LaundryWidgetArtwork {
         }, paint)
     }
 
-    /** The narrow widget gets a compact dial instead of a tiny appliance. */
-    fun dial(palette: WidgetArtworkPalette, progress: Int?): Bitmap = bitmap(112, 112) { canvas, paint ->
-        val rim = RectF(10f, 10f, 102f, 102f)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 7f
-        paint.color = alpha(palette.outline, if (palette.dark) 115 else 90)
-        canvas.drawOval(rim, paint)
+    /** Static form for idle, unverified and completed tasks. */
+    fun dial(palette: WidgetArtworkPalette, progress: Int?): Bitmap = water(palette, progress, 0)
+
+    /** Three phases move only the surface; the actual percentage never changes between frames. */
+    fun water(palette: WidgetArtworkPalette, progress: Int?, frame: Int): Bitmap = bitmap(112, 112) { canvas, paint ->
         val value = progress?.coerceIn(0, 100)
+        val circle = Path().apply { addCircle(56f, 56f, 48f, Path.Direction.CW) }
+        val phase = ((frame % 3 + 3) % 3) * (2.0 * PI / 3.0)
+        val level = 104f - (value ?: 0) * .96f
+        // Fade the wave at the endpoints, so 0% stays empty and 100% stays full.
+        val amplitude = value?.let { 3.2f * sin(PI * it / 100.0).toFloat() } ?: 0f
+        val water = Path().apply {
+            moveTo(8f, 106f)
+            lineTo(8f, level + amplitude * sin(phase).toFloat())
+            for (x in 10..104 step 2) {
+                val wave = sin((x - 8) / 96.0 * 2.0 * PI + phase).toFloat()
+                lineTo(x.toFloat(), level + amplitude * wave)
+            }
+            lineTo(104f, 106f)
+            close()
+        }
+        canvas.save()
+        canvas.clipPath(circle)
+        paint.color = palette.insetSurface
+        canvas.drawCircle(56f, 56f, 48f, paint)
         if (value != null && value > 0) {
-            paint.strokeCap = Paint.Cap.ROUND
-            paint.color = palette.accent
-            canvas.drawArc(rim, -90f, value * 3.6f, false, paint)
+            paint.shader = LinearGradient(0f, 8f, 0f, 104f,
+                palette.accent, mix(palette.accent, Color.BLACK, .08f), Shader.TileMode.CLAMP)
+            canvas.drawPath(water, paint)
+            paint.shader = null
         }
-        if (value == null) {
-            paint.color = palette.secondaryText
-            paint.strokeCap = Paint.Cap.ROUND
-            paint.strokeWidth = 4f
-            canvas.drawLine(44f, 56f, 68f, 56f, paint)
-        } else {
-            paint.style = Paint.Style.FILL
-            paint.color = palette.primaryText
-            paint.textAlign = Paint.Align.CENTER
-            paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
-            paint.textSize = if (value == 100) 28f else 33f
-            val metrics = paint.fontMetrics
-            canvas.drawText("$value%", 56f, 56f - (metrics.ascent + metrics.descent) / 2f, paint)
+
+        val label = value?.let { "$it%" } ?: "—"
+        paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = if (value == 100) 29f else 33f
+        val metrics = paint.fontMetrics
+        val baseline = 56f - (metrics.ascent + metrics.descent) / 2f
+        // Paint exactly the same glyphs on each side of the actual wave path.
+        // Clipping also handles letters crossed by the moving surface.
+        canvas.save()
+        if (value != null) canvas.clipOutPath(water)
+        paint.color = if (value == null) palette.secondaryText else palette.primaryText
+        canvas.drawText(label, 56f, baseline, paint)
+        canvas.restore()
+        if (value != null && value > 0) {
+            canvas.save()
+            canvas.clipPath(water)
+            paint.color = contrastingInk(palette.accent)
+            canvas.drawText(label, 56f, baseline, paint)
+            canvas.restore()
         }
+        canvas.restore()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 2.5f
+        paint.color = alpha(palette.outline, if (palette.dark) 175 else 150)
+        canvas.drawCircle(56f, 56f, 49.5f, paint)
     }
 
     fun track(palette: WidgetArtworkPalette, progress: Int?): Bitmap = bitmap(512, 12) { canvas, paint ->
@@ -311,6 +346,15 @@ internal object LaundryWidgetArtwork {
     }
 
     private fun alpha(color: Int, value: Int): Int = (color and 0x00ffffff) or (value.coerceIn(0, 255) shl 24)
+
+    private fun contrastingInk(color: Int): Int {
+        fun linear(channel: Int): Double {
+            val value = channel / 255.0
+            return if (value <= .04045) value / 12.92 else Math.pow((value + .055) / 1.055, 2.4)
+        }
+        val luminance = .2126 * linear(Color.red(color)) + .7152 * linear(Color.green(color)) + .0722 * linear(Color.blue(color))
+        return if ((luminance + .05) / .05 >= 1.05 / (luminance + .05)) Color.BLACK else Color.WHITE
+    }
 
     private fun mix(first: Int, second: Int, amount: Float): Int {
         val fraction = amount.coerceIn(0f, 1f)

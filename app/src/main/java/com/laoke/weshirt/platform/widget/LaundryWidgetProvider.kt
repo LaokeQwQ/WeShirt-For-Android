@@ -20,7 +20,6 @@ import com.laoke.weshirt.R
 import com.laoke.weshirt.platform.NativeNavigation
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 /** The original component remains the 4×2 entry so installed widgets keep working. */
 open class LaundryWidgetProvider : AppWidgetProvider() {
@@ -64,8 +63,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             WidgetSize.MINI -> R.layout.laundry_widget_mini
             WidgetSize.COMPACT -> R.layout.laundry_widget
             WidgetSize.WIDE -> R.layout.laundry_widget_wide
-            WidgetSize.EXPANDED -> R.layout.laundry_widget_expanded
-            WidgetSize.LARGE -> R.layout.laundry_widget_large
         }
         val views = RemoteViews(context.packageName, layout)
         val freshness = LaundryWidgetState.freshness(snapshot, now)
@@ -73,16 +70,15 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val hasSession = LaundryWidgetStore.captureScope(context) != null
         val refreshError = if (hasSession) LaundryWidgetStore.refreshError(context) else null
         val running = LaundryWidgetState.isRunning(snapshot, now)
-        val remaining = LaundryWidgetState.remainingMinutes(snapshot, now)
         val progress = LaundryWidgetState.progressPercent(snapshot, now)
         val building = snapshot?.buildingName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
             ?: context.getString(if (snapshot == null) R.string.widget_brand else R.string.widget_current_building)
         val time = snapshot?.updatedAtMillis?.takeIf { freshness == WidgetFreshness.RECENT || freshness == WidgetFreshness.OUTDATED }
-            ?.let { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(it)) }
+            ?.let { widgetTime(context, it) }
         val updated = if (time == null) context.getString(R.string.widget_update_unknown)
             else context.getString(R.string.widget_last_sync, time)
         val machine = snapshot?.taskMachineName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
-        val title = machine ?: context.getString(when {
+        val title = machine?.let { widgetTaskName(snapshot?.buildingName, it) } ?: context.getString(when {
             snapshot == null && !hasSession -> R.string.widget_sign_in
             taskState == WidgetTaskState.NONE && snapshot != null -> R.string.widget_idle
             else -> R.string.widget_pending
@@ -94,7 +90,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
                 snapshot == null -> R.string.widget_sign_in_detail
                 else -> R.string.widget_no_task
             })
-            WidgetTaskState.ESTIMATED -> remaining?.takeIf { it > 0 }?.let { context.getString(R.string.widget_remaining, it) }
+            WidgetTaskState.ESTIMATED -> snapshot?.taskEstimatedFinishAtMillis?.takeIf { it > now }
+                ?.let { context.getString(R.string.widget_expected_finish, widgetTime(context, it)) }
                 ?: context.getString(R.string.widget_awaiting)
             WidgetTaskState.AWAITING_CONFIRMATION -> context.getString(R.string.widget_awaiting)
             WidgetTaskState.READY_FOR_PICKUP -> context.getString(R.string.widget_ready_for_pickup)
@@ -104,16 +101,21 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val board = NativeNavigation.pendingIntent(context, "LAUNDRY_BOARD", "widget:$id:board")
         val task = NativeNavigation.pendingIntent(context, "MY_LAUNDRY", "widget:$id:task")
         views.setTextViewText(R.id.widget_building, building)
-        views.setTextViewText(R.id.widget_updated, updated)
+        views.setViewVisibility(R.id.widget_building, View.GONE)
+        views.setTextViewText(R.id.widget_updated, time?.let { context.getString(R.string.widget_updated_compact, it) }
+            ?: context.getString(R.string.widget_update_unknown))
         val visibleTitle = if (size != WidgetSize.MINI) title else when {
-            machine != null -> miniMachineName(context, machine)
+            machine != null -> title
             snapshot == null && !hasSession -> context.getString(R.string.widget_mini_sign_in)
             taskState != WidgetTaskState.NONE || snapshot == null -> context.getString(R.string.widget_mini_unverified)
             else -> title
         }
         views.setTextViewText(R.id.widget_task, visibleTitle)
-        views.setTextViewText(R.id.widget_task_eta, if (size == WidgetSize.MINI) miniStatus(context, taskState, remaining, snapshot, hasSession, refreshError) else taskStatus)
-        views.setContentDescription(R.id.widget_root, "$building. $updated. $description" + refreshError?.let { ". $it" }.orEmpty())
+        views.setTextViewText(R.id.widget_task_eta, if (size == WidgetSize.MINI)
+            miniStatus(context, taskState, taskStatus, snapshot, hasSession, refreshError) else taskStatus)
+        val accessibleProgress = context.getString(R.string.widget_progress_percent, progress ?: 0)
+            .takeIf { progress != null } ?: context.getString(R.string.widget_progress_unknown)
+        views.setContentDescription(R.id.widget_root, "$building. $updated. $description. $accessibleProgress" + refreshError?.let { ". $it" }.orEmpty())
         views.setContentDescription(R.id.widget_updated, if (freshness == WidgetFreshness.OUTDATED)
             context.getString(R.string.widget_old_data, time) else updated)
         views.setOnClickPendingIntent(R.id.widget_building, board)
@@ -126,15 +128,21 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.removeAllViews(R.id.widget_drum_holder)
         if (running && size != WidgetSize.MINI) views.addView(R.id.widget_drum_holder, themedDrum(context))
         views.setViewVisibility(R.id.widget_drum_holder, if (running && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
+        val movingWater = running && progress != null
+        views.removeAllViews(R.id.widget_water_holder)
+        if (movingWater) views.addView(R.id.widget_water_holder, themedWater(context, progress!!))
+        views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
+        views.setViewVisibility(if (size == WidgetSize.MINI) R.id.widget_machine_ring else R.id.widget_water_ring,
+            if (movingWater) View.GONE else View.VISIBLE)
         views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress_label, if (machine != null && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress_label, View.GONE)
         views.setProgressBar(R.id.widget_progress, 100, progress ?: 0, false)
         views.setTextViewText(R.id.widget_progress_label, progress?.let { context.getString(R.string.widget_progress_percent, it) }
             ?: context.getString(R.string.widget_progress_unknown))
         views.setContentDescription(R.id.widget_machine, context.getString(if (running) R.string.widget_machine_running else R.string.widget_machine_still))
-        views.setViewVisibility(R.id.widget_task_note, if (size == WidgetSize.EXPANDED || size == WidgetSize.LARGE) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_task_note, View.GONE)
         views.setTextViewText(R.id.widget_task_note, refreshError ?: context.getString(when {
             freshness == WidgetFreshness.OUTDATED -> R.string.widget_stale_hint
             taskState == WidgetTaskState.AWAITING_CONFIRMATION -> R.string.widget_awaiting_detail
@@ -145,12 +153,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         return views
     }
 
-    private fun miniMachineName(context: Context, machine: String): String = widgetMachineNumber(machine)
-        ?.let { context.getString(R.string.widget_mini_machine, it) } ?: machine
-
-    private fun miniStatus(context: Context, state: WidgetTaskState, remaining: Int?, snapshot: LaundryWidgetSnapshot?, hasSession: Boolean, error: String?): String = when (state) {
-        WidgetTaskState.ESTIMATED -> remaining?.takeIf { it > 0 }?.let { context.getString(R.string.widget_mini_remaining, it) }
-            ?: context.getString(R.string.widget_mini_awaiting)
+    private fun miniStatus(context: Context, state: WidgetTaskState, taskStatus: String, snapshot: LaundryWidgetSnapshot?, hasSession: Boolean, error: String?): String = when (state) {
+        WidgetTaskState.ESTIMATED -> taskStatus
         WidgetTaskState.AWAITING_CONFIRMATION -> context.getString(R.string.widget_mini_awaiting)
         WidgetTaskState.READY_FOR_PICKUP -> context.getString(R.string.widget_mini_ready)
         WidgetTaskState.UNVERIFIED -> context.getString(R.string.widget_mini_unverified)
@@ -192,14 +196,19 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         actions.image(R.id.widget_drum_frame_2, "drum:2") { LaundryWidgetArtwork.drum(it, 2) }
     }
 
+    private fun themedWater(context: Context, progress: Int): RemoteViews = RemoteViews(context.packageName, R.layout.laundry_widget_water).also { frames ->
+        val actions = ThemeActions(context, frames)
+        listOf(R.id.widget_water_frame_0, R.id.widget_water_frame_1, R.id.widget_water_frame_2).forEachIndexed { index, id ->
+            actions.image(id, "water:$progress:$index") { LaundryWidgetArtwork.water(it, progress, index) }
+        }
+    }
+
     private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?) {
         val actions = ThemeActions(context, views)
         val dimensions = when (size) {
             WidgetSize.MINI -> 180 to 70
             WidgetSize.COMPACT -> 180 to 180
             WidgetSize.WIDE -> 320 to 140
-            WidgetSize.EXPANDED -> 320 to 320
-            WidgetSize.LARGE -> 320 to 480
         }
         // Bitmaps and text colors override host-qualified resources, including an explicitly forced app theme.
         views.setInt(R.id.widget_root, "setBackgroundColor", Color.TRANSPARENT)
@@ -213,6 +222,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
             actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
             actions.image(R.id.widget_machine_ring, "ring:$progress") { LaundryWidgetArtwork.ring(it, progress) }
+            actions.image(R.id.widget_water_ring, "water:$progress:0") { LaundryWidgetArtwork.water(it, progress, 0) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
         actions.text(R.id.widget_updated) { it.secondaryText }
@@ -262,10 +272,20 @@ class LaundryWidgetSquareProvider : LaundryWidgetProvider() {
     internal override val widgetSize = WidgetSize.COMPACT
 }
 
-class LaundryWidgetExpandedProvider : LaundryWidgetProvider() {
-    internal override val widgetSize = WidgetSize.EXPANDED
+/** A building already supplied by the platform must not be repeated in a task title. */
+internal fun widgetTaskName(building: String?, machine: String): String {
+    val original = LaundryWidgetState.safeLabel(machine)
+    // The shared projection can append the upstream name after a known slot.
+    // Keep the bound position in the small card; raw names remain in the snapshot.
+    val slotName = original.substringBefore(" · ")
+    val name = if (original.contains(" · ") && Regex("^[\\p{L}\\p{N}-]+\\s*号(?:洗衣机|烘干机)$").matches(slotName))
+        slotName.replace(Regex("\\s+号"), "号") else original
+    val location = building?.let(LaundryWidgetState::safeLabel).orEmpty()
+    if (location.isBlank() || name.isBlank() || name.startsWith(location, ignoreCase = true)) return name
+    val separator = if (location.last().code < 128 && location.last().isLetterOrDigit()
+        && name.first().code < 128 && name.first().isLetterOrDigit()) " " else ""
+    return LaundryWidgetState.safeLabel(location + separator + name)
 }
 
-class LaundryWidgetLargeProvider : LaundryWidgetProvider() {
-    internal override val widgetSize = WidgetSize.LARGE
-}
+private fun widgetTime(context: Context, timestamp: Long): String =
+    SimpleDateFormat("HH:mm", context.resources.configuration.locales[0]).format(Date(timestamp))
