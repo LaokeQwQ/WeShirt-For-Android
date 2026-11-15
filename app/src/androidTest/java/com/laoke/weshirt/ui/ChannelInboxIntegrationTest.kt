@@ -153,7 +153,14 @@ class ChannelInboxIntegrationTest {
             it.api.javaClass.getDeclaredField("http").apply { isAccessible = true }.set(it.api, client)
             it.configure(origin)
         } }
-        compose.waitUntil(15_000) { vm.state.value.endpoint == origin && !vm.state.value.loading && !vm.state.value.busy }
+        // configure() publishes the endpoint before its asynchronous refresh starts.
+        // Wait for the real site response, not a transient idle loading state.
+        compose.waitUntil(15_000) {
+            val state = vm.state.value
+            state.endpoint == origin && !state.loading && !state.busy &&
+                requests.any { it.requestUrl!!.encodedPath == "/api/site" } &&
+                state.buildings.any { it.code == "test" && it.name == "测试楼" }
+        }
         assertNull("The fixture must complete its real TLS site request before login", vm.state.value.error)
         assertTrue(requests.any { it.requestUrl!!.encodedPath == "/api/site" })
         onMain { vm.api.saveSession(JSONObject().put("accessToken", "channel-fixture").put("expiresIn", 900)); vm.platformSessionChanged() }
