@@ -1,5 +1,6 @@
 <resources>
     <string name="widget_name">WeShirt·洗衣</string>
+    <string name="widget_name_2x1">WeShirt · 洗衣 2×1</string>
     <string name="widget_name_2x2">WeShirt · 洗衣 2×2</string>
     <string name="widget_name_4x2">WeShirt · 洗衣 4×2</string>
     <string name="widget_name_4x4">WeShirt · 洗衣 4×4</string>
@@ -32,4 +33,10 @@
     <string name="widget_pending">待更新</string>
     <string name="widget_refresh_failed">更新失败</string>
     <string name="widget_tap_refresh">点击刷新</string>
+    <string name="widget_mini_remaining">%1$d分</string>
+    <string name="widget_mini_machine">%1$s号机</string>
+    <string name="widget_mini_sign_in">请登录</string>
+    <string name="widget_mini_unverified">待更新</string>
+    <string name="widget_mini_ready">待取衣</string>
+    <string name="widget_mini_awaiting">即将完成</string>
 </resources>

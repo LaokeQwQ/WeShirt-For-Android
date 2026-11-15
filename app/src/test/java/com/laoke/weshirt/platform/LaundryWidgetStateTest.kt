@@ -41,8 +41,8 @@ class LaundryWidgetStateTest {
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(snapshot(finish = -1), now))
     }
 
-    @Test fun pickerHasOnlyTheFourRequestedGridShapes() {
-        assertEquals(listOf(2 to 2, 4 to 2, 4 to 4, 4 to 6),
+    @Test fun pickerHasOnlyTheFiveRequestedGridShapes() {
+        assertEquals(listOf(2 to 1, 2 to 2, 4 to 2, 4 to 4, 4 to 6),
             WidgetSize.entries.map { it.columns to it.rows })
     }
 

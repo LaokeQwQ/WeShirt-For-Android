@@ -7,5 +7,6 @@ class WeShirtApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         PlatformCoordinator.bootstrap(this)
+        com.laoke.weshirt.platform.widget.LaundryWidgetTheme.observe(this)
     }
 }
