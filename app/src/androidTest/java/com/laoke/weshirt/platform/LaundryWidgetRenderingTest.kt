@@ -87,6 +87,9 @@ class LaundryWidgetRenderingTest {
                                 val view = LaundryWidgetProvider().render(context, 900, task(now), size, now)
                                     .apply(context, FrameLayout(context))
                                 measure(view, width, height)
+                                // Save before assertions so a failing size is still inspectable.
+                                captureView(view,
+                                    "native-widget-${size.columns}x${size.rows}-${width}x$height-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-${if (font == 1.4f) "large-font" else "default-font"}")
                                 assertEquals("Test building", view.findViewById<TextView>(R.id.widget_building).text.toString())
                                 assertEquals("1号洗衣机", view.findViewById<TextView>(R.id.widget_task).text.toString())
                                 assertEquals(context.getString(R.string.widget_remaining, 10), view.findViewById<TextView>(R.id.widget_task_eta).text.toString())
@@ -120,21 +123,20 @@ class LaundryWidgetRenderingTest {
                                 val title = rect(view, view.findViewById(R.id.widget_task))
                                 val eta = rect(view, view.findViewById(R.id.widget_task_eta))
                                 val progress = rect(view, view.findViewById(R.id.widget_progress_label))
-                                assertTrue("The task area cannot collapse under large fonts", section.height() > 0)
-                                assertTrue("The washer illustration must retain height", machine.height() >= dp(context, if (size == WidgetSize.COMPACT && width == 110) 4 else 12))
-                                assertTrue("Task content must stay below the header", minOf(machine.top, title.top) >= header.bottom)
-                                assertTrue("The machine name and remaining time cannot overlap", title.bottom <= eta.top)
-                                assertTrue("The remaining time must stay above progress", eta.bottom <= progress.top)
+                                val measuredCase = "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, night $night, font $font; machine=$machine, section=$section, header=$header, title=$title, eta=$eta, progress=$progress"
+                                assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
+                                assertTrue("The washer illustration must retain height ($measuredCase)", machine.height() >= dp(context, if (size == WidgetSize.COMPACT && width == 110) 4 else 12))
+                                assertTrue("Task content must stay below the header ($measuredCase)", minOf(machine.top, title.top) >= header.bottom)
+                                assertTrue("The machine name and remaining time cannot overlap ($measuredCase)", title.bottom <= eta.top)
+                                assertTrue("The remaining time must stay above progress ($measuredCase)", eta.bottom <= progress.top)
                                 if (size != WidgetSize.WIDE) {
-                                    assertTrue("The centered illustration must stay above its labels", machine.bottom <= title.top)
+                                    assertTrue("The centered illustration must stay above its labels ($measuredCase)", machine.bottom <= title.top)
                                 }
                                 if (size == WidgetSize.EXPANDED || size == WidgetSize.LARGE) {
                                     val note = view.findViewById<TextView>(R.id.widget_task_note)
                                     assertInside(view, note)
                                     assertTrue("Status notes must stay below progress", rect(view, note).top >= progress.bottom)
                                 }
-                                if (font == 1.4f) captureView(view,
-                                    "native-widget-${size.columns}x${size.rows}-${width}x$height-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-large-font")
                             }
                         }
                     }
@@ -335,7 +337,7 @@ class LaundryWidgetRenderingTest {
         val layout = requireNotNull(label.layout)
         val name = label.resources.getResourceEntryName(label.id)
         assertTrue("$name must contain a laid out line ($case)", layout.lineCount > 0)
-        assertTrue("$name must not clip its text vertically ($case)",
+        assertTrue("$name must not clip its text vertically ($case; text=${label.text}, textSize=${label.textSize}, layout=${layout.width}x${layout.height}, view=${label.width}x${label.height})",
             layout.height <= label.height - label.compoundPaddingTop - label.compoundPaddingBottom)
         for (line in 0 until layout.lineCount) {
             assertEquals("$name must remain readable ($case)", 0, layout.getEllipsisCount(line))
@@ -350,7 +352,9 @@ class LaundryWidgetRenderingTest {
         }
         measure(view, width, height)
         for (id in listOf(R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta)) assertInside(view, view.findViewById(id))
-        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) assertReadable(view.findViewById(id), "$size status at $width x $height")
+        val config = view.resources.configuration
+        val case = "$size status at $width x $height, ${config.locales[0]}, font ${config.fontScale}, text=${view.findViewById<TextView>(R.id.widget_task).text} / ${view.findViewById<TextView>(R.id.widget_task_eta).text}"
+        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) assertReadable(view.findViewById(id), case)
         val header = rect(view, view.findViewById(R.id.widget_header))
         val title = rect(view, view.findViewById(R.id.widget_task))
         val eta = rect(view, view.findViewById(R.id.widget_task_eta))
