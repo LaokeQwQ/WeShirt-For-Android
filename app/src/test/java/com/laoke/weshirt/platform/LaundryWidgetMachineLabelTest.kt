@@ -21,6 +21,9 @@ class LaundryWidgetMachineLabelTest {
         assertEquals("Sample Washer 01", widgetTaskName("Sample", "Washer 01"))
         assertEquals("Sample Washer 01", widgetTaskName("Sample", "Sample Washer 01"))
         assertEquals("Washer 01", widgetTaskName(null, "Washer 01"))
-        assertEquals("Washer 01", widgetTaskName(" \n ", " Washer\n01 "))
+        assertEquals("Washer 01", widgetTaskName(" \n ", " Washer \n01 "))
+        assertEquals("Washer01", widgetTaskName(null, " Washer\n01 "))
+        assertEquals("示例楼1号洗衣机", widgetTaskName("示例楼", "1 号洗衣机 · 示例楼1楼1号机"))
+        assertEquals("示例楼D2号烘干机", widgetTaskName("示例楼", "D2 号烘干机 · 原始名称"))
     }
 }

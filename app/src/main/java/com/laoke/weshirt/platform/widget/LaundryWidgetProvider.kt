@@ -274,7 +274,12 @@ class LaundryWidgetSquareProvider : LaundryWidgetProvider() {
 
 /** A building already supplied by the platform must not be repeated in a task title. */
 internal fun widgetTaskName(building: String?, machine: String): String {
-    val name = LaundryWidgetState.safeLabel(machine)
+    val original = LaundryWidgetState.safeLabel(machine)
+    // The shared projection can append the upstream name after a known slot.
+    // Keep the bound position in the small card; raw names remain in the snapshot.
+    val slotName = original.substringBefore(" · ")
+    val name = if (original.contains(" · ") && Regex("^[\\p{L}\\p{N}-]+\\s*号(?:洗衣机|烘干机)$").matches(slotName))
+        slotName.replace(Regex("\\s+号"), "号") else original
     val location = building?.let(LaundryWidgetState::safeLabel).orEmpty()
     if (location.isBlank() || name.isBlank() || name.startsWith(location, ignoreCase = true)) return name
     val separator = if (location.last().code < 128 && location.last().isLetterOrDigit()
