@@ -2,14 +2,14 @@
 <!-- Wide mini: two columns by one row. Labels stay native for accessibility. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
     <ImageView android:id="@+id/widget_backdrop" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitXY" android:importantForAccessibility="no" />
-    <LinearLayout android:id="@+id/widget_content" android:layout_width="match_parent" android:layout_height="match_parent" android:padding="4dp" android:orientation="horizontal" android:gravity="center_vertical">
+    <LinearLayout android:id="@+id/widget_content" android:layout_width="match_parent" android:layout_height="match_parent" android:paddingStart="3dp" android:paddingEnd="3dp" android:paddingTop="4dp" android:paddingBottom="4dp" android:orientation="horizontal" android:gravity="center_vertical">
         <FrameLayout android:id="@+id/widget_machine" android:layout_width="28dp" android:layout_height="28dp">
             <ImageView android:id="@+id/widget_machine_shell" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone" android:importantForAccessibility="no" />
             <ImageView android:id="@+id/widget_machine_ring" android:layout_width="match_parent" android:layout_height="match_parent" android:importantForAccessibility="no" />
             <ImageView android:id="@+id/widget_drum_static" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone" android:importantForAccessibility="no" />
             <FrameLayout android:id="@+id/widget_drum_holder" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone" android:importantForAccessibility="no" />
         </FrameLayout>
-        <LinearLayout android:id="@+id/widget_task_section" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:layout_marginEnd="2dp" android:orientation="vertical">
+        <LinearLayout android:id="@+id/widget_task_section" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:layout_marginStart="2dp" android:layout_marginEnd="1dp" android:orientation="vertical">
             <TextView android:id="@+id/widget_task" android:layout_width="match_parent" android:layout_height="14dp" android:text="@string/widget_idle" android:textSize="11sp" android:textStyle="bold" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="7sp" android:autoSizeMaxTextSize="11sp" android:autoSizeStepGranularity="1sp" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false" />
             <TextView android:id="@+id/widget_task_eta" android:layout_width="match_parent" android:layout_height="14dp" android:text="@string/widget_no_task" android:textSize="10sp" android:autoSizeTextType="uniform" android:autoSizeMinTextSize="7sp" android:autoSizeMaxTextSize="10sp" android:autoSizeStepGranularity="1sp" android:maxLines="1" android:ellipsize="end" android:includeFontPadding="false" />
             <FrameLayout android:layout_width="match_parent" android:layout_height="2dp" android:layout_marginTop="1dp">
