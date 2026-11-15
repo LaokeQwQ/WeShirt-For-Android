@@ -195,14 +195,21 @@ class ChannelInboxIntegrationTest {
         assertTrue("Unread badge must remain to the right of the summary", badgeBounds.left >= previewBounds.right)
         assertTrue("Unread badge must stay inside the visible card", badgeBounds.left >= cardBounds.left && badgeBounds.right <= cardBounds.right && badgeBounds.top >= cardBounds.top && badgeBounds.bottom <= cardBounds.bottom)
         assertFalse("The directory must neither prefetch message bodies nor clear unread", requests.any { it.requestUrl!!.encodedPath in setOf("/api/messages", "/api/messages/read") })
-        compose.onNodeWithTag("channel:public").performClick()
         try {
+            // A displayed semantics node alone does not establish window focus.
+            // The viewport deliberately withholds read receipts otherwise.
+            compose.waitUntil(10_000) { focusedWindow && resumedWindow }
+            compose.onNodeWithTag("channel:public").performClick()
             compose.waitUntil(10_000) { readIds.isNotEmpty() }
-        } catch (problem: AssertionError) {
+        } catch (problem: Throwable) {
+            // ComposeTimeoutException is not an AssertionError. Keep the original
+            // failure even if screenshot or semantics collection itself fails.
             val current = vm.state.value
-            android.util.Log.e("ChannelInboxAck", "ACK timeout: windowFocused=$focusedWindow resumed=$resumedWindow authReady=${current.authReady} tab=${current.tab} channel=${current.channel} messages=${current.messages.size} routes=${requests.map { it.method + ":" + it.requestUrl!!.encodedPath }}")
-            compose.onRoot(useUnmergedTree = true).printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxAckTree", it) }
-            captureScreen("native-channel-ack-timeout")
+            android.util.Log.e("ChannelInboxAck", "ACK timeout: windowFocused=$focusedWindow resumed=$resumedWindow authReady=${current.authReady} profile=${current.profile?.id} tab=${current.tab} channel=${current.channel} messages=${current.messages.size} error=${current.error} authError=${current.authError} routes=${requests.map { it.method + ":" + it.requestUrl!!.encodedPath }}")
+            runCatching { compose.onRoot(useUnmergedTree = true).printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxAckTree", it) } }
+                .exceptionOrNull()?.let(problem::addSuppressed)
+            runCatching { captureScreen("native-channel-ack-timeout") }
+                .exceptionOrNull()?.let(problem::addSuppressed)
             throw problem
         }
         assertTrue("Only the native viewport can acknowledge messages", readIds.size in 1..15)

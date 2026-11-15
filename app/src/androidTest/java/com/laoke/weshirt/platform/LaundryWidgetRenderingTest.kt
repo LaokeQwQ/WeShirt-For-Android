@@ -104,6 +104,13 @@ class LaundryWidgetRenderingTest {
                                 val building = rect(view, view.findViewById(R.id.widget_building))
                                 val updated = rect(view, view.findViewById(R.id.widget_updated))
                                 if (size != WidgetSize.COMPACT) assertTrue("Title and update time cannot overlap", building.right <= updated.left)
+                                if (size == WidgetSize.EXPANDED) {
+                                    for (id in listOf(R.id.widget_task, R.id.widget_task_eta)) {
+                                        val label = view.findViewById<TextView>(id)
+                                        assertEquals("Short task labels must stay together on the expanded card", 1, label.layout.lineCount)
+                                        assertEquals(0, label.layout.getEllipsisCount(0))
+                                    }
+                                }
                                 if (width == 180) {
                                     for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
                                         val label = view.findViewById<TextView>(id)
