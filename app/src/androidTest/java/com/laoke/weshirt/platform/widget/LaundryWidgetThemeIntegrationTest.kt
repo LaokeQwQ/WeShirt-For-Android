@@ -151,13 +151,8 @@ class LaundryWidgetThemeIntegrationTest {
         for ((frame, id) in listOf(R.id.widget_drum_frame_0, R.id.widget_drum_frame_1, R.id.widget_drum_frame_2).withIndex()) {
             assertBitmap(LaundryWidgetArtwork.drum(colors, frame), bitmap(view, id))
         }
-        assertBitmap(LaundryWidgetArtwork.dial(colors, 50), bitmap(view, R.id.widget_water_ring))
-        val water = view.findViewById<ViewFlipper>(R.id.widget_water_active)
-        assertNotNull(water)
-        assertEquals(3, water.childCount)
-        for ((frame, id) in listOf(R.id.widget_water_frame_0, R.id.widget_water_frame_1, R.id.widget_water_frame_2).withIndex()) {
-            assertBitmap(LaundryWidgetArtwork.water(colors, 50, frame), bitmap(view, id))
-        }
+        assertNull("Ordinary task cards must not install a water animation", view.findViewById<ViewFlipper>(R.id.widget_water_active))
+        assertNull("Ordinary task cards must not reserve space for a mini water ball", view.findViewById<View>(R.id.widget_water_holder))
         if (Build.VERSION.SDK_INT >= 31) {
             assertEquals(colors.accent, view.findViewById<ProgressBar>(R.id.widget_progress).progressTintList?.defaultColor)
             assertEquals(colors.outline, view.findViewById<ProgressBar>(R.id.widget_progress).progressBackgroundTintList?.defaultColor)

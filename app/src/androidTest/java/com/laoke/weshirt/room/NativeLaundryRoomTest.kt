@@ -2,6 +2,7 @@ package com.laoke.weshirt.room
 
 import android.graphics.Bitmap
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.view.MotionEvent
@@ -236,6 +237,9 @@ class NativeLaundryRoomTest {
         val dimensions = onMain { surface.width to surface.height }
         assertTrue(dimensions.first > 0 && dimensions.second > 0)
         val pixels = Bitmap.createBitmap(dimensions.first, dimensions.second, Bitmap.Config.ARGB_8888)
+        val copyThread = HandlerThread("native-surface-capture").apply { start() }
+        val copyHandler = Handler(copyThread.looper)
+        var copyPending = false
         try {
             onMain { room.synchronizeRenderingForCapture() }
             var copyResult = PixelCopy.ERROR_SOURCE_NO_DATA
@@ -244,10 +248,18 @@ class NativeLaundryRoomTest {
             while(SystemClock.uptimeMillis() < deadline) {
                 val copied = CountDownLatch(1)
                 val result = AtomicReference<Int>()
+                copyPending = true
                 onMain {
-                    PixelCopy.request(surface, pixels, { status -> result.set(status); copied.countDown() }, Handler(Looper.getMainLooper()))
+                    PixelCopy.request(surface, pixels, { status -> result.set(status); copied.countDown() }, copyHandler)
                 }
-                assertTrue("Timed out copying the rendered native surface: ${snapshot(room)}", copied.await(5, TimeUnit.SECONDS))
+                // Software GPU presentation can stall the UI queue. Deliver the
+                // callback independently and keep one request within the same
+                // overall capture deadline; do not take UI diagnostics first.
+                val remaining = (deadline - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+                if (!copied.await(remaining, TimeUnit.MILLISECONDS)) {
+                    throw AssertionError("Timed out copying the rendered native surface: ${snapshot(room)}")
+                }
+                copyPending = false
                 copyResult = result.get()
                 if(copyResult == PixelCopy.SUCCESS) {
                     val colors = mutableSetOf<Int>()
@@ -262,7 +274,13 @@ class NativeLaundryRoomTest {
             android.util.Log.i("WeShirtRoomTest", "Baseline native surface: copy=$copyResult, colors=$colorCount, ${snapshot(room)}")
             assertEquals("PixelCopy must read an actually presented GPU surface: ${snapshot(room)}", PixelCopy.SUCCESS, copyResult)
             assertTrue("A clear-only or blank surface cannot count as a rendered room: colors=$colorCount, ${snapshot(room)}", colorCount > 8)
-        } finally { pixels.recycle() }
+        } finally {
+            // A timed-out native request may still hold the bitmap. Leave its
+            // lifetime to PixelCopy/GC instead of recycling a live destination.
+            if (!copyPending) pixels.recycle()
+            copyThread.quitSafely()
+            copyThread.join(1_000)
+        }
     }
 
     private fun tap(room: LaundryRoomView, x: Float, y: Float) {

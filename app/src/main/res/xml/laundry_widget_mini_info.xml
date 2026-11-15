@@ -3,7 +3,7 @@
     android:description="@string/widget_description"
     android:initialLayout="@layout/laundry_widget_mini"
     android:minWidth="150dp"
-    android:minHeight="64dp"
+    android:minHeight="76dp"
     android:targetCellWidth="2"
     android:targetCellHeight="1"
     android:resizeMode="none"
