@@ -6,8 +6,14 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.util.LruCache
 import android.view.View
 import android.widget.RemoteViews
 import com.laoke.weshirt.R
@@ -21,6 +27,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
     internal open val widgetSize: WidgetSize = WidgetSize.WIDE
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
+        LaundryWidgetTheme.observe(context)
         val snapshot = LaundryWidgetStore.read(context)
         for (id in appWidgetIds) {
             manager.updateAppWidget(id, render(context, id, snapshot, widgetSize, System.currentTimeMillis()))
@@ -54,6 +61,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
 
     internal fun render(context: Context, id: Int, snapshot: LaundryWidgetSnapshot?, size: WidgetSize, now: Long): RemoteViews {
         val layout = when (size) {
+            WidgetSize.MINI -> R.layout.laundry_widget_mini
             WidgetSize.COMPACT -> R.layout.laundry_widget
             WidgetSize.WIDE -> R.layout.laundry_widget_wide
             WidgetSize.EXPANDED -> R.layout.laundry_widget_expanded
@@ -97,8 +105,14 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val task = NativeNavigation.pendingIntent(context, "MY_LAUNDRY", "widget:$id:task")
         views.setTextViewText(R.id.widget_building, building)
         views.setTextViewText(R.id.widget_updated, updated)
-        views.setTextViewText(R.id.widget_task, title)
-        views.setTextViewText(R.id.widget_task_eta, taskStatus)
+        val visibleTitle = if (size != WidgetSize.MINI) title else when {
+            machine != null -> miniMachineName(context, machine)
+            snapshot == null && !hasSession -> context.getString(R.string.widget_mini_sign_in)
+            taskState != WidgetTaskState.NONE || snapshot == null -> context.getString(R.string.widget_mini_unverified)
+            else -> title
+        }
+        views.setTextViewText(R.id.widget_task, visibleTitle)
+        views.setTextViewText(R.id.widget_task_eta, if (size == WidgetSize.MINI) miniStatus(context, taskState, remaining, snapshot, hasSession, refreshError) else taskStatus)
         views.setContentDescription(R.id.widget_root, "$building. $updated. $description" + refreshError?.let { ". $it" }.orEmpty())
         views.setContentDescription(R.id.widget_updated, if (freshness == WidgetFreshness.OUTDATED)
             context.getString(R.string.widget_old_data, time) else updated)
@@ -106,15 +120,16 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.setOnClickPendingIntent(R.id.widget_root, if (machine == null) board else task)
         views.setOnClickPendingIntent(R.id.widget_task_section, task)
         views.setOnClickPendingIntent(R.id.widget_refresh, refreshPendingIntent(context, id))
-        views.setViewVisibility(R.id.widget_drum_static, if (running) View.GONE else View.VISIBLE)
+        views.setViewVisibility(R.id.widget_drum_static, if (running || size == WidgetSize.MINI) View.GONE else View.VISIBLE)
         // Remove the animated subtree on idle/stale redraws. A hidden auto-start
         // ViewFlipper would otherwise keep its timer alive in some launchers.
         views.removeAllViews(R.id.widget_drum_holder)
-        if (running) views.addView(R.id.widget_drum_holder, RemoteViews(context.packageName, R.layout.laundry_widget_drum))
-        views.setViewVisibility(R.id.widget_drum_holder, if (running) View.VISIBLE else View.GONE)
+        if (running && size != WidgetSize.MINI) views.addView(R.id.widget_drum_holder, themedDrum(context))
+        views.setViewVisibility(R.id.widget_drum_holder, if (running && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress, if (progress != null) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress_label, if (machine != null) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress, if (progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress_track, if (progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress_label, if (machine != null && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
         views.setProgressBar(R.id.widget_progress, 100, progress ?: 0, false)
         views.setTextViewText(R.id.widget_progress_label, progress?.let { context.getString(R.string.widget_progress_percent, it) }
             ?: context.getString(R.string.widget_progress_unknown))
@@ -126,7 +141,90 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             machine == null -> R.string.widget_idle_detail
             else -> R.string.widget_expected_disclaimer
         }))
+        applyTheme(context, views, size, progress)
         return views
+    }
+
+    private fun miniMachineName(context: Context, machine: String): String = widgetMachineNumber(machine)
+        ?.let { context.getString(R.string.widget_mini_machine, it) } ?: machine
+
+    private fun miniStatus(context: Context, state: WidgetTaskState, remaining: Int?, snapshot: LaundryWidgetSnapshot?, hasSession: Boolean, error: String?): String = when (state) {
+        WidgetTaskState.ESTIMATED -> remaining?.takeIf { it > 0 }?.let { context.getString(R.string.widget_mini_remaining, it) }
+            ?: context.getString(R.string.widget_mini_awaiting)
+        WidgetTaskState.AWAITING_CONFIRMATION -> context.getString(R.string.widget_mini_awaiting)
+        WidgetTaskState.READY_FOR_PICKUP -> context.getString(R.string.widget_mini_ready)
+        WidgetTaskState.UNVERIFIED -> context.getString(R.string.widget_mini_unverified)
+        WidgetTaskState.NONE -> context.getString(when {
+            snapshot == null && !hasSession -> R.string.widget_mini_sign_in
+            error != null || snapshot == null -> R.string.widget_mini_unverified
+            else -> R.string.widget_idle
+        })
+    }
+
+    private class ThemeActions(private val context: Context, private val views: RemoteViews) {
+        private val paired = Build.VERSION.SDK_INT >= 31 && LaundryWidgetTheme.followsSystem(context)
+        private val selected by lazy { LaundryWidgetTheme.resolve(context) }
+        private val light by lazy { LaundryWidgetTheme.resolve(context, forceDark = false) }
+        private val dark by lazy { LaundryWidgetTheme.resolve(context, forceDark = true) }
+
+        fun image(id: Int, key: String = id.toString(), draw: (WidgetArtworkPalette) -> Bitmap) {
+            fun image(palette: WidgetArtworkPalette) = cachedArtwork(key, palette, draw)
+            if (paired) views.setIcon(id, "setImageIcon", Icon.createWithBitmap(image(light)), Icon.createWithBitmap(image(dark)))
+            else views.setImageViewBitmap(id, image(selected))
+        }
+
+        fun text(id: Int, color: (WidgetArtworkPalette) -> Int) {
+            if (paired) views.setColorInt(id, "setTextColor", color(light), color(dark))
+            else views.setTextColor(id, color(selected))
+        }
+
+        fun tint(id: Int, method: String, color: (WidgetArtworkPalette) -> Int) {
+            if (Build.VERSION.SDK_INT < 31) return
+            if (paired) views.setColorStateList(id, method, ColorStateList.valueOf(color(light)), ColorStateList.valueOf(color(dark)))
+            else views.setColorStateList(id, method, ColorStateList.valueOf(color(selected)))
+        }
+    }
+
+    private fun themedDrum(context: Context): RemoteViews = RemoteViews(context.packageName, R.layout.laundry_widget_drum).also { frames ->
+        val actions = ThemeActions(context, frames)
+        actions.image(R.id.widget_drum_frame_0, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
+        actions.image(R.id.widget_drum_frame_1, "drum:1") { LaundryWidgetArtwork.drum(it, 1) }
+        actions.image(R.id.widget_drum_frame_2, "drum:2") { LaundryWidgetArtwork.drum(it, 2) }
+    }
+
+    private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?) {
+        val actions = ThemeActions(context, views)
+        val dimensions = when (size) {
+            WidgetSize.MINI -> 180 to 70
+            WidgetSize.COMPACT -> 180 to 180
+            WidgetSize.WIDE -> 320 to 140
+            WidgetSize.EXPANDED -> 320 to 320
+            WidgetSize.LARGE -> 320 to 480
+        }
+        // Bitmaps and text colors override host-qualified resources, including an explicitly forced app theme.
+        views.setInt(R.id.widget_root, "setBackgroundColor", Color.TRANSPARENT)
+        views.setInt(R.id.widget_refresh, "setBackgroundColor", Color.TRANSPARENT)
+        actions.image(R.id.widget_backdrop, "background:${dimensions.first}:${dimensions.second}") { LaundryWidgetArtwork.background(it, dimensions.first, dimensions.second) }
+        actions.image(R.id.widget_refresh, draw = LaundryWidgetArtwork::refresh)
+        if (size == WidgetSize.MINI) {
+            views.setViewVisibility(R.id.widget_machine_shell, View.GONE)
+            actions.image(R.id.widget_machine_ring, "dial:$progress") { LaundryWidgetArtwork.dial(it, progress) }
+        } else {
+            actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
+            actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
+            actions.image(R.id.widget_machine_ring, "ring:$progress") { LaundryWidgetArtwork.ring(it, progress) }
+        }
+        actions.text(R.id.widget_building) { it.primaryText }
+        actions.text(R.id.widget_updated) { it.secondaryText }
+        actions.text(R.id.widget_task) { it.primaryText }
+        actions.text(R.id.widget_task_eta) { it.accent }
+        actions.text(R.id.widget_progress_label) { it.secondaryText }
+        actions.text(R.id.widget_task_note) { it.secondaryText }
+        if (Build.VERSION.SDK_INT >= 31) {
+            actions.tint(R.id.widget_progress, "setProgressTintList") { it.accent }
+            actions.tint(R.id.widget_progress, "setProgressBackgroundTintList") { it.outline }
+            actions.tint(R.id.widget_activity, "setIndeterminateTintList") { it.accent }
+        } else actions.image(R.id.widget_progress_track, "track:$progress") { LaundryWidgetArtwork.track(it, progress) }
     }
 
     internal fun refreshPendingIntent(context: Context, id: Int): PendingIntent = PendingIntent.getBroadcast(
@@ -143,8 +241,22 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         return id.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID && it in installed }
     }
 
-    companion object { internal const val ACTION_REFRESH = "com.laoke.weshirt.action.REFRESH_WIDGET" }
+    companion object {
+        internal const val ACTION_REFRESH = "com.laoke.weshirt.action.REFRESH_WIDGET"
+        private data class ArtworkKey(val name: String, val palette: WidgetArtworkPalette)
+        private val artwork = object : LruCache<ArtworkKey, Bitmap>(4 * 1024 * 1024) {
+            override fun sizeOf(key: ArtworkKey, value: Bitmap) = value.allocationByteCount
+        }
+        @Synchronized private fun cachedArtwork(name: String, palette: WidgetArtworkPalette, draw: (WidgetArtworkPalette) -> Bitmap): Bitmap {
+            val key = ArtworkKey(name, palette)
+            return artwork.get(key) ?: draw(palette).also { artwork.put(key, it) }
+        }
+    }
 }
+
+/** Location prefixes can contain floor digits; the machine's own 号 label takes precedence. */
+internal fun widgetMachineNumber(machine: String): String? = Regex("(\\d+)\\s*号").find(machine)?.groupValues?.get(1)
+    ?: Regex("\\d+").findAll(machine).lastOrNull()?.value
 
 class LaundryWidgetSquareProvider : LaundryWidgetProvider() {
     internal override val widgetSize = WidgetSize.COMPACT

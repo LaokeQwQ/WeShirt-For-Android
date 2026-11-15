@@ -4,7 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 
-/** All four picker entries share account data and refresh work, but keep their own layouts. */
+/** All picker entries share account data and refresh work, but keep their own layouts. */
 internal object LaundryWidgetRegistry {
     internal data class Entry(
         val providerClass: Class<out LaundryWidgetProvider>,
@@ -12,6 +12,7 @@ internal object LaundryWidgetRegistry {
     )
 
     val entries = listOf(
+        Entry(LaundryWidgetMiniProvider::class.java, ::LaundryWidgetMiniProvider),
         Entry(LaundryWidgetSquareProvider::class.java, ::LaundryWidgetSquareProvider),
         Entry(LaundryWidgetProvider::class.java, ::LaundryWidgetProvider),
         Entry(LaundryWidgetExpandedProvider::class.java, ::LaundryWidgetExpandedProvider),

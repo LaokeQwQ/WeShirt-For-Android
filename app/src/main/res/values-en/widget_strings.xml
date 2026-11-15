@@ -1,5 +1,6 @@
 <resources>
     <string name="widget_name">WeShirt · Laundry</string>
+    <string name="widget_name_2x1">WeShirt · Laundry 2×1</string>
     <string name="widget_name_2x2">WeShirt · Laundry 2×2</string>
     <string name="widget_name_4x2">WeShirt · Laundry 4×2</string>
     <string name="widget_name_4x4">WeShirt · Laundry 4×4</string>
@@ -32,4 +33,10 @@
     <string name="widget_pending">Awaiting update</string>
     <string name="widget_refresh_failed">Refresh failed</string>
     <string name="widget_tap_refresh">Tap to refresh</string>
+    <string name="widget_mini_remaining">%1$d min</string>
+    <string name="widget_mini_machine">No. %1$s</string>
+    <string name="widget_mini_sign_in">Sign in</string>
+    <string name="widget_mini_unverified">Update</string>
+    <string name="widget_mini_ready">Ready</string>
+    <string name="widget_mini_awaiting">Soon</string>
 </resources>

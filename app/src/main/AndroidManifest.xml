@@ -25,6 +25,10 @@
         <activity android:name=".ddauth.DDAuthActivity" android:exported="true" android:excludeFromRecents="true" />
         <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
         <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
+        <receiver android:name=".platform.widget.LaundryWidgetMiniProvider" android:label="@string/widget_name_2x1" android:exported="false">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_mini_info" />
+        </receiver>
         <receiver android:name=".platform.widget.LaundryWidgetSquareProvider" android:label="@string/widget_name_2x2" android:exported="false">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_square_info" />

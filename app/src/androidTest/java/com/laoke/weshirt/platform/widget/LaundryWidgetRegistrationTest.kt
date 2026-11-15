@@ -19,13 +19,13 @@ import org.xmlpull.v1.XmlPullParser
 class LaundryWidgetRegistrationTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
 
-    @Test fun installedPickerExposesExactlyTheFourFixedShapes() {
+    @Test fun installedPickerExposesExactlyTheFiveFixedShapes() {
         val manager = AppWidgetManager.getInstance(context)
         val installed = manager.installedProviders.filter { it.provider.packageName == context.packageName }
         val expected = LaundryWidgetRegistry.entries.map { ComponentName(context, it.providerClass) }.toSet()
         assertEquals(expected, installed.map { it.provider }.toSet())
-        assertEquals(4, installed.size)
-        assertEquals(listOf(2 to 2, 4 to 2, 4 to 4, 4 to 6),
+        assertEquals(5, installed.size)
+        assertEquals(listOf(2 to 1, 2 to 2, 4 to 2, 4 to 4, 4 to 6),
             LaundryWidgetRegistry.entries.map { it.create().widgetSize.let { size -> size.columns to size.rows } })
 
         LaundryWidgetRegistry.entries.forEach { entry ->
@@ -61,7 +61,7 @@ class LaundryWidgetRegistrationTest {
             val width = parser.getAttributeValue(namespace, "minWidth").removeSuffix("dip").removeSuffix("dp").toFloat()
             val height = parser.getAttributeValue(namespace, "minHeight").removeSuffix("dip").removeSuffix("dp").toFloat()
             assertEquals(if (size.columns == 2) 110f else 250f, width, 0f)
-            assertEquals(when (size.rows) { 2 -> 110f; 4 -> 250f; else -> 390f }, height, 0f)
+            assertEquals(when (size.rows) { 1 -> 40f; 2 -> 110f; 4 -> 250f; else -> 390f }, height, 0f)
         }
     }
 
@@ -96,10 +96,10 @@ class LaundryWidgetRegistrationTest {
         fun remaining(deleted: IntArray = intArrayOf()) = LaundryWidgetRegistry.remainingIds(context, deleted) {
             idsByComponent[it] ?: intArrayOf()
         }
-        assertArrayEquals(intArrayOf(920, 921, 922, 923), remaining())
-        assertArrayEquals(intArrayOf(921, 922, 923), remaining(intArrayOf(920)))
-        assertArrayEquals(intArrayOf(923), remaining(intArrayOf(920, 921, 922)))
-        assertTrue(remaining(intArrayOf(920, 921, 922, 923)).isEmpty())
+        assertArrayEquals(intArrayOf(920, 921, 922, 923, 924), remaining())
+        assertArrayEquals(intArrayOf(921, 922, 923, 924), remaining(intArrayOf(920)))
+        assertArrayEquals(intArrayOf(924), remaining(intArrayOf(920, 921, 922, 923)))
+        assertTrue(remaining(intArrayOf(920, 921, 922, 923, 924)).isEmpty())
         entries.forEach { surviving ->
             val component = ComponentName(context, surviving.providerClass)
             val onlyOne = LaundryWidgetRegistry.remainingIds(context) { if (it == component) intArrayOf(930) else intArrayOf() }
@@ -109,6 +109,7 @@ class LaundryWidgetRegistrationTest {
     }
 
     private fun expectedLayout(size: WidgetSize) = when (size) {
+        WidgetSize.MINI -> R.layout.laundry_widget_mini
         WidgetSize.COMPACT -> R.layout.laundry_widget
         WidgetSize.WIDE -> R.layout.laundry_widget_wide
         WidgetSize.EXPANDED -> R.layout.laundry_widget_expanded

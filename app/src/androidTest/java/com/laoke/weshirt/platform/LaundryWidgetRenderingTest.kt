@@ -1,6 +1,7 @@
 package com.laoke.weshirt.platform
 
 import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -14,6 +15,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Chronometer
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.ViewFlipper
@@ -25,6 +27,7 @@ import com.laoke.weshirt.MainActivity
 import com.laoke.weshirt.R
 import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.platform.widget.LaundryWidgetProvider
+import com.laoke.weshirt.platform.widget.LaundryWidgetMiniProvider
 import com.laoke.weshirt.platform.widget.LaundryWidgetSnapshot
 import com.laoke.weshirt.platform.widget.LaundryWidgetStore
 import com.laoke.weshirt.platform.widget.WidgetSize
@@ -44,11 +47,17 @@ class LaundryWidgetRenderingTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val app get() = instrumentation.targetContext
     private var oldEndpoint: String? = null
+    private var oldAppearance: String? = null
+    private var oldPalette: String? = null
+    private val fullCardSizes get() = WidgetSize.entries.filter { it != WidgetSize.MINI }
 
     @Before fun prepare() {
         val prefs = app.getSharedPreferences("preferences", Context.MODE_PRIVATE)
         oldEndpoint = prefs.getString("endpoint", null)
-        prefs.edit().putString("endpoint", "https://widget.invalid").commit()
+        oldAppearance = prefs.getString("appearance", null)
+        oldPalette = prefs.getString("palette", null)
+        prefs.edit().putString("endpoint", "https://widget.invalid")
+            .putString("appearance", "system").putString("palette", "blue").commit()
         SecureSession(app).clear()
         LaundryWidgetStore.clear(app)
     }
@@ -58,11 +67,116 @@ class LaundryWidgetRenderingTest {
         LaundryWidgetStore.clear(app)
         val edit = app.getSharedPreferences("preferences", Context.MODE_PRIVATE).edit()
         if (oldEndpoint == null) edit.remove("endpoint") else edit.putString("endpoint", oldEndpoint)
+        if (oldAppearance == null) edit.remove("appearance") else edit.putString("appearance", oldAppearance)
+        if (oldPalette == null) edit.remove("palette") else edit.putString("palette", oldPalette)
         edit.commit()
     }
 
     private fun task(now: Long) = LaundryWidgetSnapshot("Test building", 9, 0, 0, now,
         "1号洗衣机", now + 600_000, taskStartedAtMillis = now - 600_000)
+
+    @Test fun miniCardsKeepShortTaskStatesReadableAndFullDetailsAccessible() {
+        data class Case(val name: String, val snapshot: LaundryWidgetSnapshot?, val status: Int, val progress: Int?)
+        val provider = LaundryWidgetMiniProvider()
+        val now = System.currentTimeMillis()
+        val cases = listOf(
+            Case("guest", null, R.string.widget_mini_sign_in, null),
+            Case("idle", LaundryWidgetSnapshot("Test building", 9, 0, 0, now), R.string.widget_idle, null),
+            Case("running", task(now), R.string.widget_mini_remaining, 50),
+            Case("awaiting", task(now).copy(taskEstimatedFinishAtMillis = now), R.string.widget_mini_awaiting, 100),
+            Case("stale", task(now).copy(updatedAtMillis = now - 600_001), R.string.widget_mini_unverified, null),
+            Case("ready", task(now).copy(taskCompletionConfirmed = true), R.string.widget_mini_ready, 100),
+            Case("missing-start", task(now).copy(taskStartedAtMillis = null), R.string.widget_mini_remaining, null),
+            Case("missing-finish", task(now).copy(taskEstimatedFinishAtMillis = null), R.string.widget_mini_unverified, null),
+        )
+        val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
+        try {
+            instrumentation.runOnMainSync {
+                for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
+                    for (night in listOf(Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES)) {
+                        for (font in listOf(1f, 1.4f)) {
+                            val config = Configuration(app.resources.configuration).apply {
+                                setLocale(locale)
+                                uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or night
+                                fontScale = font
+                            }
+                            val context = app.createConfigurationContext(config)
+                            for ((width, height) in listOf(110 to 40, 180 to 80)) for (case in cases) {
+                                val view = provider.render(context, 905, case.snapshot, WidgetSize.MINI, now)
+                                    .apply(context, FrameLayout(context))
+                                measure(view, width, height)
+                                val label = "2x1 at ${width}x$height, ${locale.language}, night $night, font $font, ${case.name}"
+                                captureView(view,
+                                    "native-widget-2x1-${width}x$height-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-${if (font == 1.4f) "large-font" else "default-font"}-${case.name}")
+                                for (id in listOf(R.id.widget_machine, R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta, R.id.widget_refresh)) {
+                                    val child = view.findViewById<View>(id)
+                                    assertInside(view, child)
+                                    assertTrue("Mini content must retain height ($label, id=$id)", child.height > 0)
+                                }
+                                val title = view.findViewById<TextView>(R.id.widget_task)
+                                val eta = view.findViewById<TextView>(R.id.widget_task_eta)
+                                val expectedTitle = context.getString(when {
+                                    case.snapshot == null -> R.string.widget_mini_sign_in
+                                    case.snapshot.taskMachineName == null -> R.string.widget_idle
+                                    else -> R.string.widget_mini_machine
+                                }, "1")
+                                assertEquals("The mini title must identify the task ($label)", expectedTitle, title.text.toString())
+                                val expectedStatus = if (case.status == R.string.widget_mini_remaining)
+                                    context.getString(case.status, 10) else context.getString(case.status)
+                                assertEquals("The mini status must preserve task semantics ($label)", expectedStatus, eta.text.toString())
+                                assertReadable(title, label)
+                                assertReadable(eta, label)
+                                val machine = rect(view, view.findViewById(R.id.widget_machine))
+                                val section = rect(view, view.findViewById(R.id.widget_task_section))
+                                val refresh = view.findViewById<View>(R.id.widget_refresh)
+                                assertTrue("Mini dial and task cannot overlap ($label)", machine.right <= section.left)
+                                assertTrue("Mini task and refresh cannot overlap ($label)", section.right <= rect(view, refresh).left)
+                                assertTrue("Mini task labels cannot overlap ($label)", rect(view, title).bottom <= rect(view, eta).top)
+                                assertTrue("Mini refresh must retain its click target ($label)", refresh.width >= dp(context, 28) && refresh.height >= dp(context, 28))
+                                assertEquals(View.GONE, view.findViewById<View>(R.id.widget_header).visibility)
+                                val description = view.contentDescription.toString()
+                                val building = case.snapshot?.buildingName ?: context.getString(R.string.widget_brand)
+                                val updated = case.snapshot?.let {
+                                    context.getString(R.string.widget_last_sync, SimpleDateFormat("HH:mm", locale).format(Date(it.updatedAtMillis)))
+                                } ?: context.getString(R.string.widget_update_unknown)
+                                assertTrue("Hidden mini building must remain accessible ($label)", description.contains(building))
+                                assertTrue("Hidden mini update time must remain accessible ($label)", description.contains(updated))
+                                case.snapshot?.taskMachineName?.let { fullName ->
+                                    assertTrue("The full machine name remains accessible ($label)", description.contains(fullName))
+                                }
+                                assertNull("The mini dial must not install a washer animation ($label)", view.findViewById<ViewFlipper>(R.id.widget_drum_active))
+                                assertEquals(View.GONE, view.findViewById<View>(R.id.widget_drum_holder).visibility)
+                                val dial = view.findViewById<ImageView>(R.id.widget_machine_ring)
+                                assertEquals(View.VISIBLE, dial.visibility)
+                                assertNotNull("Mini cards must render their progress dial ($label)", dial.drawable)
+                                val progress = view.findViewById<ProgressBar>(R.id.widget_progress)
+                                if (case.progress == null) assertEquals(View.GONE, progress.visibility)
+                                else {
+                                    assertEquals(View.VISIBLE, progress.visibility)
+                                    assertEquals(case.progress, progress.progress)
+                                }
+                                assertFalse("Mini cards must not use a host countdown ($label)", containsChronometer(view))
+                                assertFalse("Mini cards cannot show a zero or negative estimate ($label)",
+                                    eta.text.toString() == context.getString(R.string.widget_mini_remaining, 0) || eta.text.toString().contains("-1"))
+                            }
+                        }
+                    }
+                }
+                val request = provider.refreshIntent(app, 905)
+                assertEquals(ComponentName(app, LaundryWidgetMiniProvider::class.java), request.component)
+                assertEquals(905, provider.acceptedRefreshId(app, request, intArrayOf(905)))
+                assertNull(provider.acceptedRefreshId(app, request, intArrayOf(906)))
+                assertNull(LaundryWidgetProvider().acceptedRefreshId(app, request, intArrayOf(905)))
+                val pending = provider.refreshPendingIntent(app, 905)
+                assertTrue(pending.isBroadcast)
+                if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(pending.isImmutable)
+                val view = provider.render(app, 905, task(now), WidgetSize.MINI, now).apply(app, FrameLayout(app))
+                assertTrue("Mini refresh remains independent from task navigation", view.findViewById<View>(R.id.widget_refresh).performClick())
+            }
+            instrumentation.waitForIdleSync()
+            assertEquals("Mini refresh must not launch the app", 0, monitor.hits)
+        } finally { instrumentation.removeMonitor(monitor) }
+    }
 
     @Test fun responsiveTaskCardsApplyInBothThemesLanguagesAndLargeFontsWithoutCountSummary() {
         instrumentation.runOnMainSync {
@@ -76,8 +190,9 @@ class LaundryWidgetRenderingTest {
                         }
                         val context = app.createConfigurationContext(config)
                         val now = System.currentTimeMillis()
-                        for (size in WidgetSize.entries) {
+                        for (size in fullCardSizes) {
                             val dimensions = when (size) {
+                                WidgetSize.MINI -> error("Mini cards have a dedicated layout matrix")
                                 WidgetSize.COMPACT -> listOf(110 to 110, 180 to 180)
                                 WidgetSize.WIDE -> listOf(250 to 110, 320 to 140)
                                 WidgetSize.EXPANDED -> listOf(250 to 250, 320 to 320)
@@ -156,7 +271,7 @@ class LaundryWidgetRenderingTest {
             for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
                 val config = Configuration(app.resources.configuration).apply { setLocale(locale); fontScale = 1.4f }
                 val context = app.createConfigurationContext(config)
-                for (size in WidgetSize.entries) for (snapshot in snapshots) {
+                for (size in fullCardSizes) for (snapshot in snapshots) {
                     val view = LaundryWidgetProvider().render(context, 904, snapshot, size, now).apply(context, FrameLayout(context))
                     assertStatusFitsMinimum(view, size)
                 }
@@ -168,7 +283,7 @@ class LaundryWidgetRenderingTest {
         instrumentation.runOnMainSync {
             val now = System.currentTimeMillis()
             val provider = LaundryWidgetProvider()
-            for (size in WidgetSize.entries) {
+            for (size in fullCardSizes) {
                 val idle = provider.render(app, 901, LaundryWidgetSnapshot("Test building", 9, 0, 0, now), size, now).apply(app, FrameLayout(app))
                 assertEquals(app.getString(R.string.widget_idle), idle.findViewById<TextView>(R.id.widget_task).text.toString())
                 assertNull(idle.findViewById<ViewFlipper>(R.id.widget_drum_active))
@@ -218,7 +333,7 @@ class LaundryWidgetRenderingTest {
             for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
                 val config = Configuration(app.resources.configuration).apply { setLocale(locale); fontScale = 1.4f }
                 val context = app.createConfigurationContext(config)
-                for (size in WidgetSize.entries) {
+                for (size in fullCardSizes) {
                     val error = provider.render(context, 903, null, size, System.currentTimeMillis()).apply(context, FrameLayout(context))
                     assertStatusFitsMinimum(error, size)
                 }
@@ -345,6 +460,7 @@ class LaundryWidgetRenderingTest {
     }
     private fun assertStatusFitsMinimum(view: View, size: WidgetSize) {
         val (width, height) = when (size) {
+            WidgetSize.MINI -> error("Mini cards have a dedicated layout matrix")
             WidgetSize.COMPACT -> 110 to 110
             WidgetSize.WIDE -> 250 to 110
             WidgetSize.EXPANDED -> 250 to 250

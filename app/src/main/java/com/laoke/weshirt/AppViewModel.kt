@@ -127,8 +127,9 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         viewModelScope.launch { runCatching { api.call("/api/telemetry","POST",JSONObject().put("events",JSONArray(batch)),auth=false) } }
     }
     fun preference(key: String, value: String) {
-        prefs.edit().putString(key, value).apply()
-        _state.update { when(key) { "appearance" -> it.copy(appearance = value); "palette" -> it.copy(palette = value); "quality" -> it.copy(quality = value); else -> it } }
+        val saved = com.laoke.weshirt.platform.widget.LaundryWidgetTheme.savePreference(getApplication(), key, value)
+            ?: value.also { prefs.edit().putString(key, it).apply() }
+        _state.update { when(key) { "appearance" -> it.copy(appearance = saved); "palette" -> it.copy(palette = saved); "quality" -> it.copy(quality = saved); else -> it } }
     }
     fun telemetry(value: Boolean) { prefs.edit().putBoolean("telemetry", value).apply(); _state.update { it.copy(telemetryOn = value) }; if(!value) telemetryBuffer.clear() }
     fun configure(endpoint: String) {
