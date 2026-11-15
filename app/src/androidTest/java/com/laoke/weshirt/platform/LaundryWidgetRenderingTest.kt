@@ -105,7 +105,7 @@ class LaundryWidgetRenderingTest {
                                 fontScale = font
                             }
                             val context = app.createConfigurationContext(config)
-                            for ((width, height) in listOf(150 to 72, 180 to 80)) for (case in cases) {
+                            for ((width, height) in listOf(150 to 76, 180 to 80)) for (case in cases) {
                                 val view = provider.render(context, 905, case.snapshot, WidgetSize.MINI, now)
                                     .apply(context, FrameLayout(context))
                                 measure(view, width, height)

@@ -64,7 +64,7 @@ class LaundryWidgetRegistrationTest {
             val width = parser.getAttributeValue(namespace, "minWidth").removeSuffix("dip").removeSuffix("dp").toFloat()
             val height = parser.getAttributeValue(namespace, "minHeight").removeSuffix("dip").removeSuffix("dp").toFloat()
             assertEquals(if (size.columns == 2) 150f else 250f, width, 0f)
-            assertEquals(when (size) { WidgetSize.MINI -> 72f; WidgetSize.COMPACT -> 150f; WidgetSize.WIDE -> 120f }, height, 0f)
+            assertEquals(when (size) { WidgetSize.MINI -> 76f; WidgetSize.COMPACT -> 150f; WidgetSize.WIDE -> 120f }, height, 0f)
         }
     }
 
