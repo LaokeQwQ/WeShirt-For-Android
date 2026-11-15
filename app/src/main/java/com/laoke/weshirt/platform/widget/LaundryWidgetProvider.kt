@@ -7,9 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.util.SizeF
 import android.view.View
 import android.widget.RemoteViews
 import com.laoke.weshirt.R
@@ -18,29 +16,31 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class LaundryWidgetProvider : AppWidgetProvider() {
+/** The original component remains the 4×2 entry so installed widgets keep working. */
+open class LaundryWidgetProvider : AppWidgetProvider() {
+    internal open val widgetSize: WidgetSize = WidgetSize.WIDE
+
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
         val snapshot = LaundryWidgetStore.read(context)
         for (id in appWidgetIds) {
-            manager.updateAppWidget(id, adaptiveViews(context, id, manager.getAppWidgetOptions(id), snapshot))
+            manager.updateAppWidget(id, render(context, id, snapshot, widgetSize, System.currentTimeMillis()))
         }
         // A host redraw and a local minute tick never fetch account data.
         if (appWidgetIds.isNotEmpty()) LaundryWidgetRefresh.scheduleTicks(context)
     }
 
     override fun onEnabled(context: Context) { LaundryWidgetRefresh.scheduleTicks(context) }
-    override fun onDisabled(context: Context) { LaundryWidgetRefresh.cancel(context) }
+    override fun onDisabled(context: Context) {
+        if (LaundryWidgetRegistry.remainingIds(context).isEmpty()) LaundryWidgetRefresh.cancel(context)
+    }
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
-        val remaining = AppWidgetManager.getInstance(context)
-            .getAppWidgetIds(ComponentName(context, LaundryWidgetProvider::class.java))
-            .filterNot { it in appWidgetIds }
-        if (remaining.isEmpty()) LaundryWidgetRefresh.cancel(context)
+        if (LaundryWidgetRegistry.remainingIds(context, appWidgetIds).isEmpty()) LaundryWidgetRefresh.cancel(context)
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == ACTION_REFRESH) {
             val installed = AppWidgetManager.getInstance(context)
-                .getAppWidgetIds(ComponentName(context, LaundryWidgetProvider::class.java))
+                .getAppWidgetIds(ComponentName(context, javaClass))
             acceptedRefreshId(context, intent, installed)?.let { LaundryWidgetRefresh.enqueue(context, it) }
             return
         }
@@ -48,22 +48,8 @@ class LaundryWidgetProvider : AppWidgetProvider() {
     }
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, appWidgetId: Int, newOptions: Bundle) {
-        manager.updateAppWidget(appWidgetId, adaptiveViews(context, appWidgetId, newOptions, LaundryWidgetStore.read(context)))
-    }
-
-    private fun adaptiveViews(context: Context, id: Int, options: Bundle, snapshot: LaundryWidgetSnapshot?): RemoteViews {
-        val now = System.currentTimeMillis()
-        val fontScale = context.resources.configuration.fontScale
-        if (Build.VERSION.SDK_INT >= 31 && fontScale <= 1.5f) {
-            return RemoteViews(mapOf(
-                SizeF(180f, 140f) to render(context, id, snapshot, WidgetSize.COMPACT, now),
-                SizeF(230f, 140f) to render(context, id, snapshot, WidgetSize.WIDE, now),
-                SizeF(230f, 320f) to render(context, id, snapshot, WidgetSize.EXPANDED, now),
-            ))
-        }
-        return render(context, id, snapshot, LaundryWidgetState.size(
-            options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 180),
-            options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 140), fontScale), now)
+        manager.updateAppWidget(appWidgetId,
+            render(context, appWidgetId, LaundryWidgetStore.read(context), widgetSize, System.currentTimeMillis()))
     }
 
     internal fun render(context: Context, id: Int, snapshot: LaundryWidgetSnapshot?, size: WidgetSize, now: Long): RemoteViews {
@@ -71,6 +57,7 @@ class LaundryWidgetProvider : AppWidgetProvider() {
             WidgetSize.COMPACT -> R.layout.laundry_widget
             WidgetSize.WIDE -> R.layout.laundry_widget_wide
             WidgetSize.EXPANDED -> R.layout.laundry_widget_expanded
+            WidgetSize.LARGE -> R.layout.laundry_widget_large
         }
         val views = RemoteViews(context.packageName, layout)
         val freshness = LaundryWidgetState.freshness(snapshot, now)
@@ -132,7 +119,7 @@ class LaundryWidgetProvider : AppWidgetProvider() {
         views.setTextViewText(R.id.widget_progress_label, progress?.let { context.getString(R.string.widget_progress_percent, it) }
             ?: context.getString(R.string.widget_progress_unknown))
         views.setContentDescription(R.id.widget_machine, context.getString(if (running) R.string.widget_machine_running else R.string.widget_machine_still))
-        views.setViewVisibility(R.id.widget_task_note, if (size == WidgetSize.EXPANDED) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_task_note, if (size == WidgetSize.EXPANDED || size == WidgetSize.LARGE) View.VISIBLE else View.GONE)
         views.setTextViewText(R.id.widget_task_note, refreshError ?: context.getString(when {
             freshness == WidgetFreshness.OUTDATED -> R.string.widget_stale_hint
             taskState == WidgetTaskState.AWAITING_CONFIRMATION -> R.string.widget_awaiting_detail
@@ -143,16 +130,30 @@ class LaundryWidgetProvider : AppWidgetProvider() {
     }
 
     internal fun refreshPendingIntent(context: Context, id: Int): PendingIntent = PendingIntent.getBroadcast(
-        context, id, Intent(context, LaundryWidgetProvider::class.java).setAction(ACTION_REFRESH)
-            .setData(Uri.parse("weshirt-widget://refresh/$id"))
-            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id),
+        context, id, refreshIntent(context, id),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
+    internal fun refreshIntent(context: Context, id: Int): Intent = Intent(context, javaClass).setAction(ACTION_REFRESH)
+            .setData(Uri.parse("weshirt-widget://refresh/$id"))
+            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+
     internal fun acceptedRefreshId(context: Context, intent: Intent, installed: IntArray): Int? {
-        if (intent.action != ACTION_REFRESH || intent.component != ComponentName(context, LaundryWidgetProvider::class.java)) return null
+        if (intent.action != ACTION_REFRESH || intent.component != ComponentName(context, javaClass)) return null
         val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
         return id.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID && it in installed }
     }
 
     companion object { internal const val ACTION_REFRESH = "com.laoke.weshirt.action.REFRESH_WIDGET" }
+}
+
+class LaundryWidgetSquareProvider : LaundryWidgetProvider() {
+    internal override val widgetSize = WidgetSize.COMPACT
+}
+
+class LaundryWidgetExpandedProvider : LaundryWidgetProvider() {
+    internal override val widgetSize = WidgetSize.EXPANDED
+}
+
+class LaundryWidgetLargeProvider : LaundryWidgetProvider() {
+    internal override val widgetSize = WidgetSize.LARGE
 }

@@ -21,9 +21,11 @@ import com.laoke.weshirt.platform.push.PushConfiguration
 import com.laoke.weshirt.platform.push.PushEventKind
 import com.laoke.weshirt.platform.push.PushRuntime
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -242,10 +244,9 @@ class NativePreferencePrivacyTest {
                 val disabling = onMain { if (path.endsWith("notify")) vm.toggleNotify(false) else vm.toggleAnnouncements(false) }
                 assertFalse(prefs.getBoolean(if (path.endsWith("notify")) "nativePushConsent" else "announcements", true))
                 release.countDown()
-                runBlocking { enabling.join(); disabling.join(); onMain { vm.refresh(forceMetadata = true) }.join() }
+                runBlocking { enabling.join(); disabling.join() }
+                awaitRefreshCompletion(vm, onMain { vm.refresh(forceMetadata = true) })
                 assertTrue("A real refresh must read enabled=true from the server fixture", serverPreferenceRead.await(10, TimeUnit.SECONDS))
-                val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                while (vm.state.value.loading && System.nanoTime() < deadline) Thread.sleep(30)
                 assertFalse("The server refresh must finish before checking the preference", vm.state.value.loading)
                 if (path.endsWith("notify")) {
                     assertFalse(vm.state.value.notificationsOn)
@@ -261,10 +262,8 @@ class NativePreferencePrivacyTest {
                         assertTrue("An already loaded announcement is present before the server opt-out", vm.state.value.announcements.isNotEmpty())
                         vm.refresh(forceMetadata = true)
                     }
-                    runBlocking { refresh.join() }
+                    awaitRefreshCompletion(vm, refresh)
                     assertTrue("Refresh must consume the server-side opt-out", serverDisabledRead.await(10, TimeUnit.SECONDS))
-                    val remoteDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-                    while (vm.state.value.loading && System.nanoTime() < remoteDeadline) Thread.sleep(30)
                     assertFalse(vm.state.value.loading)
                     assertTrue("This case keeps the device preference enabled", prefs.getBoolean("announcements", false))
                     assertFalse("A server-side opt-out must disable announcements", vm.state.value.announcementsOn)
@@ -276,6 +275,21 @@ class NativePreferencePrivacyTest {
 
     private fun newViewModel(): AppViewModel = onMain {
         AppViewModel(app).also { store.put("privacy", it) }
+    }
+
+    private fun awaitRefreshCompletion(vm: AppViewModel, requested: Job) = runBlocking {
+        withTimeout(TimeUnit.SECONDS.toMillis(10)) {
+            requested.join()
+            // A request made during an active pass joins that pass and queues a
+            // follow-up. The public board can also clear `loading` before the
+            // account finishes. Join each real pass rather than a UI flag or
+            // the preference value that the assertions are meant to verify.
+            val field = AppViewModel::class.java.getDeclaredField("refreshJob").apply { isAccessible = true }
+            while (true) {
+                val current = onMain { field.get(vm) as Job? } ?: break
+                current.join()
+            }
+        }
     }
 
     private fun seedActivePreferences(vm: AppViewModel) {

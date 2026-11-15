@@ -1,7 +1,5 @@
 package com.laoke.weshirt.platform.widget
 
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
 import android.content.Context
 import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.data.AppState
@@ -160,9 +158,7 @@ object LaundryWidgetStore {
     }
 
     fun refresh(context: Context) {
-        val manager = AppWidgetManager.getInstance(context)
-        val ids = manager.getAppWidgetIds(ComponentName(context, LaundryWidgetProvider::class.java))
-        LaundryWidgetProvider().onUpdate(context, manager, ids)
+        LaundryWidgetRegistry.refresh(context)
     }
 }
 
