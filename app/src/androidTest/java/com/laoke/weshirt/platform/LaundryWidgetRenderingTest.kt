@@ -216,6 +216,7 @@ class LaundryWidgetRenderingTest {
                                 assertFalse("The widget does not show a second usage summary", allText(view).contains("使用中") || allText(view).contains("Unknown") || allText(view).contains("未知"))
                                 val refresh = view.findViewById<View>(R.id.widget_refresh)
                                 val minimumTarget = when (size) {
+                                    WidgetSize.MINI -> 28
                                     WidgetSize.COMPACT, WidgetSize.WIDE -> 32
                                     WidgetSize.EXPANDED -> 36
                                     WidgetSize.LARGE -> 40
