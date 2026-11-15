@@ -15,8 +15,6 @@ internal object LaundryWidgetRegistry {
         Entry(LaundryWidgetMiniProvider::class.java, ::LaundryWidgetMiniProvider),
         Entry(LaundryWidgetSquareProvider::class.java, ::LaundryWidgetSquareProvider),
         Entry(LaundryWidgetProvider::class.java, ::LaundryWidgetProvider),
-        Entry(LaundryWidgetExpandedProvider::class.java, ::LaundryWidgetExpandedProvider),
-        Entry(LaundryWidgetLargeProvider::class.java, ::LaundryWidgetLargeProvider),
     )
 
     /** A provider's disabled callback does not imply that the other sizes are absent. */

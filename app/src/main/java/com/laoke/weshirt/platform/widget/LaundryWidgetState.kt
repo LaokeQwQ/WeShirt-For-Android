@@ -4,7 +4,7 @@ internal enum class WidgetFreshness { MISSING, INVALID_TIME, OUTDATED, RECENT }
 internal enum class WidgetTaskState { NONE, ESTIMATED, AWAITING_CONFIRMATION, UNVERIFIED, READY_FOR_PICKUP }
 /** Fixed launcher entries; host padding or font size must not change the chosen shape. */
 internal enum class WidgetSize(val columns: Int, val rows: Int) {
-    MINI(2, 1), COMPACT(2, 2), WIDE(4, 2), EXPANDED(4, 4), LARGE(4, 6),
+    MINI(2, 1), COMPACT(2, 2), WIDE(4, 2),
 }
 
 /** Time estimates never establish that a machine is idle or a task has ended. */

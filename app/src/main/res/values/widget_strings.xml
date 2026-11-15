@@ -19,6 +19,8 @@
     <string name="widget_no_task">暂无任务</string>
     <string name="widget_idle_detail">有新任务时，会在这里显示。</string>
     <string name="widget_remaining">剩余 %1$d 分钟</string>
+    <string name="widget_expected_finish">预计 %1$s 完成</string>
+    <string name="widget_updated_compact">更新 %1$s</string>
     <string name="widget_awaiting">即将完成</string>
     <string name="widget_awaiting_detail">等待设备确认完成。</string>
     <string name="widget_ready_for_pickup">待取衣</string>
