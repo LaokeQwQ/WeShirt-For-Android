@@ -8,11 +8,13 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.LayerDrawable
 import android.view.View
 import android.view.ViewGroup
+import android.view.Gravity
 import android.widget.Chronometer
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -103,7 +105,7 @@ class LaundryWidgetRenderingTest {
                                 fontScale = font
                             }
                             val context = app.createConfigurationContext(config)
-                            for ((width, height) in listOf(150 to 64, 180 to 80)) for (case in cases) {
+                            for ((width, height) in listOf(150 to 72, 180 to 80)) for (case in cases) {
                                 val view = provider.render(context, 905, case.snapshot, WidgetSize.MINI, now)
                                     .apply(context, FrameLayout(context))
                                 measure(view, width, height)
@@ -128,6 +130,8 @@ class LaundryWidgetRenderingTest {
                                 assertEquals("The mini status must preserve task semantics ($label)", expectedStatus, eta.text.toString())
                                 assertReadable(title, label)
                                 assertReadable(eta, label)
+                                assertTextInset(view, title, label)
+                                assertTextInset(view, eta, label)
                                 val machine = rect(view, view.findViewById(R.id.widget_machine))
                                 val section = rect(view, view.findViewById(R.id.widget_task_section))
                                 val header = rect(view, view.findViewById(R.id.widget_header))
@@ -138,6 +142,7 @@ class LaundryWidgetRenderingTest {
                                 val updateLabel = view.findViewById<TextView>(R.id.widget_updated)
                                 assertInside(view, updateLabel)
                                 assertReadable(updateLabel, label)
+                                assertTextInset(view, updateLabel, label)
                                 assertTrue("Mini update time must stay beside refresh ($label)", rect(view, updateLabel).right <= rect(view, refresh).left)
                                 assertTrue("Mini task labels cannot overlap ($label)", rect(view, title).bottom <= rect(view, eta).top)
                                 assertTrue("Mini refresh must retain its click target ($label)", refresh.width >= dp(context, 28) && refresh.height >= dp(context, 28))
@@ -236,7 +241,7 @@ class LaundryWidgetRenderingTest {
                                 }
                                 assertTrue(refresh.width >= dp(context, minimumTarget))
                                 assertTrue(refresh.height >= dp(context, minimumTarget))
-                                for (id in listOf(R.id.widget_updated, R.id.widget_refresh, R.id.widget_task_section, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress, R.id.widget_water)) {
+                                for (id in listOf(R.id.widget_updated, R.id.widget_refresh, R.id.widget_task_section, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress)) {
                                     assertInside(view, view.findViewById(id))
                                 }
                                 assertEquals(View.GONE, view.findViewById<View>(R.id.widget_building).visibility)
@@ -244,16 +249,22 @@ class LaundryWidgetRenderingTest {
                                 assertTrue("Update time must stay beside refresh", updated.right <= rect(view, refresh).left)
                                 for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
                                     assertReadable(view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
+                                    assertTextInset(view, view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
                                 }
                                 val header = rect(view, view.findViewById(R.id.widget_header))
                                 val section = rect(view, view.findViewById(R.id.widget_task_section))
                                 val machine = rect(view, view.findViewById(R.id.widget_machine))
                                 val title = rect(view, view.findViewById(R.id.widget_task))
                                 val eta = rect(view, view.findViewById(R.id.widget_task_eta))
-                                val progress = rect(view, view.findViewById(R.id.widget_water))
+                                val progress = rect(view, view.findViewById(R.id.widget_progress))
                                 val measuredCase = "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, night $night, font $font; machine=$machine, section=$section, header=$header, title=$title, eta=$eta, progress=$progress"
                                 assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
-                                assertTrue("The washer illustration must retain height ($measuredCase)", machine.height() >= dp(context, 12))
+                                val illustration = artworkBounds(view, view.findViewById(R.id.widget_machine_shell))
+                                val minimumArt = if (size == WidgetSize.COMPACT) {
+                                    if (height == 150) 40 else 65
+                                } else if (height == 120) 80 else 90
+                                assertTrue("The visible machine must remain prominent, artwork=$illustration ($measuredCase)",
+                                    illustration.height() >= dp(context, minimumArt))
                                 if (size == WidgetSize.WIDE) {
                                     assertTrue("The wide washer must stay to the left of the header and task ($measuredCase)",
                                         machine.right <= minOf(header.left, section.left, title.left, eta.left, progress.left))
@@ -268,7 +279,7 @@ class LaundryWidgetRenderingTest {
                                 if (size != WidgetSize.WIDE) {
                                     assertTrue("The centered illustration must stay above its labels ($measuredCase)", machine.bottom <= title.top)
                                 }
-                                assertWaterState(view, true, measuredCase)
+                                assertNoWater(view, measuredCase)
                             }
                         }
                     }
@@ -309,7 +320,7 @@ class LaundryWidgetRenderingTest {
                             }
                             assertEquals("All shapes must preserve the task state, $size/$index/$locale/$night/$font",
                                 status, view.findViewById<TextView>(R.id.widget_task_eta).text.toString())
-                            assertWaterState(view, index == 2, "$size status $index/$locale/$night/$font")
+                            assertNoWater(view, "$size status $index/$locale/$night/$font")
                         }
                     }
                 }
@@ -344,7 +355,7 @@ class LaundryWidgetRenderingTest {
                 val missingStart = provider.render(app, 901, task(now).copy(taskStartedAtMillis = null), size, now).apply(app, FrameLayout(app))
                 assertEquals(View.GONE, missingStart.findViewById<View>(R.id.widget_progress).visibility)
                 assertEquals(View.GONE, missingStart.findViewById<View>(R.id.widget_progress_label).visibility)
-                assertWaterState(missingStart, false, "$size missing start")
+                assertNoWater(missingStart, "$size missing start")
             }
         }
     }
@@ -472,7 +483,7 @@ class LaundryWidgetRenderingTest {
         }
     }
 
-    @Test fun attachedWaterFramesAdvanceForEverySizeAndDetachWhenDeviceConfirmationIsPending() {
+    @Test fun attachedAnimationsAdvanceAndOnlyMiniUsesWater() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             val provider = LaundryWidgetProvider()
             for (size in WidgetSize.entries) {
@@ -492,26 +503,32 @@ class LaundryWidgetRenderingTest {
                 instrumentation.waitForIdleSync()
                 var first = -1
                 scenario.onActivity {
-                    val water = root.findViewById<ViewFlipper>(R.id.widget_water_active)
-                    assertTrue("The $size host must run its native water timer", water.isFlipping)
-                    assertEquals(3, water.childCount)
-                    first = water.displayedChild
+                    val animation = root.findViewById<ViewFlipper>(if (size == WidgetSize.MINI) R.id.widget_water_active else R.id.widget_drum_active)
+                    assertTrue("The $size host must run its native task timer", animation.isFlipping)
+                    assertEquals(3, animation.childCount)
+                    if (size != WidgetSize.MINI) assertNoWater(root, "$size attached running")
+                    first = animation.displayedChild
                 }
                 val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
                 var advanced = false
                 while (!advanced && android.os.SystemClock.elapsedRealtime() < deadline) {
                     Thread.sleep(100)
-                    scenario.onActivity { advanced = root.findViewById<ViewFlipper>(R.id.widget_water_active).displayedChild != first }
+                    scenario.onActivity { advanced = root.findViewById<ViewFlipper>(if (size == WidgetSize.MINI) R.id.widget_water_active else R.id.widget_drum_active).displayedChild != first }
                 }
-                assertTrue("The $size host must advance a real water frame without test-driven showNext", advanced)
+                assertTrue("The $size host must advance a real task frame without test-driven showNext", advanced)
                 scenario.onActivity { activity ->
                     provider.render(activity, 906, task(now).copy(taskEstimatedFinishAtMillis = now), size, now)
                         .reapply(activity, root)
-                    assertWaterState(root, false, "$size awaiting device confirmation")
+                    if (size == WidgetSize.MINI) assertWaterState(root, false, "$size awaiting device confirmation")
+                    else {
+                        assertNoWater(root, "$size awaiting device confirmation")
+                        assertNull(root.findViewById<ViewFlipper>(R.id.widget_drum_active))
+                    }
                     assertEquals(100, root.findViewById<ProgressBar>(R.id.widget_progress).progress)
                     provider.render(activity, 906, task(now).copy(taskStartedAtMillis = null), size, now)
                         .reapply(activity, root)
-                    assertWaterState(root, false, "$size unknown percentage")
+                    if (size == WidgetSize.MINI) assertWaterState(root, false, "$size unknown percentage")
+                    else assertNoWater(root, "$size unknown percentage")
                 }
             }
         }
@@ -542,11 +559,42 @@ class LaundryWidgetRenderingTest {
             assertEquals("$name must remain readable ($case)", 0, layout.getEllipsisCount(line))
         }
     }
+    private fun assertTextInset(root: View, label: TextView, case: String) {
+        val layout = requireNotNull(label.layout)
+        val box = rect(root, label)
+        val availableHeight = label.height - label.compoundPaddingTop - label.compoundPaddingBottom
+        val vertical = when (label.gravity and Gravity.VERTICAL_GRAVITY_MASK) {
+            Gravity.BOTTOM -> availableHeight - layout.height
+            Gravity.CENTER_VERTICAL -> (availableHeight - layout.height) / 2
+            else -> 0
+        }.coerceAtLeast(0)
+        val left = (0 until layout.lineCount).minOf { layout.getLineLeft(it) } + box.left + label.compoundPaddingLeft
+        val right = (0 until layout.lineCount).maxOf { layout.getLineRight(it) } + box.left + label.compoundPaddingLeft
+        val top = box.top + label.compoundPaddingTop + vertical
+        val bottom = top + layout.height
+        val safe = dp(root.context, 6)
+        assertTrue("Visible text must keep safe space from every rounded card edge ($case, text=${label.text}, glyph=[$left,$top,$right,$bottom], root=${root.width}x${root.height})",
+            left >= safe && top >= safe && right <= root.width - safe && bottom <= root.height - safe)
+    }
+    private fun artworkBounds(root: View, image: ImageView): RectF {
+        val drawable = requireNotNull(image.drawable)
+        val content = RectF(drawable.bounds)
+        image.imageMatrix.mapRect(content)
+        val box = rect(root, image)
+        content.offset((box.left + image.paddingLeft).toFloat(), (box.top + image.paddingTop).toFloat())
+        content.intersect(RectF(box))
+        return content
+    }
+    private fun assertNoWater(view: View, case: String) {
+        for (id in listOf(R.id.widget_water_holder, R.id.widget_water_active, R.id.widget_water_frame_0,
+            R.id.widget_water_frame_1, R.id.widget_water_frame_2)) {
+            assertNull("Only the 2×1 mini can install water artwork or reserve its space ($case, id=$id)", view.findViewById<View>(id))
+        }
+    }
     private fun assertWaterState(view: View, animated: Boolean, case: String) {
         val holder = view.findViewById<ViewGroup>(R.id.widget_water_holder)
         val flipper = view.findViewById<ViewFlipper>(R.id.widget_water_active)
-        val static = view.findViewById<ImageView>(R.id.widget_water_ring)
-            ?: view.findViewById(R.id.widget_machine_ring)
+        val static = view.findViewById<ImageView>(R.id.widget_machine_ring)
         assertNotNull("Static water artwork must be ready for a later host reapply ($case)", static.drawable)
         assertEquals(if (animated) View.GONE else View.VISIBLE, static.visibility)
         assertEquals(if (animated) View.VISIBLE else View.GONE, holder.visibility)
@@ -571,7 +619,10 @@ class LaundryWidgetRenderingTest {
         for (id in listOf(R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta)) assertInside(view, view.findViewById(id))
         val config = view.resources.configuration
         val case = "$size status at $width x $height, ${config.locales[0]}, font ${config.fontScale}, text=${view.findViewById<TextView>(R.id.widget_task).text} / ${view.findViewById<TextView>(R.id.widget_task_eta).text}"
-        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) assertReadable(view.findViewById(id), case)
+        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
+            assertReadable(view.findViewById(id), case)
+            assertTextInset(view, view.findViewById(id), case)
+        }
         val header = rect(view, view.findViewById(R.id.widget_header))
         val title = rect(view, view.findViewById(R.id.widget_task))
         val eta = rect(view, view.findViewById(R.id.widget_task_eta))

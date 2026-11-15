@@ -128,12 +128,15 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.removeAllViews(R.id.widget_drum_holder)
         if (running && size != WidgetSize.MINI) views.addView(R.id.widget_drum_holder, themedDrum(context))
         views.setViewVisibility(R.id.widget_drum_holder, if (running && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
-        val movingWater = running && progress != null
-        views.removeAllViews(R.id.widget_water_holder)
-        if (movingWater) views.addView(R.id.widget_water_holder, themedWater(context, progress!!))
-        views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
-        views.setViewVisibility(if (size == WidgetSize.MINI) R.id.widget_machine_ring else R.id.widget_water_ring,
-            if (movingWater) View.GONE else View.VISIBLE)
+        // Only the horizontal mini card uses a liquid gauge. Larger cards keep
+        // that space for the washer and a single, inset progress track.
+        if (size == WidgetSize.MINI) {
+            val movingWater = running && progress != null
+            views.removeAllViews(R.id.widget_water_holder)
+            if (movingWater) views.addView(R.id.widget_water_holder, themedWater(context, progress!!))
+            views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
+            views.setViewVisibility(R.id.widget_machine_ring, if (movingWater) View.GONE else View.VISIBLE)
+        }
         views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
@@ -222,7 +225,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
             actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
             actions.image(R.id.widget_machine_ring, "ring:$progress") { LaundryWidgetArtwork.ring(it, progress) }
-            actions.image(R.id.widget_water_ring, "water:$progress:0") { LaundryWidgetArtwork.water(it, progress, 0) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
         actions.text(R.id.widget_updated) { it.secondaryText }
