@@ -41,11 +41,9 @@ class LaundryWidgetStateTest {
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(snapshot(finish = -1), now))
     }
 
-    @Test fun compactAndLargeFontsPrioritizeReadableInformation() {
-        assertEquals(WidgetSize.COMPACT, LaundryWidgetState.size(110, 110, 1f))
-        assertEquals(WidgetSize.WIDE, LaundryWidgetState.size(250, 140, 1f))
-        assertEquals(WidgetSize.EXPANDED, LaundryWidgetState.size(250, 340, 1f))
-        assertEquals(WidgetSize.COMPACT, LaundryWidgetState.size(250, 340, 2f))
+    @Test fun pickerHasOnlyTheFourRequestedGridShapes() {
+        assertEquals(listOf(2 to 2, 4 to 2, 4 to 4, 4 to 6),
+            WidgetSize.entries.map { it.columns to it.rows })
     }
 
     @Test fun externalNamesCannotInsertExtraRowsOrUnboundedText() {

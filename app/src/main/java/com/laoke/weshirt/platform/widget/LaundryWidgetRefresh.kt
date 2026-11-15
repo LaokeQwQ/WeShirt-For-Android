@@ -1,7 +1,5 @@
 package com.laoke.weshirt.platform.widget
 
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -180,8 +178,7 @@ object LaundryWidgetRefresh {
         WorkManager.getInstance(context).cancelAllWorkByTag(TAG)
     }
     internal fun generation(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong("generation", 0L)
-    internal fun installedIds(context: Context): IntArray = AppWidgetManager.getInstance(context)
-        .getAppWidgetIds(ComponentName(context, LaundryWidgetProvider::class.java))
+    internal fun installedIds(context: Context): IntArray = LaundryWidgetRegistry.remainingIds(context)
     internal fun origin(context: Context) = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL,
         context.getSharedPreferences("preferences", Context.MODE_PRIVATE).getString("endpoint", null)).trimEnd('/')
 }

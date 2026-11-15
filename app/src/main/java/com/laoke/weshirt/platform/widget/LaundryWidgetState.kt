@@ -2,7 +2,10 @@ package com.laoke.weshirt.platform.widget
 
 internal enum class WidgetFreshness { MISSING, INVALID_TIME, OUTDATED, RECENT }
 internal enum class WidgetTaskState { NONE, ESTIMATED, AWAITING_CONFIRMATION, UNVERIFIED, READY_FOR_PICKUP }
-internal enum class WidgetSize { COMPACT, WIDE, EXPANDED }
+/** Fixed launcher entries; host padding or font size must not change the chosen shape. */
+internal enum class WidgetSize(val columns: Int, val rows: Int) {
+    COMPACT(2, 2), WIDE(4, 2), EXPANDED(4, 4), LARGE(4, 6),
+}
 
 /** Time estimates never establish that a machine is idle or a task has ended. */
 internal object LaundryWidgetState {
@@ -43,12 +46,6 @@ internal object LaundryWidgetState {
     }
 
     fun isRunning(snapshot: LaundryWidgetSnapshot?, now: Long): Boolean = taskState(snapshot, now) == WidgetTaskState.ESTIMATED
-
-    fun size(width: Int, height: Int, fontScale: Float): WidgetSize = when {
-        width >= 230 && height >= 320 && fontScale <= 1.5f -> WidgetSize.EXPANDED
-        width >= 230 && height >= 140 && fontScale <= 1.5f -> WidgetSize.WIDE
-        else -> WidgetSize.COMPACT
-    }
 
     fun safeLabel(value: String): String = value.filterNot(Char::isISOControl).trim().take(100)
 }

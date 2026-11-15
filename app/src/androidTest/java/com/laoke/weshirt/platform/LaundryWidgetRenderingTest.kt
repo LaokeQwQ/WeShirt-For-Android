@@ -77,12 +77,13 @@ class LaundryWidgetRenderingTest {
                         val context = app.createConfigurationContext(config)
                         val now = System.currentTimeMillis()
                         for (size in WidgetSize.entries) {
-                            for (width in if (size == WidgetSize.COMPACT) listOf(180, 260, 320) else listOf(260, 320)) {
-                                val height = when {
-                                    width == 180 -> 140
-                                    size == WidgetSize.EXPANDED -> 340
-                                    else -> 180
-                                }
+                            val dimensions = when (size) {
+                                WidgetSize.COMPACT -> listOf(110 to 110, 180 to 180)
+                                WidgetSize.WIDE -> listOf(250 to 110, 320 to 140)
+                                WidgetSize.EXPANDED -> listOf(250 to 250, 320 to 320)
+                                WidgetSize.LARGE -> listOf(250 to 390, 320 to 480)
+                            }
+                            for ((width, height) in dimensions) {
                                 val view = LaundryWidgetProvider().render(context, 900, task(now), size, now)
                                     .apply(context, FrameLayout(context))
                                 measure(view, width, height)
@@ -96,41 +97,66 @@ class LaundryWidgetRenderingTest {
                                 assertFalse("The widget describes the user's task, not an idle-machine count", allText(view).contains("台空闲"))
                                 assertFalse("The widget does not show a second usage summary", allText(view).contains("使用中") || allText(view).contains("Unknown") || allText(view).contains("未知"))
                                 val refresh = view.findViewById<View>(R.id.widget_refresh)
-                                assertTrue(refresh.width >= dp(context, 40))
-                                assertTrue(refresh.height >= dp(context, 40))
-                                for (id in listOf(R.id.widget_building, R.id.widget_updated, R.id.widget_refresh, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress_label)) {
+                                val minimumTarget = when (size) {
+                                    WidgetSize.COMPACT, WidgetSize.WIDE -> 32
+                                    WidgetSize.EXPANDED -> 36
+                                    WidgetSize.LARGE -> 40
+                                }
+                                assertTrue(refresh.width >= dp(context, minimumTarget))
+                                assertTrue(refresh.height >= dp(context, minimumTarget))
+                                for (id in listOf(R.id.widget_building, R.id.widget_updated, R.id.widget_refresh, R.id.widget_task_section, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress, R.id.widget_progress_label)) {
                                     assertInside(view, view.findViewById(id))
                                 }
                                 val building = rect(view, view.findViewById(R.id.widget_building))
                                 val updated = rect(view, view.findViewById(R.id.widget_updated))
                                 if (size != WidgetSize.COMPACT) assertTrue("Title and update time cannot overlap", building.right <= updated.left)
-                                if (size == WidgetSize.EXPANDED) {
-                                    for (id in listOf(R.id.widget_task, R.id.widget_task_eta)) {
-                                        val label = view.findViewById<TextView>(id)
-                                        assertEquals("Short task labels must stay together on the expanded card", 1, label.layout.lineCount)
-                                        assertEquals(0, label.layout.getEllipsisCount(0))
-                                    }
+                                assertTrue("Update time must stay beside refresh", updated.right <= rect(view, refresh).left)
+                                for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress_label)) {
+                                    assertReadable(view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
                                 }
-                                if (width == 180) {
-                                    for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
-                                        val label = view.findViewById<TextView>(id)
-                                        assertTrue("The minimum-size label must contain a laid out line", label.layout.lineCount > 0)
-                                        assertEquals("The minimum-size label must remain readable", 0, label.layout.getEllipsisCount(label.layout.lineCount - 1))
-                                    }
-                                    val header = rect(view, view.findViewById(R.id.widget_header))
-                                    val task = rect(view, view.findViewById(R.id.widget_task))
-                                    val eta = rect(view, view.findViewById(R.id.widget_task_eta))
-                                    val progress = rect(view, view.findViewById(R.id.widget_progress_label))
-                                    assertTrue("The minimum-size task must stay below the header", task.top >= header.bottom)
-                                    assertTrue("The minimum-size time must stay above the progress row", eta.bottom <= progress.top)
-                                    if (font == 1.4f) captureView(view,
-                                        "native-widget-minimum-180x140-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-large-font")
+                                val header = rect(view, view.findViewById(R.id.widget_header))
+                                val section = rect(view, view.findViewById(R.id.widget_task_section))
+                                val machine = rect(view, view.findViewById(R.id.widget_machine))
+                                val title = rect(view, view.findViewById(R.id.widget_task))
+                                val eta = rect(view, view.findViewById(R.id.widget_task_eta))
+                                val progress = rect(view, view.findViewById(R.id.widget_progress_label))
+                                assertTrue("The task area cannot collapse under large fonts", section.height() > 0)
+                                assertTrue("The washer illustration must retain height", machine.height() >= dp(context, if (size == WidgetSize.COMPACT && width == 110) 4 else 12))
+                                assertTrue("Task content must stay below the header", minOf(machine.top, title.top) >= header.bottom)
+                                assertTrue("The machine name and remaining time cannot overlap", title.bottom <= eta.top)
+                                assertTrue("The remaining time must stay above progress", eta.bottom <= progress.top)
+                                if (size != WidgetSize.WIDE) {
+                                    assertTrue("The centered illustration must stay above its labels", machine.bottom <= title.top)
                                 }
-                                if (width == 260 && font == 1.4f && locale == Locale.SIMPLIFIED_CHINESE)
-                                    captureView(view, "native-widget-${size.name.lowercase()}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-large-font")
+                                if (size == WidgetSize.EXPANDED || size == WidgetSize.LARGE) {
+                                    val note = view.findViewById<TextView>(R.id.widget_task_note)
+                                    assertInside(view, note)
+                                    assertTrue("Status notes must stay below progress", rect(view, note).top >= progress.bottom)
+                                }
+                                if (font == 1.4f) captureView(view,
+                                    "native-widget-${size.columns}x${size.rows}-${width}x$height-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-large-font")
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @Test fun minimumCardsKeepGuestIdleAndUnverifiedStatusReadableAtLargeFont() {
+        instrumentation.runOnMainSync {
+            val now = System.currentTimeMillis()
+            val snapshots = listOf(null, LaundryWidgetSnapshot("Test building", 9, 0, 0, now),
+                task(now).copy(taskEstimatedFinishAtMillis = now),
+                task(now).copy(taskCompletionConfirmed = true),
+                task(now).copy(taskStartedAtMillis = null),
+                task(now).copy(updatedAtMillis = now - 600_001))
+            for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
+                val config = Configuration(app.resources.configuration).apply { setLocale(locale); fontScale = 1.4f }
+                val context = app.createConfigurationContext(config)
+                for (size in WidgetSize.entries) for (snapshot in snapshots) {
+                    val view = LaundryWidgetProvider().render(context, 904, snapshot, size, now).apply(context, FrameLayout(context))
+                    assertStatusFitsMinimum(view, size)
                 }
             }
         }
@@ -187,6 +213,14 @@ class LaundryWidgetRenderingTest {
             assertEquals(app.getString(R.string.widget_refresh_failed), failed.findViewById<TextView>(R.id.widget_task_eta).text.toString())
             assertTrue(failed.findViewById<TextView>(R.id.widget_task_note).text.contains("event_widget_fixture"))
             assertFalse(allText(failed).contains(app.getString(R.string.widget_sign_in)))
+            for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
+                val config = Configuration(app.resources.configuration).apply { setLocale(locale); fontScale = 1.4f }
+                val context = app.createConfigurationContext(config)
+                for (size in WidgetSize.entries) {
+                    val error = provider.render(context, 903, null, size, System.currentTimeMillis()).apply(context, FrameLayout(context))
+                    assertStatusFitsMinimum(error, size)
+                }
+            }
         }
     }
 
@@ -209,7 +243,7 @@ class LaundryWidgetRenderingTest {
                     val host = FrameLayout(activity)
                     activity.setContentView(host)
                     root = provider.render(activity, 902, task(now), WidgetSize.WIDE, now).apply(activity, host)
-                    host.addView(root, FrameLayout.LayoutParams(dp(activity, 320), dp(activity, 180)))
+                    host.addView(root, FrameLayout.LayoutParams(dp(activity, 320), dp(activity, 140)))
                 }
                 instrumentation.waitForIdleSync()
                 // ProgressBar starts its Animatable in drawTrack(), after attachment.
@@ -296,6 +330,38 @@ class LaundryWidgetRenderingTest {
         assertTrue("${child.resources.getResourceEntryName(child.id)} must have usable width: $bounds", bounds.width() > 0)
         assertTrue("${child.resources.getResourceEntryName(child.id)} must stay inside $bounds / ${root.width}x${root.height}",
             bounds.left >= 0 && bounds.top >= 0 && bounds.right <= root.width && bounds.bottom <= root.height)
+    }
+    private fun assertReadable(label: TextView, case: String) {
+        val layout = requireNotNull(label.layout)
+        val name = label.resources.getResourceEntryName(label.id)
+        assertTrue("$name must contain a laid out line ($case)", layout.lineCount > 0)
+        assertTrue("$name must not clip its text vertically ($case)",
+            layout.height <= label.height - label.compoundPaddingTop - label.compoundPaddingBottom)
+        for (line in 0 until layout.lineCount) {
+            assertEquals("$name must remain readable ($case)", 0, layout.getEllipsisCount(line))
+        }
+    }
+    private fun assertStatusFitsMinimum(view: View, size: WidgetSize) {
+        val (width, height) = when (size) {
+            WidgetSize.COMPACT -> 110 to 110
+            WidgetSize.WIDE -> 250 to 110
+            WidgetSize.EXPANDED -> 250 to 250
+            WidgetSize.LARGE -> 250 to 390
+        }
+        measure(view, width, height)
+        for (id in listOf(R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta)) assertInside(view, view.findViewById(id))
+        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) assertReadable(view.findViewById(id), "$size status at $width x $height")
+        val header = rect(view, view.findViewById(R.id.widget_header))
+        val title = rect(view, view.findViewById(R.id.widget_task))
+        val eta = rect(view, view.findViewById(R.id.widget_task_eta))
+        assertTrue("Status must remain below the header", title.top >= header.bottom)
+        assertTrue("Status labels cannot overlap", eta.top >= title.bottom)
+        val label = view.findViewById<TextView>(R.id.widget_progress_label)
+        if (label.visibility == View.VISIBLE) {
+            assertInside(view, label)
+            assertReadable(label, "$size status progress")
+            assertTrue("Status must remain above progress", eta.bottom <= rect(view, label).top)
+        }
     }
     private fun allText(view: View): String = when (view) {
         is TextView -> view.text.toString()

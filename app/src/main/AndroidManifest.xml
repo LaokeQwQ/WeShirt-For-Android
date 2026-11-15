@@ -25,7 +25,22 @@
         <activity android:name=".ddauth.DDAuthActivity" android:exported="true" android:excludeFromRecents="true" />
         <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
         <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
-        <receiver android:name=".platform.widget.LaundryWidgetProvider" android:label="@string/widget_name" android:exported="false"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" /></receiver>
+        <receiver android:name=".platform.widget.LaundryWidgetSquareProvider" android:label="@string/widget_name_2x2" android:exported="false">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_square_info" />
+        </receiver>
+        <receiver android:name=".platform.widget.LaundryWidgetProvider" android:label="@string/widget_name_4x2" android:exported="false">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_info" />
+        </receiver>
+        <receiver android:name=".platform.widget.LaundryWidgetExpandedProvider" android:label="@string/widget_name_4x4" android:exported="false">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_expanded_info" />
+        </receiver>
+        <receiver android:name=".platform.widget.LaundryWidgetLargeProvider" android:label="@string/widget_name_4x6" android:exported="false">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_large_info" />
+        </receiver>
         <receiver android:name=".platform.notification.NotificationDismissReceiver" android:exported="false" />
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.media" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/media_paths" />

@@ -1,23 +1,27 @@
 <resources>
     <string name="widget_name">WeShirt·洗衣</string>
+    <string name="widget_name_2x2">WeShirt · 洗衣 2×2</string>
+    <string name="widget_name_4x2">WeShirt · 洗衣 4×2</string>
+    <string name="widget_name_4x4">WeShirt · 洗衣 4×4</string>
+    <string name="widget_name_4x6">WeShirt · 洗衣 4×6</string>
     <string name="widget_description">楼栋与我的洗衣任务</string>
     <string name="widget_brand">WeShirt</string>
     <string name="widget_current_building">当前宿舍楼</string>
     <string name="widget_my_laundry">我的洗衣</string>
     <string name="widget_sign_in">登录后查看</string>
-    <string name="widget_sign_in_detail">登录并选择宿舍楼</string>
+    <string name="widget_sign_in_detail">登录后同步</string>
     <string name="widget_last_sync">更新于 %1$s</string>
     <string name="widget_old_data">上次更新于 %1$s，数据可能已变化</string>
     <string name="widget_update_unknown">尚未更新</string>
     <string name="widget_refresh">刷新小组件</string>
     <string name="widget_idle">空闲</string>
-    <string name="widget_no_task">暂无进行中的洗衣</string>
+    <string name="widget_no_task">暂无任务</string>
     <string name="widget_idle_detail">有新任务时，会在这里显示。</string>
     <string name="widget_remaining">剩余 %1$d 分钟</string>
     <string name="widget_awaiting">即将完成</string>
     <string name="widget_awaiting_detail">倒计时已到，等待设备确认。</string>
     <string name="widget_ready_for_pickup">待取衣</string>
-    <string name="widget_unverified">任务状态待更新</string>
+    <string name="widget_unverified">状态待更新</string>
     <string name="widget_progress_percent">%1$d%%</string>
     <string name="widget_progress_unknown">进度待确认</string>
     <string name="widget_machine_running">洗衣任务进行中，滚筒转动</string>
@@ -26,6 +30,6 @@
     <string name="widget_stale_hint">上次数据可能已变化，请点击右上角刷新。</string>
     <string name="widget_task_accessibility">%1$s。%2$s。打开我的洗衣</string>
     <string name="widget_pending">待更新</string>
-    <string name="widget_refresh_failed">更新失败，请重试</string>
-    <string name="widget_tap_refresh">点右上角刷新</string>
+    <string name="widget_refresh_failed">更新失败</string>
+    <string name="widget_tap_refresh">点击刷新</string>
 </resources>
