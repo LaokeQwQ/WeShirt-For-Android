@@ -79,7 +79,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
                 platform.clearLocal()
                 coil.Coil.imageLoader(app).memoryCache?.clear()
-                _state.update { it.copy(profile = null, tasks = emptyList(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+                _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
                 refresh()
             }
         }
@@ -91,7 +91,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); assistantPreloader.clear(); platform.sessionChanged()
         val restoring = session.read() != null
         _state.update { it.copy(profile = api.cachedProfile(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false,
-            tasks = emptyList(), social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(),
+            tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(),
             authReady = !restoring, sessionRestoring = restoring, authError = null) }
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         // Apply only an explicit, still-enabled guest request once. An older
@@ -212,7 +212,10 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 // Optional metadata cannot erase a successfully published board or its diagnostics.
                 site.await().exceptionOrNull()?.let { problem -> if (version == generation.get()) _state.update { it.copy(error = problem.message ?: "楼栋目录暂未更新") } }
             }
-        } finally { if (version == generation.get()) _state.update { it.copy(loading = false) } }
+        } finally { if (version == generation.get()) {
+            _state.update { it.copy(loading = false) }
+            platform.synchronizeWidget(_state.value)
+        } }
     }
     private suspend fun refreshPublicBoard(version: Int, building: String) {
         try {
@@ -221,6 +224,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             val before = _state.value
             val board = preferLatestBoard(incoming, building, before.building, before.machines, before.updatedAt)
             _state.update { it.copy(machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, boardFromCache = false, error = null) }
+            platform.synchronizeWidget(_state.value)
             publicRooms.save(api.baseUrl, building, board)
             // Public care/status details are independent from session recovery too.
             val occupancy = optionalRefresh { api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") }
@@ -237,13 +241,15 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         catch (problem: Exception) {
             if (version == generation.get() && _state.value.building == building) _state.update { it.copy(
                 boardWarning = (if (it.machines.isNotEmpty()) "当前显示上次公开状态，更新暂未完成，请以现场为准。\n" else "机器状态暂未获取，可重试。\n") + problem.message.orEmpty()) }
+        } finally {
+            if (version == generation.get() && _state.value.building == building) platform.synchronizeWidget(_state.value)
         }
     }
     private suspend fun refreshAccount(version: Int) {
         val signedIn = session.read() != null
         val previouslyVerified = _state.value.authReady && signedIn
         if (!signedIn) {
-            if (version == generation.get()) { _state.update { it.copy(profile = null, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
+            if (version == generation.get()) { _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
             return
         }
         _state.update { it.copy(sessionRestoring = !it.authReady, authError = null) }
@@ -282,9 +288,11 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             if (version != generation.get() || !_state.value.authReady) return
             results[0].getOrNull()?.let { response ->
                 val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
-                _state.update { it.copy(tasks = response.optJSONArray("tasks")?.objects().orEmpty().map { row -> LaundryTask.parse(row).copy(clockOffsetMs = offset) }) }
+                _state.update { it.copy(tasks = response.optJSONArray("tasks")?.objects().orEmpty().map { row -> LaundryTask.parse(row).copy(clockOffsetMs = offset) },
+                    tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
             }
-            if (!mayReadTasks) _state.update { it.copy(tasks = emptyList()) }
+            if (results[0].isFailure) _state.update { it.copy(tasksRefreshFailed = true) }
+            if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
             results[1].getOrNull()?.let { response -> _state.update { it.copy(queues = response.optJSONArray("queue")?.objects().orEmpty()) } }
             if (!mayReadQueue) _state.update { it.copy(queues = emptyList()) }
             results[2].getOrNull()?.let { laundry -> _state.update { it.copy(
@@ -529,7 +537,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
         }
     }
 }

@@ -2,6 +2,8 @@ package com.laoke.weshirt.ui.admin
 
 import android.app.Application
 import android.content.Context
+import android.view.KeyEvent
+import android.view.View
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -10,6 +12,12 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.lifecycle.ViewModelStore
 import androidx.test.espresso.Espresso
+import androidx.test.espresso.action.ViewActions.closeSoftKeyboard
+import androidx.test.espresso.action.ViewActions.pressKey
+import androidx.test.espresso.matcher.RootMatchers.isDialog
+import androidx.test.espresso.matcher.ViewMatchers.isRoot
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
@@ -130,15 +138,26 @@ class NativeAdminIntegrationTest {
         compose.onNodeWithContentDescription("复制用户 ID").performScrollTo().assertIsDisplayed()
         compose.onNode(hasText("昵称") and hasSetTextAction()).performScrollTo().performTextClearance()
         compose.onNode(hasText("昵称") and hasSetTextAction()).performTextInput("更新的测试昵称")
-        Espresso.closeSoftKeyboard()
+        // The editor belongs to the Dialog window. A controller captured above
+        // that Dialog addresses the base Activity and cannot hide its IME.
+        lateinit var dialogRoot: View
+        Espresso.onView(isRoot()).inRoot(isDialog()).check { view, error ->
+            if (error != null) throw error
+            dialogRoot = view
+        }.perform(closeSoftKeyboard())
+        compose.waitUntil(5_000) { onMain {
+            ViewCompat.getRootWindowInsets(dialogRoot)?.isVisible(WindowInsetsCompat.Type.ime()) == false
+        } }
         compose.onNodeWithText("保存昵称与通知偏好").performScrollTo().assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithText("删除用户").performScrollTo().assertIsDisplayed()
         assertReadOnlyAuthenticatedRequests()
 
-        Espresso.pressBack()
+        // Inject one real Back into the focused Dialog, rather than letting
+        // Espresso select the intentionally unfocused Activity root.
+        Espresso.onView(isRoot()).inRoot(isDialog()).perform(pressKey(KeyEvent.KEYCODE_BACK))
         compose.onNodeWithTag("admin-open:用户管理").assertIsDisplayed()
         assertEquals("The first native back must return to the directory", 0, closes.get())
-        Espresso.pressBack()
+        Espresso.onView(isRoot()).inRoot(isDialog()).perform(pressKey(KeyEvent.KEYCODE_BACK))
         compose.onNodeWithTag("admin-closed").assertIsDisplayed()
         assertEquals(1, closes.get())
     }

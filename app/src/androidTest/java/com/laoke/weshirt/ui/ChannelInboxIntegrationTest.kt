@@ -56,6 +56,8 @@ class ChannelInboxIntegrationTest {
     @Volatile private var sentText = ""
     private lateinit var imageBytes: ByteArray
     private val downloadedImageBytes = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var focusedWindow = false
+    @Volatile private var resumedWindow = false
 
     @Before fun prepare() {
         previous = prefs.all.toMap()
@@ -160,6 +162,14 @@ class ChannelInboxIntegrationTest {
         var showWholeApp by mutableStateOf(false)
         compose.setContent {
             val state by vm.state.collectAsState()
+            val window = androidx.compose.ui.platform.LocalWindowInfo.current
+            val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+            val focused = window.isWindowFocused
+            val lifecycleState by lifecycle.currentStateFlow.collectAsState()
+            SideEffect {
+                focusedWindow = focused
+                resumedWindow = lifecycleState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+            }
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, 1.4f)) {
                 WeShirtTheme("light", "blue") { Box(Modifier.width(320.dp)) {
@@ -185,8 +195,23 @@ class ChannelInboxIntegrationTest {
         assertTrue("Unread badge must remain to the right of the summary", badgeBounds.left >= previewBounds.right)
         assertTrue("Unread badge must stay inside the visible card", badgeBounds.left >= cardBounds.left && badgeBounds.right <= cardBounds.right && badgeBounds.top >= cardBounds.top && badgeBounds.bottom <= cardBounds.bottom)
         assertFalse("The directory must neither prefetch message bodies nor clear unread", requests.any { it.requestUrl!!.encodedPath in setOf("/api/messages", "/api/messages/read") })
-        compose.onNodeWithTag("channel:public").performClick()
-        compose.waitUntil(10_000) { readIds.isNotEmpty() }
+        try {
+            // A displayed semantics node alone does not establish window focus.
+            // The viewport deliberately withholds read receipts otherwise.
+            compose.waitUntil(10_000) { focusedWindow && resumedWindow }
+            compose.onNodeWithTag("channel:public").performClick()
+            compose.waitUntil(10_000) { readIds.isNotEmpty() }
+        } catch (problem: Throwable) {
+            // ComposeTimeoutException is not an AssertionError. Keep the original
+            // failure even if screenshot or semantics collection itself fails.
+            val current = vm.state.value
+            android.util.Log.e("ChannelInboxAck", "ACK timeout: windowFocused=$focusedWindow resumed=$resumedWindow authReady=${current.authReady} profile=${current.profile?.id} tab=${current.tab} channel=${current.channel} messages=${current.messages.size} error=${current.error} authError=${current.authError} routes=${requests.map { it.method + ":" + it.requestUrl!!.encodedPath }}")
+            runCatching { compose.onRoot(useUnmergedTree = true).printToString().lineSequence().forEach { android.util.Log.i("ChannelInboxAckTree", it) } }
+                .exceptionOrNull()?.let(problem::addSuppressed)
+            runCatching { captureScreen("native-channel-ack-timeout") }
+                .exceptionOrNull()?.let(problem::addSuppressed)
+            throw problem
+        }
         assertTrue("Only the native viewport can acknowledge messages", readIds.size in 1..15)
         assertFalse("An off-screen older message must remain unread", "message-44" in readIds)
         assertTrue(requests.filter { it.requestUrl!!.encodedPath.startsWith("/api/messages") }.all { it.getHeader("Authorization") == "Bearer channel-fixture" })

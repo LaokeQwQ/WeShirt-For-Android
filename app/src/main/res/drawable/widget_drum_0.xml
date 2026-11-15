@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="96dp" android:height="112dp" android:viewportWidth="96" android:viewportHeight="112">
+    <group android:rotation="0" android:pivotX="48" android:pivotY="66">
+        <path android:fillColor="@color/widget_accent" android:fillAlpha="0.9" android:pathData="M37,48 L42,45 Q48,50 54,45 L60,49 L65,58 L58,62 L56,57 L56,77 L39,77 L39,57 L35,62 L29,58 Z" />
+        <path android:fillColor="@color/widget_machine_cloth" android:pathData="M35,78 Q45,74 61,79 L64,86 Q47,93 32,84 Z" />
+    </group>
+    <path android:fillColor="#00000000" android:strokeColor="@color/widget_machine_body" android:strokeAlpha="0.5" android:strokeWidth="2" android:strokeLineCap="round" android:pathData="M29,54 Q34,46 43,45" />
+</vector>

@@ -85,6 +85,8 @@ Android 包名为 `com.laoke.weshirt`。界面、3D、通知和小组件均由�
 
 ## 小组件与刷新
 
+当前客户端的手动刷新复用 `GET /api/auth/me`、`GET /api/user/permissions`、`GET /api/site`、当前住宿楼的 `GET /api/machines?dorm=...` 与获准查看时的 `GET /api/tasks`。只读取本人任务；账号或会话变化会取消旧结果。并发刷新合并、请求间隔至少 30 秒，本地分钟重绘不访问网络。
+
 `GET /api/mobile/widget-snapshot` 返回：
 
 ```json

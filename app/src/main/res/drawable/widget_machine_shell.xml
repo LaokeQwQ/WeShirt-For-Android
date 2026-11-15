@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="96dp" android:height="112dp" android:viewportWidth="96" android:viewportHeight="112">
+    <path android:fillColor="@color/widget_machine_body" android:strokeColor="@color/widget_machine_outline" android:strokeWidth="2" android:pathData="M12,3 L84,3 Q91,3 91,10 L91,103 Q91,109 84,109 L12,109 Q5,109 5,103 L5,10 Q5,3 12,3 Z" />
+    <path android:fillColor="@color/widget_panel" android:pathData="M7,24 L89,24 L89,27 L7,27 Z M17,12 L36,12 L36,18 L17,18 Z" />
+    <path android:fillColor="@color/widget_accent" android:pathData="M65,15 A5,5 0,1 0,75 15 A5,5 0,1 0,65 15 M80,13 L84,13 L84,17 L80,17 Z" />
+    <path android:fillColor="@color/widget_machine_glass" android:strokeColor="@color/widget_machine_outline" android:strokeWidth="3" android:pathData="M18,66 A30,30 0,1 0,78 66 A30,30 0,1 0,18 66" />
+    <path android:fillColor="@color/widget_machine_outline" android:pathData="M79,58 L84,58 L84,73 L79,73 Z M14,109 L25,109 L25,112 L14,112 Z M72,109 L83,109 L83,112 L72,112 Z" />
+</vector>

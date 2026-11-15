@@ -380,4 +380,198 @@ class ApiClientTest {
         assertNull(api.cachedProfile())
         assertNull(sessions.read())
     }
+
+    @Test fun independentClientsSerializeRotationBeforeALosing401CanEraseTheWinningSession() = runBlocking {
+        expired()
+        val background = ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val refreshes = AtomicInteger(); val reads = AtomicInteger(); val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/mobile/auth/refresh" -> if (refreshes.incrementAndGet() == 1) {
+                    entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                    json(refreshed)
+                } else json("""{"error":{"code":"invalid_refresh_token"}}""").setResponseCode(401)
+                "/api/tasks" -> {
+                    assertEquals("Bearer new-access", request.getHeader("Authorization")); reads.incrementAndGet()
+                    json("""{"tasks":[]}""")
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val first = async(Dispatchers.Default) { api.call("/api/tasks") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                val started = CountDownLatch(1)
+                val waiting = async(Dispatchers.Default) { started.countDown(); background.call("/api/tasks") }
+                assertTrue(started.await(4, TimeUnit.SECONDS)); delay(100)
+                assertEquals("A second client must wait before spending the same refresh secret", 1, refreshes.get())
+                assertFalse(waiting.isCompleted)
+                release.countDown(); first.await(); waiting.await()
+            } finally { release.countDown() }
+        }
+        assertEquals("new-refresh", sessions.read()?.str("refreshToken")); assertEquals(0, invalidations.get())
+        assertEquals(2, reads.get()); assertEquals(1, refreshes.get())
+        api.call("/api/tasks")
+        assertEquals(3, reads.get()); assertEquals(1, refreshes.get())
+    }
+
+    @Test fun lateRefreshSuccessOr401CannotReplaceOrClearAnotherClientsExplicitNewCredentials() = runBlocking {
+        val background = ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }
+        for (status in listOf(200, 401)) {
+        expired()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        val before = server.requestCount
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/mobile/auth/refresh" -> {
+                    entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                    json(if (status == 200) """{"accessToken":"obsolete-access","refreshToken":"obsolete-refresh","expiresIn":900}"""
+                        else """{"error":{"code":"invalid_refresh_token"}}""").setResponseCode(status)
+                }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val obsolete = async(Dispatchers.Default) { api.call("/api/tasks") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS)); background.saveSession(JSONObject(refreshed)); release.countDown()
+                try { obsolete.await(); fail("A late successful refresh cannot replace the winner") } catch (_: CancellationException) { }
+            } finally { release.countDown() }
+        }
+        assertEquals("new-access", sessions.read()?.str("accessToken")); assertEquals("new-refresh", sessions.read()?.str("refreshToken"))
+        assertEquals("The obsolete client must not send or replay a protected request", before + 1, server.requestCount)
+        }
+    }
+
+    @Test fun oldProtected401CannotClearCredentialsRotatedByAnotherClient() = runBlocking {
+        valid()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1); val invalidations = AtomicInteger()
+        api.onSessionInvalidated = { invalidations.incrementAndGet() }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("Bearer valid-access", request.getHeader("Authorization"))
+                entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                return json("""{"error":{"code":"unauthorized"}}""").setResponseCode(401)
+            }
+        }
+        supervisorScope {
+            val obsolete = async(Dispatchers.Default) { api.call("/api/auth/me") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }.saveSession(JSONObject(refreshed))
+                release.countDown()
+                try { obsolete.await(); fail("An old credential failure must be cancelled") } catch (_: CancellationException) { }
+            } finally { release.countDown() }
+        }
+        assertEquals("new-access", sessions.read()?.str("accessToken")); assertEquals(0, invalidations.get())
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test fun successfulOldAccountMutationCannotPublishIntoAnotherClientsNewLoginOrReplay() = runBlocking {
+        valid()
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                assertEquals("POST", request.method); assertEquals("Bearer valid-access", request.getHeader("Authorization"))
+                entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                return json("""{"ok":true,"privateResult":"old-account"}""")
+            }
+        }
+        supervisorScope {
+            val obsolete = async(Dispatchers.Default) { api.call("/api/tasks", "POST", JSONObject().put("minutes", 40)) }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }.saveSession(JSONObject(refreshed).put("user", JSONObject().put("id", "new-account")))
+                release.countDown()
+                try { obsolete.await(); fail("Private results belong to their captured authorization") } catch (_: CancellationException) { }
+            } finally { release.countDown() }
+        }
+        assertEquals("new-account", sessions.read()?.optJSONObject("user")?.str("id"))
+        assertEquals("A completed mutation must never be replayed under the new account", 1, server.requestCount)
+    }
+
+    @Test fun profileCacheChangedDuringRefreshPreservesBothTheLatestProfileAndUniqueRotatedCredentials() = runBlocking {
+        expired()
+        sessions.save(sessions.read()!!.put("user", JSONObject().put("id", "same-account")))
+        api.cacheProfile(JSONObject().put("id", "same-account").put("nick", "old-profile"))
+        val entered = CountDownLatch(1); val release = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/api/mobile/auth/refresh" -> {
+                    entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
+                    json(JSONObject(refreshed).put("user", JSONObject().put("id", "same-account")).toString())
+                }
+                "/api/tasks" -> { assertEquals("Bearer new-access", request.getHeader("Authorization")); json("""{"tasks":[]}""") }
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        supervisorScope {
+            val refreshing = async(Dispatchers.Default) { api.call("/api/tasks") }
+            try {
+                assertTrue(entered.await(4, TimeUnit.SECONDS))
+                ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }
+                    .cacheProfile(JSONObject().put("id", "same-account").put("nick", "latest-profile").put("dingNick", "latest-ding-profile"))
+                release.countDown(); refreshing.await()
+            } finally { release.countDown() }
+        }
+        assertEquals("new-access", sessions.read()?.str("accessToken")); assertEquals("new-refresh", sessions.read()?.str("refreshToken"))
+        assertEquals("latest-profile", api.cachedProfile()?.nick); assertEquals("latest-ding-profile", api.cachedProfile()?.dingNick)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun protectedAndCsv401WaitForAConcurrentRotationWhoseWinningResponseHasNotBeenStored() = runBlocking {
+        for (csv in listOf(false, true)) {
+            val path = if (csv) "/api/admin/users.csv" else "/api/auth/me?old"
+            val entered = CountDownLatch(1); val releaseOld = CountDownLatch(1)
+            val rotatedRemotely = CountDownLatch(1); val releaseWinner = CountDownLatch(1)
+            val received401 = CountDownLatch(1); val invalidated = CountDownLatch(1)
+            val before = server.requestCount
+            val observed = client.newBuilder().eventListener(object : okhttp3.EventListener() {
+                override fun responseBodyEnd(call: okhttp3.Call, byteCount: Long) {
+                    if (call.request().url.encodedPath == path.substringBefore('?')) received401.countDown()
+                }
+            }).build()
+            val foreground = ApiClient(sessions, temporary, observed).apply { baseUrl = origin(server); onSessionInvalidated = { invalidated.countDown() } }
+            val background = ApiClient(sessions, temporary, client).apply { baseUrl = origin(server) }
+            // Cross the real refresh boundary without modifying the captured record.
+            // Changing expiresAt in storage would itself mask the old CAS-clear bug.
+            val expires = System.currentTimeMillis() + 32_000
+            sessions.save(JSONObject().put("origin", foreground.baseUrl).put("accessToken", "valid-access")
+                .put("refreshToken", "valid-refresh").put("expiresAt", expires))
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                    path -> {
+                        assertEquals("Bearer valid-access", request.getHeader("Authorization"))
+                        entered.countDown(); assertTrue(releaseOld.await(4, TimeUnit.SECONDS))
+                        json("""{"error":{"code":"unauthorized"}}""").setResponseCode(401)
+                    }
+                    "/api/mobile/auth/refresh" -> {
+                        rotatedRemotely.countDown(); assertTrue(releaseWinner.await(4, TimeUnit.SECONDS))
+                        json(refreshed)
+                    }
+                    "/api/tasks" -> { assertEquals("Bearer new-access", request.getHeader("Authorization")); json("""{"tasks":[]}""") }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            supervisorScope {
+                val old = async(Dispatchers.Default) { if (csv) foreground.adminCsv(path) else foreground.call(path) }
+                try {
+                    assertTrue(entered.await(4, TimeUnit.SECONDS))
+                    delay((expires - System.currentTimeMillis() - 30_000 + 25).coerceAtLeast(0))
+                    val winner = async(Dispatchers.Default) { background.call("/api/tasks") }
+                    assertTrue(rotatedRemotely.await(4, TimeUnit.SECONDS))
+                    releaseOld.countDown(); assertTrue(received401.await(4, TimeUnit.SECONDS))
+                    assertFalse("401 must wait for the pending successful rotation", invalidated.await(150, TimeUnit.MILLISECONDS))
+                    assertFalse(old.isCompleted); assertEquals("valid-access", sessions.read()?.str("accessToken"))
+                    releaseWinner.countDown(); winner.await()
+                    try { old.await(); fail("The obsolete response must cancel after the winner is saved") } catch (_: CancellationException) { }
+                } finally { releaseOld.countDown(); releaseWinner.countDown() }
+            }
+            assertEquals("new-access", sessions.read()?.str("accessToken")); assertEquals(1L, invalidated.count)
+            assertEquals("Neither the old read nor export may be replayed", before + 3, server.requestCount)
+        }
+    }
 }

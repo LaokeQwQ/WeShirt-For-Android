@@ -76,5 +76,7 @@ data class AppState(
     val announcementsOn: Boolean = true, val telemetryOn: Boolean = false, val notificationsOn: Boolean = false,
     val favoriteRemindersOn: Boolean = false, val reminderStart: String = "19:00", val reminderEnd: String = "22:00",
     val authReady: Boolean = true, val sessionRestoring: Boolean = false, val authError: String? = null,
-    val boardFromCache: Boolean = false, val assistant: AssistantSnapshot = AssistantSnapshot()
+    val boardFromCache: Boolean = false, val assistant: AssistantSnapshot = AssistantSnapshot(),
+    /** Local receipt time of a successful authenticated task refresh, separate from the public board. */
+    val tasksUpdatedAt: Long? = null, val tasksRefreshFailed: Boolean = false
 )
