@@ -80,8 +80,8 @@ class LaundryWidgetRenderingTest {
         val provider = LaundryWidgetMiniProvider()
         val now = System.currentTimeMillis()
         val cases = listOf(
-            Case("guest", null, R.string.widget_mini_sign_in, null),
-            Case("idle", LaundryWidgetSnapshot("Test building", 9, 0, 0, now), R.string.widget_idle, null),
+            Case("guest", null, R.string.widget_mini_sign_in_detail, null),
+            Case("idle", LaundryWidgetSnapshot("Test building", 9, 0, 0, now), R.string.widget_mini_no_task, null),
             Case("running", task(now), R.string.widget_mini_remaining, 50),
             Case("awaiting", task(now).copy(taskEstimatedFinishAtMillis = now), R.string.widget_mini_awaiting, 100),
             Case("stale", task(now).copy(updatedAtMillis = now - 600_001), R.string.widget_mini_unverified, null),
@@ -149,12 +149,18 @@ class LaundryWidgetRenderingTest {
                                 val dial = view.findViewById<ImageView>(R.id.widget_machine_ring)
                                 assertEquals(View.VISIBLE, dial.visibility)
                                 assertNotNull("Mini cards must render their progress dial ($label)", dial.drawable)
+                                assertInside(view, dial)
+                                val minimumDial = dp(context, if (width == 110) 24 else 44)
+                                assertTrue("Mini progress must be recognizable at each host size ($label)",
+                                    minOf(dial.width, dial.height) >= minimumDial)
                                 val progress = view.findViewById<ProgressBar>(R.id.widget_progress)
-                                if (case.progress == null) assertEquals(View.GONE, progress.visibility)
-                                else {
-                                    assertEquals(View.VISIBLE, progress.visibility)
-                                    assertEquals(case.progress, progress.progress)
-                                }
+                                assertEquals("The mini dial must not duplicate a determinate progress bar ($label)", View.GONE, progress.visibility)
+                                if (case.progress != null) assertEquals(case.progress, progress.progress)
+                                assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress_track).visibility)
+                                val activity = view.findViewById<View>(R.id.widget_activity)
+                                assertEquals("Mini activity is reserved for a trustworthy running task ($label)",
+                                    if (case.name in listOf("running", "missing-start")) View.VISIBLE else View.GONE, activity.visibility)
+                                if (activity.visibility == View.VISIBLE) assertInside(view, activity)
                                 assertFalse("Mini cards must not use a host countdown ($label)", containsChronometer(view))
                                 assertFalse("Mini cards cannot show a zero or negative estimate ($label)",
                                     eta.text.toString() == context.getString(R.string.widget_mini_remaining, 0) || eta.text.toString().contains("-1"))
@@ -228,7 +234,12 @@ class LaundryWidgetRenderingTest {
                                 }
                                 val building = rect(view, view.findViewById(R.id.widget_building))
                                 val updated = rect(view, view.findViewById(R.id.widget_updated))
-                                if (size != WidgetSize.COMPACT) assertTrue("Title and update time cannot overlap", building.right <= updated.left)
+                                if (size == WidgetSize.WIDE) {
+                                    assertTrue("The wide card's building and update time cannot overlap", building.bottom <= updated.top)
+                                    assertTrue("The building must stay beside refresh", building.right <= rect(view, refresh).left)
+                                } else if (size != WidgetSize.COMPACT) {
+                                    assertTrue("Title and update time cannot overlap", building.right <= updated.left)
+                                }
                                 assertTrue("Update time must stay beside refresh", updated.right <= rect(view, refresh).left)
                                 for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress_label)) {
                                     assertReadable(view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
@@ -242,7 +253,15 @@ class LaundryWidgetRenderingTest {
                                 val measuredCase = "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, night $night, font $font; machine=$machine, section=$section, header=$header, title=$title, eta=$eta, progress=$progress"
                                 assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
                                 assertTrue("The washer illustration must retain height ($measuredCase)", machine.height() >= dp(context, if (size == WidgetSize.COMPACT && width == 110) 4 else 12))
-                                assertTrue("Task content must stay below the header ($measuredCase)", minOf(machine.top, title.top) >= header.bottom)
+                                if (size == WidgetSize.WIDE) {
+                                    assertTrue("The wide washer must stay to the left of the header and task ($measuredCase)",
+                                        machine.right <= minOf(header.left, section.left, title.left, eta.left, progress.left))
+                                    assertTrue("The wide washer must remain prominent ($measuredCase)",
+                                        machine.width() >= dp(context, 72) && machine.height() >= dp(context, if (height == 110) 80 else 100))
+                                    assertTrue("The wide task text must stay below its own header ($measuredCase)", title.top >= header.bottom)
+                                } else {
+                                    assertTrue("Task content must stay below the header ($measuredCase)", minOf(machine.top, title.top) >= header.bottom)
+                                }
                                 assertTrue("The machine name and remaining time cannot overlap ($measuredCase)", title.bottom <= eta.top)
                                 assertTrue("The remaining time must stay above progress ($measuredCase)", eta.bottom <= progress.top)
                                 if (size != WidgetSize.WIDE) {

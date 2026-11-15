@@ -36,6 +36,8 @@
     <string name="widget_mini_remaining">%1$d分</string>
     <string name="widget_mini_machine">%1$s号机</string>
     <string name="widget_mini_sign_in">请登录</string>
+    <string name="widget_mini_sign_in_detail">查看任务</string>
+    <string name="widget_mini_no_task">暂无任务</string>
     <string name="widget_mini_unverified">待更新</string>
     <string name="widget_mini_ready">待取衣</string>
     <string name="widget_mini_awaiting">即将完成</string>

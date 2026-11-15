@@ -36,6 +36,8 @@
     <string name="widget_mini_remaining">%1$d min</string>
     <string name="widget_mini_machine">No. %1$s</string>
     <string name="widget_mini_sign_in">Sign in</string>
+    <string name="widget_mini_sign_in_detail">Laundry</string>
+    <string name="widget_mini_no_task">No task</string>
     <string name="widget_mini_unverified">Update</string>
     <string name="widget_mini_ready">Ready</string>
     <string name="widget_mini_awaiting">Soon</string>

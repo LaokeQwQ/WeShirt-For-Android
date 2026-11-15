@@ -127,8 +127,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         if (running && size != WidgetSize.MINI) views.addView(R.id.widget_drum_holder, themedDrum(context))
         views.setViewVisibility(R.id.widget_drum_holder, if (running && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress, if (progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress_track, if (progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_label, if (machine != null && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
         views.setProgressBar(R.id.widget_progress, 100, progress ?: 0, false)
         views.setTextViewText(R.id.widget_progress_label, progress?.let { context.getString(R.string.widget_progress_percent, it) }
@@ -155,9 +155,9 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         WidgetTaskState.READY_FOR_PICKUP -> context.getString(R.string.widget_mini_ready)
         WidgetTaskState.UNVERIFIED -> context.getString(R.string.widget_mini_unverified)
         WidgetTaskState.NONE -> context.getString(when {
-            snapshot == null && !hasSession -> R.string.widget_mini_sign_in
+            snapshot == null && !hasSession -> R.string.widget_mini_sign_in_detail
             error != null || snapshot == null -> R.string.widget_mini_unverified
-            else -> R.string.widget_idle
+            else -> R.string.widget_mini_no_task
         })
     }
 
