@@ -48,7 +48,7 @@ class LaundryAndNavigationLayoutTest {
             val density = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(density.density, 1.4f)) {
                 WeShirtTheme("light", "blue") {
-                    Box(Modifier.width(320.dp)) { LaundryTaskCard(task, null, 1_000, true, false, true, true, { taken++ }, { pickup++ }, { deleted++ }) }
+                    Box(Modifier.width(320.dp)) { LaundryTaskCard(task, 1_000, true, false, true, true, { taken++ }, { pickup++ }, { deleted++ }) }
                 }
             }
         }

@@ -1,6 +1,5 @@
 package com.laoke.weshirt.platform
 
-import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -166,7 +165,7 @@ class LaundryWidgetRenderingTest {
                                 assertNotNull("Mini cards must render their progress dial ($label)", dial.drawable)
                                 val visibleDial = if (waterRunning) view.findViewById<View>(R.id.widget_water_holder) else dial
                                 assertInside(view, visibleDial)
-                                val minimumDial = dp(context, if (width == 150) 30 else 38)
+                                val minimumDial = dp(context, if (width == 150) 40 else 50)
                                 assertTrue("Mini progress must be recognizable at each host size ($label)",
                                     minOf(visibleDial.width, visibleDial.height) >= minimumDial)
                                 val progress = view.findViewById<ProgressBar>(R.id.widget_progress)
@@ -174,8 +173,8 @@ class LaundryWidgetRenderingTest {
                                 if (case.progress != null) assertEquals(case.progress, progress.progress)
                                 assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress_track).visibility)
                                 val activity = view.findViewById<View>(R.id.widget_activity)
-                                assertEquals("Mini activity is reserved for a trustworthy running task ($label)",
-                                    if (case.name in listOf("running", "ten-percent", "missing-start")) View.VISIBLE else View.GONE, activity.visibility)
+                                assertEquals("Mini activity supplies movement only when the running task has no estimate ($label)",
+                                    if (case.name == "missing-start") View.VISIBLE else View.GONE, activity.visibility)
                                 if (activity.visibility == View.VISIBLE) assertInside(view, activity)
                                 assertFalse("Mini cards must not use a host countdown ($label)", containsChronometer(view))
                                 assertFalse("Mini cards cannot show a zero or negative estimate ($label)",
@@ -261,7 +260,7 @@ class LaundryWidgetRenderingTest {
                                 assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
                                 val illustration = artworkBounds(view, view.findViewById(R.id.widget_machine_shell))
                                 val minimumArt = if (size == WidgetSize.COMPACT) {
-                                    if (height == 150) 40 else 65
+                                    if (height == 150) 56 else 84
                                 } else if (height == 120) 80 else 90
                                 assertTrue("The visible machine must remain prominent, artwork=$illustration ($measuredCase)",
                                     illustration.height() >= dp(context, minimumArt))
@@ -272,7 +271,15 @@ class LaundryWidgetRenderingTest {
                                         machine.width() >= dp(context, 72) && machine.height() >= dp(context, if (height == 120) 80 else 100))
                                     assertTrue("The wide task text must stay below its own header ($measuredCase)", title.top >= header.bottom)
                                 } else {
-                                    assertTrue("Task content must stay below the header ($measuredCase)", minOf(machine.top, title.top) >= header.bottom)
+                                    // The refresh hit target extends into the illustration area, while its
+                                    // visible icon and update text sit above the centered machine.
+                                    val refreshBounds = rect(view, refresh)
+                                    val iconBottom = (refreshBounds.top + refresh.paddingTop +
+                                        minOf(refresh.width - refresh.paddingLeft - refresh.paddingRight,
+                                            refresh.height - refresh.paddingTop - refresh.paddingBottom))
+                                    assertTrue("The floating controls must not cover the washer artwork ($measuredCase)",
+                                        illustration.top >= maxOf(updated.bottom, iconBottom))
+                                    assertTrue("Task text must stay below the refresh target ($measuredCase)", title.top >= header.bottom)
                                 }
                                 assertTrue("The machine name and remaining time cannot overlap ($measuredCase)", title.bottom <= eta.top)
                                 assertTrue("The remaining time must stay above progress ($measuredCase)", eta.bottom <= progress.top)
@@ -455,12 +462,13 @@ class LaundryWidgetRenderingTest {
                         if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(refresh.isImmutable)
                         assertEquals(activity.packageName, refresh.creatorPackage)
                         assertTrue(root.findViewById<View>(R.id.widget_refresh).performClick())
-                        val request = Intent(activity, LaundryWidgetProvider::class.java).setAction(LaundryWidgetProvider.ACTION_REFRESH)
-                            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 902)
+                        val request = provider.refreshIntent(activity, 902)
                         assertEquals(902, provider.acceptedRefreshId(activity, request, intArrayOf(902)))
                         assertNull(provider.acceptedRefreshId(activity, request, intArrayOf(903)))
                         assertNull(provider.acceptedRefreshId(activity, Intent(request).setComponent(null), intArrayOf(902)))
                         assertNull(provider.acceptedRefreshId(activity, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(null), intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(provider.refreshIntent(activity, 903).data), intArrayOf(902)))
                         captureView(root, "native-widget-attached-running")
                     }
                     instrumentation.waitForIdleSync()

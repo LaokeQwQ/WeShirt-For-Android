@@ -196,11 +196,13 @@ class DingTalkCallbackTest {
             assertEquals("fixture-code", sent.get().getString("authCode"))
             assertEquals(request.codeChallenge, DingTalkLoginBridge.challengeFor(sent.get().getString("codeVerifier")))
             val profileDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while ((model.get().state.value.profile?.id != "login-fixture" || model.get().state.value.loading) && System.nanoTime() < profileDeadline) Thread.sleep(30)
+            while (model.get().state.value.let { it.profile?.id != "login-fixture" || !it.authReady || it.loading } &&
+                System.nanoTime() < profileDeadline) Thread.sleep(30)
             val loggedIn = model.get().state.value
             assertEquals("The successful exchange must load the account shown by the app", "login-fixture", loggedIn.profile?.id)
             assertEquals("测试账号", loggedIn.profile?.nick)
             assertEquals("钉钉测试账号", loggedIn.profile?.dingNick)
+            assertTrue("Login is ready only after the server verifies permissions", loggedIn.authReady)
             assertTrue("The account's server permissions must be available after login", loggedIn.access.optBoolean("adminVisible"))
             assertNull("Successful login must not leave a refresh error behind", loggedIn.error)
             scenario.onActivity { it.startActivity(callbackIntent(request.state)) }

@@ -5,23 +5,33 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
-/** A short-lived public-room preview, never credentials, identities or private laundry records. */
-class PublicRoomCache(private val directory: File, private val now: () -> Long = System::currentTimeMillis) {
-    private fun file(origin: String, building: String): File {
+/** Public room previews contain no credentials, identities or private laundry records. */
+class PublicRoomCache(
+    private val directory: File,
+    private val previousDirectory: File? = null,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
+    private fun file(directory: File, origin: String, building: String): File {
         val key = MessageDigest.getInstance("SHA-256").digest("$origin|$building".toByteArray()).joinToString("") { "%02x".format(it) }
         return File(directory, "$key.json")
     }
     fun read(origin: String, building: String): BoardSnapshot? = runCatching {
         if (origin.isBlank() || building.isBlank()) return null
-        val source = file(origin, building)
+        val source = file(directory, origin, building).takeIf(File::isFile)
+            ?: previousDirectory?.let { file(it, origin, building) }
+            ?: return null
         if (!source.isFile || source.length() > 512_000) return null
         val value = JSONObject(source.readText())
         val age = now() - value.getLong("savedAt")
-        if (value.str("origin") != origin || value.str("building") != building || age !in 0..1_800_000) return null
-        val machines = value.getJSONArray("machines").objects().map { Machine.parse(it).copy(clockOffsetMs = it.optLong("clockOffsetMs")) }
+        if (value.str("origin") != origin || value.str("building") != building || age < 0) return null
+        val archived = age > 30 * 60_000L
+        val machines = value.getJSONArray("machines").objects().map { row ->
+            val machine = Machine.parse(row).copy(clockOffsetMs = row.optLong("clockOffsetMs"))
+            if (archived) machine.copy(state = "unknown", finishAt = null, suspectedUncollected = false, estimated = false) else machine
+        }
         if (machines.any { it.id.isBlank() } || machines.map { it.id }.distinct().size != machines.size) return null
-        BoardSnapshot(machines,
-            value.optLong("updatedAt").takeIf { it > 0 }, "当前显示上次保存的公开状态，正在后台刷新；请以机器现场为准。")
+        BoardSnapshot(machines, value.optLong("updatedAt").takeIf { !archived && it > 0 },
+            if (archived) "已打开上次的洗衣房，正在更新机器状态。" else "当前显示上次保存的公开状态，正在后台刷新，请以机器现场为准。")
     }.getOrNull()
     fun save(origin: String, building: String, board: BoardSnapshot) { runCatching {
         if (origin.isBlank() || building.isBlank()) return
@@ -35,10 +45,15 @@ class PublicRoomCache(private val directory: File, private val now: () -> Long =
             .put("updatedAt", board.updatedAt).put("machines", JSONArray(rows)).toString()
         if (value.toByteArray().size > 512_000) return
         directory.mkdirs()
-        val target = file(origin, building)
-        val temporary = File(directory, target.name + ".tmp")
-        temporary.writeText(value)
-        if (!temporary.renameTo(target)) { target.writeText(value); temporary.delete() }
+        val target = file(directory, origin, building)
+        val temporary = File.createTempFile("room-", ".tmp", directory)
+        try {
+            temporary.writeText(value)
+            // Android uses a same-filesystem rename to replace the previous complete snapshot.
+            temporary.renameTo(target)
+        } finally {
+            temporary.delete()
+        }
         directory.listFiles()?.filter { it.extension == "json" }?.sortedByDescending(File::lastModified)?.drop(6)?.forEach(File::delete)
     } }
 }

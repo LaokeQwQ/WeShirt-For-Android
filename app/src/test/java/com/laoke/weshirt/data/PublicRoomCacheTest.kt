@@ -6,7 +6,7 @@ import org.junit.Test
 import java.nio.file.Files
 
 class PublicRoomCacheTest {
-    @Test fun offlineRoomIsStaleShortLivedAndBoundToOriginAndBuildingWithoutPersonalDetails() {
+    @Test fun offlineRoomKeepsOldLayoutWithoutPresentingExpiredStatusOrPersonalDetails() {
         val directory = Files.createTempDirectory("public-room").toFile()
         var now = 100L
         val cache = PublicRoomCache(directory) { now }
@@ -19,7 +19,11 @@ class PublicRoomCacheTest {
             assertTrue(preview.warning!!.contains("上次")); assertEquals("", preview.machines.single().occupantId); assertEquals("", preview.machines.single().note)
             assertFalse(directory.listFiles()!!.single().readText().contains("private fixture"))
             assertNull(cache.read("https://other.invalid", "building-a")); assertNull(cache.read("https://room.invalid", "building-b"))
-            now += 1_800_001; assertNull(cache.read("https://room.invalid", "building-a"))
+            now += 86_400_000
+            val nextDay = cache.read("https://room.invalid", "building-a")!!
+            assertEquals("m1", nextDay.machines.single().id)
+            assertEquals("unknown", nextDay.machines.single().state)
+            assertNull(nextDay.machines.single().finishAt)
         } finally { directory.deleteRecursively() }
     }
 

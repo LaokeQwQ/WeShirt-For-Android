@@ -47,7 +47,11 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         if (intent.action == ACTION_REFRESH) {
             val installed = AppWidgetManager.getInstance(context)
                 .getAppWidgetIds(ComponentName(context, javaClass))
-            acceptedRefreshId(context, intent, installed)?.let { LaundryWidgetRefresh.enqueue(context, it) }
+            val id = acceptedRefreshId(context, intent, installed) ?: return
+            val queued = LaundryWidgetRefresh.enqueue(context, id) ?: return
+            // Keep the broadcast alive until WorkManager has persisted the job.
+            val pending = goAsync()
+            queued.getResult().addListener({ pending?.finish() }, Runnable::run)
             return
         }
         super.onReceive(context, intent)
@@ -111,8 +115,12 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             else -> title
         }
         views.setTextViewText(R.id.widget_task, visibleTitle)
-        views.setTextViewText(R.id.widget_task_eta, if (size == WidgetSize.MINI)
-            miniStatus(context, taskState, taskStatus, snapshot, hasSession, refreshError) else taskStatus)
+        val visibleStatus = when {
+            refreshError != null -> context.getString(R.string.widget_refresh_failed)
+            size == WidgetSize.MINI -> miniStatus(context, taskState, taskStatus, snapshot, hasSession)
+            else -> taskStatus
+        }
+        views.setTextViewText(R.id.widget_task_eta, visibleStatus)
         val accessibleProgress = context.getString(R.string.widget_progress_percent, progress ?: 0)
             .takeIf { progress != null } ?: context.getString(R.string.widget_progress_unknown)
         views.setContentDescription(R.id.widget_root, "$building. $updated. $description. $accessibleProgress" + refreshError?.let { ". $it" }.orEmpty())
@@ -137,7 +145,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
             views.setViewVisibility(R.id.widget_machine_ring, if (movingWater) View.GONE else View.VISIBLE)
         }
-        views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
+        val showActivity = running && (size != WidgetSize.MINI || progress == null)
+        views.setViewVisibility(R.id.widget_activity, if (showActivity) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_label, View.GONE)
@@ -156,14 +165,14 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         return views
     }
 
-    private fun miniStatus(context: Context, state: WidgetTaskState, taskStatus: String, snapshot: LaundryWidgetSnapshot?, hasSession: Boolean, error: String?): String = when (state) {
+    private fun miniStatus(context: Context, state: WidgetTaskState, taskStatus: String, snapshot: LaundryWidgetSnapshot?, hasSession: Boolean): String = when (state) {
         WidgetTaskState.ESTIMATED -> taskStatus
         WidgetTaskState.AWAITING_CONFIRMATION -> context.getString(R.string.widget_mini_awaiting)
         WidgetTaskState.READY_FOR_PICKUP -> context.getString(R.string.widget_mini_ready)
         WidgetTaskState.UNVERIFIED -> context.getString(R.string.widget_mini_unverified)
         WidgetTaskState.NONE -> context.getString(when {
             snapshot == null && !hasSession -> R.string.widget_mini_sign_in_detail
-            error != null || snapshot == null -> R.string.widget_mini_unverified
+            snapshot == null -> R.string.widget_mini_unverified
             else -> R.string.widget_mini_no_task
         })
     }
@@ -209,7 +218,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
     private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?) {
         val actions = ThemeActions(context, views)
         val dimensions = when (size) {
-            WidgetSize.MINI -> 180 to 70
+            WidgetSize.MINI -> 180 to 80
             WidgetSize.COMPACT -> 180 to 180
             WidgetSize.WIDE -> 320 to 140
         }
@@ -217,19 +226,19 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.setInt(R.id.widget_root, "setBackgroundColor", Color.TRANSPARENT)
         views.setInt(R.id.widget_refresh, "setBackgroundColor", Color.TRANSPARENT)
         actions.image(R.id.widget_backdrop, "background:${dimensions.first}:${dimensions.second}") { LaundryWidgetArtwork.background(it, dimensions.first, dimensions.second) }
-        actions.image(R.id.widget_refresh, draw = LaundryWidgetArtwork::refresh)
+        val quietRefresh = size != WidgetSize.WIDE
+        actions.image(R.id.widget_refresh, "refresh:$quietRefresh") { LaundryWidgetArtwork.refresh(it, quietRefresh) }
         if (size == WidgetSize.MINI) {
             views.setViewVisibility(R.id.widget_machine_shell, View.GONE)
             actions.image(R.id.widget_machine_ring, "dial:$progress") { LaundryWidgetArtwork.dial(it, progress) }
         } else {
             actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
             actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
-            actions.image(R.id.widget_machine_ring, "ring:$progress") { LaundryWidgetArtwork.ring(it, progress) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
         actions.text(R.id.widget_updated) { it.secondaryText }
         actions.text(R.id.widget_task) { it.primaryText }
-        actions.text(R.id.widget_task_eta) { it.accent }
+        actions.text(R.id.widget_task_eta) { it.secondaryText }
         actions.text(R.id.widget_progress_label) { it.secondaryText }
         actions.text(R.id.widget_task_note) { it.secondaryText }
         if (Build.VERSION.SDK_INT >= 31) {
@@ -244,13 +253,15 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
     internal fun refreshIntent(context: Context, id: Int): Intent = Intent(context, javaClass).setAction(ACTION_REFRESH)
-            .setData(Uri.parse("weshirt-widget://refresh/$id"))
+            .setData(refreshUri(id))
             .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+
+    private fun refreshUri(id: Int) = Uri.parse("weshirt-widget://refresh/$id")
 
     internal fun acceptedRefreshId(context: Context, intent: Intent, installed: IntArray): Int? {
         if (intent.action != ACTION_REFRESH || intent.component != ComponentName(context, javaClass)) return null
         val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
-        return id.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID && it in installed }
+        return id.takeIf { it in installed && it != AppWidgetManager.INVALID_APPWIDGET_ID && intent.data == refreshUri(it) }
     }
 
     companion object {

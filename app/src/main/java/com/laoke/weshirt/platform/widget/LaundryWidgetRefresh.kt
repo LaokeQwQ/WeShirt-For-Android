@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.Operation
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.laoke.weshirt.BuildConfig
@@ -41,10 +42,16 @@ internal class WidgetSessionStore(
     private val originCurrent: () -> Boolean,
 ) : SessionStore {
     override val installationId get() = sessions.installationId
+    private val initialScope = laundryWidgetScope(initial)
     private var expected: JSONObject? = JSONObject(initial.toString())
     @Synchronized override fun read(): JSONObject? {
         val current = sessions.read()
-        if (!originCurrent() || !sameSessionCredentials(current, expected)) throw CancellationException("Widget session changed")
+        if (!originCurrent()) throw CancellationException("Widget session changed")
+        // Another client may have renewed the same native session while this
+        // refresh was waiting. The session ID stays stable across rotation.
+        if (!sameSessionCredentials(current, expected) &&
+            (expected == null || initialScope == null || laundryWidgetScope(current) != initialScope))
+            throw CancellationException("Widget session changed")
         expected = current?.let { JSONObject(it.toString()) }
         return expected?.let { JSONObject(it.toString()) }
     }
@@ -118,9 +125,7 @@ internal fun widgetRefreshError(error: Exception): String {
 }
 
 internal object WidgetRefreshPolicy {
-    const val CLICK_COOLDOWN_MILLIS = 30_000L
     const val FRESH_MILLIS = 10 * 60_000L
-    fun mayRefresh(now: Long, previous: Long) = previous <= 0 || now < previous || now - previous >= CLICK_COOLDOWN_MILLIS
     fun tickDelay(snapshot: LaundryWidgetSnapshot?, now: Long): Long? {
         snapshot ?: return null
         if (snapshot.taskMachineName.isNullOrBlank() || snapshot.taskEstimatedFinishAtMillis?.takeIf { it > 0 } == null || snapshot.taskUnverified || snapshot.taskCompletionConfirmed) return null
@@ -140,21 +145,15 @@ object LaundryWidgetRefresh {
     internal const val TICK_NAME = "laundry_widget_tick"
     private const val PREFS = "laundry_widget_refresh_runtime"
 
-    @Synchronized fun enqueue(context: Context, widgetId: Int) {
+    @Synchronized internal fun enqueue(context: Context, widgetId: Int): Operation? {
         val app = context.applicationContext
-        if (widgetId !in installedIds(app)) return
-        val scope = LaundryWidgetStore.captureScope(app)
-        if (scope == null) { LaundryWidgetStore.refresh(app); return }
+        if (widgetId !in installedIds(app)) return null
+        val scope = LaundryWidgetStore.captureScope(app) ?: run { LaundryWidgetStore.refresh(app); return null }
         val request = OneTimeWorkRequestBuilder<LaundryWidgetRefreshWorker>()
             .setInputData(Data.Builder().putString("scope", scope.key).putLong("generation", generation(app)).build()).addTag(TAG).build()
-        WorkManager.getInstance(app).enqueueUniqueWork(REFRESH_NAME, ExistingWorkPolicy.KEEP, request)
-    }
-
-    @Synchronized internal fun acquire(context: Context, scope: LaundryWidgetScope, now: Long): Boolean {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val sameScope = prefs.getString("scope", null) == scope.key
-        if (sameScope && !WidgetRefreshPolicy.mayRefresh(now, prefs.getLong("attempt", 0))) return false
-        return prefs.edit().putString("scope", scope.key).putLong("attempt", now).commit()
+        // Coalesce only while a refresh is pending or running. Once completed,
+        // the next tap must make a fresh request, including after a failure.
+        return WorkManager.getInstance(app).enqueueUniqueWork(REFRESH_NAME, ExistingWorkPolicy.KEEP, request)
     }
 
     fun scheduleTicks(context: Context) = scheduleTick(context.applicationContext, append = false)
@@ -190,7 +189,6 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
         if (inputData.getString("scope") != scope.key) return Result.success()
         val generation = inputData.getLong("generation", -1L)
         if (generation != LaundryWidgetRefresh.generation(applicationContext)) return Result.success()
-        if (!LaundryWidgetRefresh.acquire(applicationContext, scope, System.currentTimeMillis())) return Result.success()
         val sessions = SecureSession(applicationContext)
         val saved = sessions.read() ?: return Result.success()
         val origin = LaundryWidgetRefresh.origin(applicationContext)

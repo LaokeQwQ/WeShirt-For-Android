@@ -207,7 +207,8 @@ class NativeAdminIntegrationTest {
     private fun openResident() {
         compose.onNodeWithTag("admin-open:用户管理").assertIsDisplayed().performClick()
         compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/admin/users" } }
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("测试居民").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("共 1 人 · 点开用户查看资料和管理操作").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("admin-users-list").performScrollToNode(hasText("测试居民"))
         compose.onNodeWithText("测试楼 · 已绑定钉钉").performScrollTo().assertIsDisplayed()
     }
 

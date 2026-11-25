@@ -107,6 +107,29 @@ class AdminControllerTest {
         } finally { controller.close(); scope.cancel() }
     }
 
+    @Test fun committedWriteReleasesNavigationWhileItsReadIsStillWaiting() = runBlocking {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "PATCH") return MockResponse().setBody("{}")
+                entered.countDown()
+                if (!release.await(4, TimeUnit.SECONDS)) return MockResponse().setResponseCode(504)
+                return MockResponse().setBody("{\"name\":\"updated\"}")
+            }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val controller = AdminController(api, scope) { true }
+        try {
+            controller.act("/api/admin/site", "PATCH", JSONObject().put("name", "updated"), refresh = "/api/admin/site")
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            assertEquals("操作已完成", controller.info)
+            assertFalse(controller.submitting)
+            assertTrue(controller.saving)
+            release.countDown()
+            waitFor { !controller.saving }
+            assertEquals("updated", controller.document.optString("name"))
+        } finally { controller.close(); scope.cancel() }
+    }
+
     @Test fun nativeAiConfigurationReadsWithTheExistingDingTalkSessionAndSendsAllThreeProtocols() = runBlocking {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest) = if (request.getHeader("Authorization") == "Bearer fixture-admin-access")

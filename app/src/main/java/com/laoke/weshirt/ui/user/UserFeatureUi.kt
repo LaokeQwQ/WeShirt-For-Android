@@ -53,7 +53,7 @@ internal class UserFeatureSession(private val vm: AppViewModel, private val scop
         busy = true
         if (!silent) error = null
         job = scope.launch {
-            try { current(); block(); current(); if (refresh) vm.refresh() }
+            try { current(); block(); current(); if (refresh) vm.refresh(afterCurrent = true) }
             catch (cancel: CancellationException) { throw cancel }
             catch (failure: Exception) { if (active) error = clientFailure(failure, failure.message ?: "操作未完成，请重试") }
             finally { if (active) busy = false }

@@ -73,12 +73,16 @@ class ApiClientTest {
 
     @Test fun concurrentRequestsRefreshOnceAndUseTheSameRotatedAccessToken() = runBlocking {
         expired()
+        sessions.save(sessions.read()!!.put("accessToken", "ma1.session.old-access")
+            .put("user", JSONObject().put("id", "saved-user")))
+        val next = JSONObject(refreshed).put("accessToken", "ma1.session.new-access")
+            .put("user", JSONObject().put("id", "saved-user"))
         val refreshes = AtomicInteger()
         val reads = AtomicInteger()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when(request.path) {
-                "/api/mobile/auth/refresh" -> { refreshes.incrementAndGet(); json(refreshed).setBodyDelay(150, TimeUnit.MILLISECONDS) }
-                "/api/tasks" -> { assertEquals("Bearer new-access", request.getHeader("Authorization")); reads.incrementAndGet(); json("{\"tasks\":[]}") }
+                "/api/mobile/auth/refresh" -> { refreshes.incrementAndGet(); json(next.toString()).setBodyDelay(150, TimeUnit.MILLISECONDS) }
+                "/api/tasks" -> { assertEquals("Bearer ma1.session.new-access", request.getHeader("Authorization")); reads.incrementAndGet(); json("{\"tasks\":[]}") }
                 else -> MockResponse().setResponseCode(404)
             }
         }
@@ -206,6 +210,35 @@ class ApiClientTest {
         assertEquals(1, server.requestCount)
     }
 
+    @Test fun anExplicitAccessRejectionRenewsAndReplaysRegistrationWithItsOriginalKey() = runBlocking {
+        valid()
+        server.enqueue(json("""{"error":{"code":"unauthorized"}}""").setResponseCode(401))
+        server.enqueue(json(refreshed))
+        server.enqueue(json("""{"ok":true}"""))
+        val body = JSONObject().put("machineId", "machine_one").put("minutes", 40)
+        assertTrue(api.call("/api/tasks", "POST", body).getBoolean("ok"))
+        val original = server.takeRequest()
+        val refresh = server.takeRequest()
+        val replay = server.takeRequest()
+        assertEquals("Bearer valid-access", original.getHeader("Authorization"))
+        assertEquals("/api/mobile/auth/refresh", refresh.path)
+        assertEquals("Bearer new-access", replay.getHeader("Authorization"))
+        assertEquals(original.getHeader("Idempotency-Key"), replay.getHeader("Idempotency-Key"))
+        assertEquals(original.body.readUtf8(), replay.body.readUtf8())
+        assertEquals("new-refresh", sessions.read()?.str("refreshToken"))
+    }
+
+    @Test fun aTransientRefreshFailureAfterAnAccessRejectionKeepsTheSavedSession() = runBlocking {
+        valid()
+        val before = sessions.read().toString()
+        server.enqueue(json("""{"error":{"code":"unauthorized"}}""").setResponseCode(401))
+        server.enqueue(json("""{"error":{"code":"mobile_unavailable"}}""").setResponseCode(503))
+        try { api.call("/api/auth/me"); fail("Expected temporary refresh failure") }
+        catch (problem: ApiException) { assertEquals(503, problem.status) }
+        assertEquals(before, sessions.read().toString())
+        assertEquals(2, server.requestCount)
+    }
+
     @Test fun previousRefresh401CannotCancelAnInFlightNativeExchange() = runBlocking {
         expired()
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
@@ -274,10 +307,10 @@ class ApiClientTest {
                 // The successful code has been consumed remotely, but saveSession
                 // has not happened yet. A late old 401 must remain harmless here.
                 releaseBeforeSave.countDown()
-                try { before.await(); fail("Expected the old access failure") } catch (e: ApiException) { assertEquals(401, e.status) }
+                try { before.await(); fail("Expected the old request to be cancelled") } catch (_: CancellationException) { }
                 api.saveSession(response)
                 releaseAfterSave.countDown()
-                try { after.await(); fail("Expected the second old access failure") } catch (e: ApiException) { assertEquals(401, e.status) }
+                try { after.await(); fail("Expected the second old request to be cancelled") } catch (_: CancellationException) { }
                 assertEquals("new-access", sessions.read()?.str("accessToken"))
                 assertEquals("new-refresh", sessions.read()?.str("refreshToken"))
                 assertEquals(1, invalidations.get())
@@ -383,6 +416,9 @@ class ApiClientTest {
 
     @Test fun independentClientsSerializeRotationBeforeALosing401CanEraseTheWinningSession() = runBlocking {
         expired()
+        sessions.save(sessions.read()!!.put("accessToken", "ma1.session.old-access").put("user", JSONObject().put("id", "saved-user")))
+        val nextSession = JSONObject(refreshed).put("accessToken", "ma1.session.new-access")
+            .put("user", JSONObject().put("id", "saved-user"))
         val background = ApiClient(sessions, temporary, client).apply { baseUrl = api.baseUrl }
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val refreshes = AtomicInteger(); val reads = AtomicInteger(); val invalidations = AtomicInteger()
@@ -391,10 +427,10 @@ class ApiClientTest {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
                 "/api/mobile/auth/refresh" -> if (refreshes.incrementAndGet() == 1) {
                     entered.countDown(); assertTrue(release.await(4, TimeUnit.SECONDS))
-                    json(refreshed)
+                    json(nextSession.toString())
                 } else json("""{"error":{"code":"invalid_refresh_token"}}""").setResponseCode(401)
                 "/api/tasks" -> {
-                    assertEquals("Bearer new-access", request.getHeader("Authorization")); reads.incrementAndGet()
+                    assertEquals("Bearer ma1.session.new-access", request.getHeader("Authorization")); reads.incrementAndGet()
                     json("""{"tasks":[]}""")
                 }
                 else -> MockResponse().setResponseCode(404)

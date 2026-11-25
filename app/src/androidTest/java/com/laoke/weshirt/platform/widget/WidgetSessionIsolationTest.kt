@@ -120,18 +120,20 @@ class WidgetSessionIsolationTest {
     }
 
     @Test fun widgetAndForegroundSerializeRefreshBeforeALosing401CanEraseRealEncryptedSession() = runBlocking {
-        foreground.save(session("one"))
+        val oldAccess = "ma1.session-one.original"
+        val newAccess = "ma1.session-one.rotated"
+        foreground.save(session("one").put("accessToken", oldAccess))
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val refreshes = AtomicInteger(); val invalidations = AtomicInteger()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
                 "/api/mobile/auth/refresh" -> if (refreshes.incrementAndGet() == 1) {
                     entered.countDown(); check(release.await(4, TimeUnit.SECONDS))
-                    json(JSONObject().put("accessToken", "widget-winner").put("refreshToken", "widget-next-refresh").put("expiresIn", 900)
+                    json(JSONObject().put("accessToken", newAccess).put("refreshToken", "widget-next-refresh").put("expiresIn", 900)
                         .put("user", JSONObject().put("id", "one")))
                 } else json(JSONObject().put("error", JSONObject().put("code", "invalid_refresh_token")), 401)
                 "/api/auth/me" -> {
-                    assertEquals("Bearer widget-winner", request.getHeader("Authorization"))
+                    assertEquals("Bearer $newAccess", request.getHeader("Authorization"))
                     json(JSONObject().put("user", JSONObject().put("id", "one")))
                 }
                 else -> MockResponse().setResponseCode(404)
@@ -149,7 +151,7 @@ class WidgetSessionIsolationTest {
             release.countDown()
             assertEquals("one", refreshingWidget.await().getJSONObject("user").str("id"))
             assertEquals("one", waitingForeground.await().getJSONObject("user").str("id"))
-            assertEquals("widget-winner", foreground.read()!!.str("accessToken"))
+            assertEquals(newAccess, foreground.read()!!.str("accessToken"))
             assertEquals("测试用户", foreground.read()!!.getJSONObject("profile").str("nick"))
             assertEquals(0, invalidations.get())
             assertEquals("one", api.call("/api/auth/me").getJSONObject("user").str("id"))
@@ -249,15 +251,21 @@ class WidgetSessionIsolationTest {
         assertEquals("access-one", foreground.read()!!.str("accessToken"))
     }
 
-    @Test fun refreshClickCooldownPersistsForTheScopeAndDoesNotBlockANewAccount() {
-        val scope = LaundryWidgetScope("1".repeat(64), origin, "one")
-        val other = LaundryWidgetScope("2".repeat(64), origin, "two")
-        LaundryWidgetRefresh.cancel(app)
-        val now = System.currentTimeMillis()
-        assertTrue(LaundryWidgetRefresh.acquire(app, scope, now))
-        assertFalse(LaundryWidgetRefresh.acquire(app.createConfigurationContext(app.resources.configuration), scope, now + 29_999))
-        assertTrue(LaundryWidgetRefresh.acquire(app, scope, now + 30_000))
-        assertTrue(LaundryWidgetRefresh.acquire(app, other, now + 30_001))
-        LaundryWidgetRefresh.cancel(app)
+    @Test fun widgetRefreshUsesTheForegroundsRotatedTokenButCannotAdoptAnotherSession() = runBlocking {
+        val initial = session("one", System.currentTimeMillis() + 600_000)
+            .put("accessToken", "ma1.session-one.original")
+        foreground.save(initial)
+        val bound = WidgetSessionStore(background, requireNotNull(background.read())) { true }
+        val api = ApiClient(bound, app.cacheDir, client).also { it.baseUrl = origin }
+        val rotated = JSONObject(initial.toString()).put("accessToken", "ma1.session-one.rotated")
+            .put("refreshToken", "refresh-rotated")
+        assertTrue(foreground.compareAndSetCredentials(initial, rotated))
+        assertFalse(bound.compareAndSetCredentials(initial, null))
+        server.enqueue(json(JSONObject().put("user", JSONObject().put("id", "one"))))
+        assertEquals("one", api.call("/api/auth/me").getJSONObject("user").str("id"))
+        assertEquals("Bearer ma1.session-one.rotated", server.takeRequest(3, TimeUnit.SECONDS)?.getHeader("Authorization"))
+        foreground.save(JSONObject(rotated.toString()).put("accessToken", "ma1.session-two.new-login"))
+        try { bound.read(); fail("Another login must not be adopted even for the same account") } catch (_: CancellationException) { }
+        assertEquals(1, server.requestCount)
     }
 }

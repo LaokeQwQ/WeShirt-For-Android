@@ -20,6 +20,11 @@ object TaskRegistration {
 
     fun validMinutes(kind: String, minutes: Int?) = minutes != null && minutes in (if (kind == "dryer") 10 else 1)..180
 
+    fun sameTarget(confirmed: Machine, current: Machine, useMachineTiming: Boolean): Boolean =
+        confirmed.id == current.id && confirmed.slot == current.slot && confirmed.floorCode == current.floorCode &&
+            confirmed.kind == current.kind && confirmed.state == current.state && confirmed.occupantId == current.occupantId &&
+            (!useMachineTiming || confirmed.finishAt == current.finishAt && confirmed.estimated == current.estimated)
+
     fun body(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
              useMachine: Boolean, selfCleanProgram: Boolean, now: Long = System.currentTimeMillis()): JSONObject {
         fun invalid(message: String): Nothing = throw ApiException(422, "invalid_registration",

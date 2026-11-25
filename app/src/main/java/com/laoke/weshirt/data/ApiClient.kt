@@ -2,6 +2,7 @@ package com.laoke.weshirt.data
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -57,49 +58,92 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         val mutation = method != "GET" && !path.startsWith("/api/mobile/auth/")
         val requestKey = key ?: if(mutation) pendingKeys.getOrPut(signature) { UUID.randomUUID().toString() } else null
         try {
-            val result = raw(origin, path, method, body, token, requestKey)
-            if (authorization != null) currentAuthorization(origin, version, authorization) else current(origin, version)
+            val result = try {
+                raw(origin, path, method, body, token, requestKey).also {
+                    if (authorization != null) currentAuthorization(origin, version, authorization) else current(origin, version)
+                }
+            } catch (problem: ApiException) {
+                if (authorization == null || !problem.isAccessRejection()) throw problem
+                val renewed = refreshSession(origin, version, authorization, rejected = true)
+                // A registration's explicit auth rejection occurs before the
+                // server writes anything. Preserve its original idempotency key.
+                if (method != "GET" && !(method == "POST" && path == "/api/tasks")) throw problem
+                currentAuthorization(origin, version, renewed)
+                raw(origin, path, method, body, renewed.str("accessToken"), requestKey)
+                    .also { currentAuthorization(origin, version, renewed) }
+            }
             pendingKeys.remove(signature)
             return result
-        } catch(e: ApiException) { if(e.status in 400..499 && e.status != 408 && e.status != 429) pendingKeys.remove(signature); if(authorization != null && e.status == 401) invalidateProtected(origin, version, authorization); throw e }
+        } catch (problem: ApiException) {
+            if (problem.status in 400..499 && problem.status != 408 && problem.status != 429) pendingKeys.remove(signature)
+            throw problem
+        }
     }
+
+    private fun ApiException.isAccessRejection() = status == 401 && code in setOf("unauthorized", "need_login", "access_token_expired")
+
     private suspend fun accessSession(origin: String, version: Long): JSONObject? {
         // An obsolete refresh may still be waiting on the network. Valid tokens
         // from a new login must not wait behind that previous account's mutex.
-        synchronized(guard) {
+        val captured = synchronized(guard) {
             current(origin, version)
             val saved = session.read() ?: return null
             if (saved.str("origin") != origin) throw CancellationException("Session origin changed")
             if (saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return saved
+            saved
         }
-        return refreshLock.withLock {
-            // Different clients in this process share the same rotating server
-            // credential. A losing 401 must never arrive before a winner is saved.
+        return refreshSession(origin, version, captured)
+    }
+
+    private suspend fun refreshSession(origin: String, version: Long, captured: JSONObject, rejected: Boolean = false): JSONObject =
+        refreshLock.withLock {
             sharedRefreshLock(origin).withLock shared@ {
                 current(origin, version)
-                val saved = session.read() ?: return@shared null
-                if(saved.str("origin") != origin) throw CancellationException("Session origin changed")
-                if(saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@shared saved
-                try {
-                    val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject().put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
-                    synchronized(guard) {
-                        current(origin, version)
-                        val stored = sessionValue(next, origin, saved)
-                        if (!session.compareAndSetCredentials(saved, stored)) throw CancellationException("Session credentials changed during refresh")
-                        stored
+                val saved = session.read()?.takeIf { sameLogicalSession(captured, it) }
+                    ?: throw CancellationException("Session changed during refresh")
+                if (saved.str("accessToken") != captured.str("accessToken")) return@shared saved
+                if (saved.str("refreshToken").isBlank()) {
+                    invalidateCaptured(origin, version, saved)
+                    throw ApiException(401, "invalid_refresh_token", eventId(), "登录状态已过期，请重新登录")
+                }
+                if (!rejected && saved.optLong("expiresAt") > System.currentTimeMillis() + 30_000) return@shared saved
+
+                // Once sent, the refresh can rotate server credentials even if
+                // the screen is closed. Persist its single result before exiting.
+                withContext(NonCancellable + Dispatchers.IO) {
+                    try {
+                        val next = raw(origin, "/api/mobile/auth/refresh", "POST", JSONObject()
+                            .put("installationId", session.installationId).put("refreshToken", saved.str("refreshToken")), null, null)
+                        if (next.str("accessToken").isBlank() || next.str("refreshToken").isBlank()) {
+                            throw ApiException(502, "invalid_refresh_response", eventId(), "服务暂未返回有效登录凭证")
+                        }
+                        synchronized(guard) {
+                            current(origin, version)
+                            val stored = sessionValue(next, origin, saved)
+                            if (!session.compareAndSetCredentials(saved, stored)) throw CancellationException("Session credentials changed during refresh")
+                            stored
+                        }
+                    } catch (problem: ApiException) {
+                        if (problem.status in listOf(401, 403) && problem.code in setOf("invalid_refresh_token", "account_disabled")) {
+                            invalidateCaptured(origin, version, saved)
+                        }
+                        throw problem
                     }
-                } catch(e: ApiException) { if(e.status == 401 || e.status == 403) invalidateCaptured(origin, version, saved); throw e }
+                }
             }
         }
-    }
     /** A new user authorization supersedes every in-flight request of the old session. */
     fun beginNativeLogin(origin: String = baseUrl) = synchronized(guard) {
         val configured = validEndpoint(baseUrl) ?: throw ApiException(0, "endpoint_required", eventId(), "请先设置服务地址")
         if (origin != configured) throw ApiException(409, "login_origin_changed", eventId(), "服务地址已变更，请重新登录")
         invalidate(configured, generation)
     }
-    fun saveSession(value: JSONObject, origin: String = baseUrl) = synchronized(guard) {
-        check(origin == baseUrl) { "Service changed during login" }
+    fun saveSession(value: JSONObject, origin: String = baseUrl) = saveSession(value, origin, null)
+
+    internal fun saveSession(value: JSONObject, origin: String, expected: ApiSessionFence?) = synchronized(guard) {
+        check(origin == baseUrl && (expected == null || expected == ApiSessionFence(baseUrl, generation))) {
+            "Service or account changed during login"
+        }
         generation++
         storeSession(value, origin)
     }
@@ -125,16 +169,25 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         if (!session.compareAndSetCredentials(expected, null)) throw CancellationException("Session credentials changed before invalidation")
         generation++; pendingKeys.clear(); clearMedia(); onSessionInvalidated?.invoke()
     }
-    /** A protected 401 may arrive while another client has rotated remotely but
-     * has not received the new credentials yet. Let that refresh publish first. */
-    private suspend fun invalidateProtected(origin: String, version: Long, expected: JSONObject) =
-        sharedRefreshLock(origin).withLock { invalidateCaptured(origin, version, expected) }
-    /** Profile caching is not an account change; access/refresh credentials are. */
+    /** Rotating credentials keeps the same server session and account. */
+    private fun sameLogicalSession(expected: JSONObject, saved: JSONObject): Boolean {
+        if (expected.str("origin") != saved.str("origin")) return false
+        val owner = expected.optJSONObject("user")?.str("id").orEmpty()
+        val savedOwner = saved.optJSONObject("user")?.str("id").orEmpty()
+        if (owner != savedOwner) return false
+        if (expected.str("accessToken") == saved.str("accessToken") &&
+            expected.str("refreshToken") == saved.str("refreshToken")) return true
+        if (owner.isBlank()) return false
+        val before = expected.str("accessToken").split('.', limit = 3)
+        val after = saved.str("accessToken").split('.', limit = 3)
+        return before.size == 3 && after.size == 3 && before[0] == "ma1" && after[0] == "ma1" &&
+            before[1].isNotBlank() && before[1] == after[1]
+    }
+
     private fun currentAuthorization(origin: String, version: Long, expected: JSONObject) = synchronized(guard) {
         current(origin, version)
         val saved = session.read()
-        if (saved == null || saved.str("origin") != expected.str("origin") ||
-            saved.str("accessToken") != expected.str("accessToken") || saved.str("refreshToken") != expected.str("refreshToken"))
+        if (saved == null || !sameLogicalSession(expected, saved))
             throw CancellationException("Session credentials changed during request")
     }
     private fun invalidate(origin: String, version: Long) = synchronized(guard) { if(origin == baseUrl && version == generation) { generation++; session.clear(); pendingKeys.clear(); clearMedia(); onSessionInvalidated?.invoke() } }
@@ -230,7 +283,10 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                 }
             }
         } catch (cancel: CancellationException) { throw cancel }
-        catch (problem: ApiException) { if (problem.status == 401) invalidateProtected(origin, version, authorization); throw problem }
+        catch (problem: ApiException) {
+            if (problem.isAccessRejection()) refreshSession(origin, version, authorization, rejected = true)
+            throw problem
+        }
         catch (_: IOException) { throw ApiException(0, "export_failed", trace, "文件导出未完成，请重试") }
     }
     fun clearMedia() { mediaDir.listFiles()?.forEach { it.delete() } }

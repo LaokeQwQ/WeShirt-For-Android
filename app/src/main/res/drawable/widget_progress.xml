@@ -1,4 +1,11 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:id="@android:id/background"><shape><corners android:radius="3dp" /><solid android:color="@color/widget_panel" /></shape></item>
-    <item android:id="@android:id/progress"><clip><shape><corners android:radius="3dp" /><solid android:color="@color/widget_accent" /></shape></clip></item>
+    <item android:id="@android:id/progress">
+        <scale android:scaleWidth="100%" android:scaleGravity="start">
+            <shape>
+                <corners android:radius="3dp" />
+                <solid android:color="@color/widget_accent" />
+            </shape>
+        </scale>
+    </item>
 </layer-list>

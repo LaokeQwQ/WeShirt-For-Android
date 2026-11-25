@@ -110,8 +110,6 @@ class LaundryWidgetRefreshTest {
         assertEquals(60_000L, WidgetRefreshPolicy.tickDelay(snapshot.copy(taskEstimatedFinishAtMillis = now - 1), now))
         assertEquals(WidgetTaskState.AWAITING_CONFIRMATION, LaundryWidgetState.taskState(snapshot.copy(taskEstimatedFinishAtMillis = now - 1), now))
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(snapshot, now + 600_001))
-        assertFalse(WidgetRefreshPolicy.mayRefresh(now + 29_999, now))
-        assertTrue(WidgetRefreshPolicy.mayRefresh(now + 30_000, now))
     }
 
     @Test fun persistedRefreshErrorKeepsStatusAndTraceWithoutProviderTextOrSecrets() {

@@ -231,7 +231,7 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
 @Composable fun MachineSheet(machine: Machine, state: AppState, vm: AppViewModel, close: () -> Unit, login: () -> Unit) {
     val session = rememberMachineActionSession(state, vm)
     val frozen = MachineActionSnapshot(state.endpoint, state.profile?.id, state.building, machine)
-    var registering by remember { mutableStateOf(false) }
+    var registration by remember(state.endpoint, state.profile?.id, state.building, machine.id) { mutableStateOf<Machine?>(null) }
     var commentsVisible by remember { mutableStateOf(false) }
     var contact by remember { mutableStateOf(false) }
     var favoriteConfirmation by remember { mutableStateOf<MachineActionSnapshot?>(null) }
@@ -249,7 +249,7 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
     ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), sheetMaxWidth = 560.dp) {
         MachineSheetFrame(machine, machine.id in state.favorites, state.authReady && !state.busy && !session.busy, close,
             favoriteClick = { if(state.profile == null) login() else favoriteConfirmation = frozen },
-            register = { if(state.profile == null) login() else { registrationError = null; registering = true } }) {
+            register = { if(state.profile == null) login() else { registrationError = null; registration = machine } }) {
             session.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             session.feedback?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
             state.boardWarning?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -272,13 +272,12 @@ internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: Strin
             if (state.authReady && moreActions) MachineActions(machine, state, vm, session, login)
         }
     }
-    if(registering && state.authReady) RegisterDialog(machine, state.busy || session.busy, registrationError, { registering = false }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
-        registrationError = null
-        try {
-            session.validate(frozen, "tasks")
-            vm.register(machine, minutes, note, disinfectant, cleaned, useMachine, selfClean,
-                onSuccess = { if (active) { registering = false; currentClose() } }, onFailure = { if (active) registrationError = it })
-        } catch (problem: Exception) { registrationError = clientFailure(problem, "机器已变化，请重新核对") }
+    registration?.takeIf { state.authReady }?.let { target ->
+        RegisterDialog(target, state.busy || session.busy, registrationError, { registration = null }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
+            registrationError = null
+            vm.register(target, minutes, note, disinfectant, cleaned, useMachine, selfClean,
+                onSuccess = { if (active) { registration = null; currentClose() } }, onFailure = { if (active) registrationError = it })
+        }
     }
     favoriteConfirmation?.takeIf { state.authReady }?.let { target -> AlertDialog(onDismissRequest = { favoriteConfirmation = null }, title = { Text(if (machine.id in state.favorites) "取消收藏机器？" else "收藏这台机器？") }, text = { Text(target.machine.name) }, confirmButton = { TextButton(enabled = !state.busy && !session.busy, onClick = {
         favoriteConfirmation = null
