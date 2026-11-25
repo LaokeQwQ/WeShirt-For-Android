@@ -120,18 +120,20 @@ class WidgetSessionIsolationTest {
     }
 
     @Test fun widgetAndForegroundSerializeRefreshBeforeALosing401CanEraseRealEncryptedSession() = runBlocking {
-        foreground.save(session("one"))
+        val oldAccess = "ma1.session-one.original"
+        val newAccess = "ma1.session-one.rotated"
+        foreground.save(session("one").put("accessToken", oldAccess))
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val refreshes = AtomicInteger(); val invalidations = AtomicInteger()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
                 "/api/mobile/auth/refresh" -> if (refreshes.incrementAndGet() == 1) {
                     entered.countDown(); check(release.await(4, TimeUnit.SECONDS))
-                    json(JSONObject().put("accessToken", "widget-winner").put("refreshToken", "widget-next-refresh").put("expiresIn", 900)
+                    json(JSONObject().put("accessToken", newAccess).put("refreshToken", "widget-next-refresh").put("expiresIn", 900)
                         .put("user", JSONObject().put("id", "one")))
                 } else json(JSONObject().put("error", JSONObject().put("code", "invalid_refresh_token")), 401)
                 "/api/auth/me" -> {
-                    assertEquals("Bearer widget-winner", request.getHeader("Authorization"))
+                    assertEquals("Bearer $newAccess", request.getHeader("Authorization"))
                     json(JSONObject().put("user", JSONObject().put("id", "one")))
                 }
                 else -> MockResponse().setResponseCode(404)
@@ -149,7 +151,7 @@ class WidgetSessionIsolationTest {
             release.countDown()
             assertEquals("one", refreshingWidget.await().getJSONObject("user").str("id"))
             assertEquals("one", waitingForeground.await().getJSONObject("user").str("id"))
-            assertEquals("widget-winner", foreground.read()!!.str("accessToken"))
+            assertEquals(newAccess, foreground.read()!!.str("accessToken"))
             assertEquals("测试用户", foreground.read()!!.getJSONObject("profile").str("nick"))
             assertEquals(0, invalidations.get())
             assertEquals("one", api.call("/api/auth/me").getJSONObject("user").str("id"))

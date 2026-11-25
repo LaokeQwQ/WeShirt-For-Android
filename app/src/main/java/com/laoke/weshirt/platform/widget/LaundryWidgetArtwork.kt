@@ -313,7 +313,7 @@ internal object LaundryWidgetArtwork {
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4.3f
         paint.color = alpha(mix(palette.outline, palette.accent, .18f), if (palette.dark) 210 else 192)
-        canvas.drawCircle(56f, 56f, 49.5f, paint)
+        canvas.drawCircle(56f, 56f, 49f, paint)
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeWidth = 1.6f
         paint.color = alpha(Color.WHITE, if (palette.dark) 100 else 225)
