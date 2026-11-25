@@ -251,15 +251,21 @@ class WidgetSessionIsolationTest {
         assertEquals("access-one", foreground.read()!!.str("accessToken"))
     }
 
-    @Test fun refreshClickCooldownPersistsForTheScopeAndDoesNotBlockANewAccount() {
-        val scope = LaundryWidgetScope("1".repeat(64), origin, "one")
-        val other = LaundryWidgetScope("2".repeat(64), origin, "two")
-        LaundryWidgetRefresh.cancel(app)
-        val now = System.currentTimeMillis()
-        assertTrue(LaundryWidgetRefresh.acquire(app, scope, now))
-        assertFalse(LaundryWidgetRefresh.acquire(app.createConfigurationContext(app.resources.configuration), scope, now + 29_999))
-        assertTrue(LaundryWidgetRefresh.acquire(app, scope, now + 30_000))
-        assertTrue(LaundryWidgetRefresh.acquire(app, other, now + 30_001))
-        LaundryWidgetRefresh.cancel(app)
+    @Test fun widgetRefreshUsesTheForegroundsRotatedTokenButCannotAdoptAnotherSession() = runBlocking {
+        val initial = session("one", System.currentTimeMillis() + 600_000)
+            .put("accessToken", "ma1.session-one.original")
+        foreground.save(initial)
+        val bound = WidgetSessionStore(background, requireNotNull(background.read())) { true }
+        val api = ApiClient(bound, app.cacheDir, client).also { it.baseUrl = origin }
+        val rotated = JSONObject(initial.toString()).put("accessToken", "ma1.session-one.rotated")
+            .put("refreshToken", "refresh-rotated")
+        assertTrue(foreground.compareAndSetCredentials(initial, rotated))
+        assertFalse(bound.compareAndSetCredentials(initial, null))
+        server.enqueue(json(JSONObject().put("user", JSONObject().put("id", "one"))))
+        assertEquals("one", api.call("/api/auth/me").getJSONObject("user").str("id"))
+        assertEquals("Bearer ma1.session-one.rotated", server.takeRequest(3, TimeUnit.SECONDS)?.getHeader("Authorization"))
+        foreground.save(JSONObject(rotated.toString()).put("accessToken", "ma1.session-two.new-login"))
+        try { bound.read(); fail("Another login must not be adopted even for the same account") } catch (_: CancellationException) { }
+        assertEquals(1, server.requestCount)
     }
 }

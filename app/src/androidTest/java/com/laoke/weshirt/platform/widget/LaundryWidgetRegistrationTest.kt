@@ -5,6 +5,7 @@ import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -79,6 +80,7 @@ class LaundryWidgetRegistrationTest {
             assertNull(provider.acceptedRefreshId(context, request, intArrayOf(id + 100)))
             assertNull(provider.acceptedRefreshId(context, Intent(request).setComponent(null), intArrayOf(id)))
             assertNull(provider.acceptedRefreshId(context, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(id)))
+            assertNull(provider.acceptedRefreshId(context, Intent(request).setData(Uri.parse("weshirt-widget://refresh/${id + 1}")), intArrayOf(id)))
             assertNull(provider.acceptedRefreshId(context,
                 Intent(request).apply { removeExtra(AppWidgetManager.EXTRA_APPWIDGET_ID) }, intArrayOf(id)))
             val pending = provider.refreshPendingIntent(context, id)

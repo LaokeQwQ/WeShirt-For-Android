@@ -232,10 +232,12 @@ internal object LaundryWidgetArtwork {
         canvas.restore()
     }
 
-    fun refresh(palette: WidgetArtworkPalette): Bitmap = bitmap(64, 64) { canvas, paint ->
-        paint.color = alpha(palette.outline, if (palette.dark) 166 else 122)
-        canvas.drawCircle(32f, 32f, 30f, paint)
-        paint.color = palette.primaryText
+    fun refresh(palette: WidgetArtworkPalette, quiet: Boolean = false): Bitmap = bitmap(64, 64) { canvas, paint ->
+        if (!quiet) {
+            paint.color = alpha(palette.outline, if (palette.dark) 166 else 122)
+            canvas.drawCircle(32f, 32f, 30f, paint)
+        }
+        paint.color = if (quiet) palette.secondaryText else palette.primaryText
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4.1f
         paint.strokeCap = Paint.Cap.ROUND
