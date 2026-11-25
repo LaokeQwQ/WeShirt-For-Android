@@ -1,6 +1,5 @@
 package com.laoke.weshirt.platform
 
-import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -463,12 +462,13 @@ class LaundryWidgetRenderingTest {
                         if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(refresh.isImmutable)
                         assertEquals(activity.packageName, refresh.creatorPackage)
                         assertTrue(root.findViewById<View>(R.id.widget_refresh).performClick())
-                        val request = Intent(activity, LaundryWidgetProvider::class.java).setAction(LaundryWidgetProvider.ACTION_REFRESH)
-                            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, 902)
+                        val request = provider.refreshIntent(activity, 902)
                         assertEquals(902, provider.acceptedRefreshId(activity, request, intArrayOf(902)))
                         assertNull(provider.acceptedRefreshId(activity, request, intArrayOf(903)))
                         assertNull(provider.acceptedRefreshId(activity, Intent(request).setComponent(null), intArrayOf(902)))
                         assertNull(provider.acceptedRefreshId(activity, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(null), intArrayOf(902)))
+                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(provider.refreshIntent(activity, 903).data), intArrayOf(902)))
                         captureView(root, "native-widget-attached-running")
                     }
                     instrumentation.waitForIdleSync()

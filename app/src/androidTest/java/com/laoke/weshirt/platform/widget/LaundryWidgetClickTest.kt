@@ -61,8 +61,7 @@ class LaundryWidgetClickTest {
                     val view = onMain { host.createView(app, id, requireNotNull(manager.getAppWidgetInfo(id))) }
                     fun updateTime() = onMain { view.findViewById<TextView>(R.id.widget_updated)?.text?.toString() }
                     await("Widget did not receive the saved snapshot") {
-                        onMain { view.contentDescription?.contains(snapshot.buildingName) == true ||
-                            view.findViewById<View>(R.id.widget_root)?.contentDescription?.contains(snapshot.buildingName) == true }
+                        onMain { view.findViewById<View>(R.id.widget_root)?.contentDescription?.contains(snapshot.buildingName) == true }
                     }
                     val previousTime = requireNotNull(updateTime())
                     val previousError = LaundryWidgetStore.refreshError(app)
@@ -87,6 +86,9 @@ class LaundryWidgetClickTest {
                             .filter { it.id !in previousWork }
                         val error = LaundryWidgetStore.refreshError(app)
                         work.singleOrNull()?.state?.isFinished == true && error?.contains("HTTP 0") == true && error != previousError
+                    }
+                    await("Widget did not display the refresh failure") {
+                        onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString() == app.getString(R.string.widget_refresh_failed) }
                     }
                     assertNotEquals(previousError, LaundryWidgetStore.refreshError(app))
                     assertEquals(snapshot.updatedAtMillis, LaundryWidgetStore.read(app)?.updatedAtMillis)
