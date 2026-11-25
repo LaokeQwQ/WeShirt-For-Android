@@ -80,6 +80,7 @@ class SessionRecoveryIntegrationTest {
                         check(release.await(20, TimeUnit.SECONDS))
                         status = profileStatus
                         if (status == 200) """{"user":{"id":"saved-user","nick":"最新昵称","dormBuilding":"test"}}"""
+                        else if (status == 401) """{"error":{"code":"unauthorized","message":"登录状态已过期"}}"""
                         else """{"error":{"code":"recovery_fixture","message":"账号暂不可用"}}"""
                     }
                 }
@@ -91,7 +92,8 @@ class SessionRecoveryIntegrationTest {
                 "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
                 "/api/user/test-notify" -> """{"ok":true,"accepted":true,"channel":"mobile","provider":"fcm"}"""
-                "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"expired_fixture","message":"fixture expired"}}""" }
+                "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"unauthorized","message":"fixture expired"}}""" }
+                "/api/mobile/auth/refresh" -> { status = 401; """{"error":{"code":"invalid_refresh_token"}}""" }
                 else -> "{}"
             }
             Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(status).message("fixture")

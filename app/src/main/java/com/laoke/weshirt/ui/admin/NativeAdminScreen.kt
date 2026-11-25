@@ -5,6 +5,7 @@ import androidx.activity.compose.LocalActivity
 import android.view.WindowManager
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.*
@@ -42,32 +43,52 @@ private val adminSections = listOf(
     val owner = state.profile?.id.orEmpty()
     val binding = "$owner|${state.endpoint}"
     val scope = rememberCoroutineScope()
-    val controller = remember(binding) { AdminController(vm.api, scope) { vm.state.value.profile?.id == owner && vm.state.value.endpoint == state.endpoint && vm.state.value.access.optBoolean("adminVisible") } }
     var section by remember(binding) { mutableStateOf("") }
     var userQuery by remember(binding) { mutableStateOf("") }
     val permissions = state.access.optJSONObject("permissions") ?: JSONObject()
-    val visible = adminSections.filter { permissions.optJSONObject(it.permission)?.optBoolean("view") == true }
-    val window = LocalActivity.current?.window
-    DisposableEffect(controller) {
-        val alreadySecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE) != 0
-        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose { controller.close(); if (!alreadySecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    val visible = remember(permissions) { adminSections.filter { permissions.optJSONObject(it.permission)?.optBoolean("view") == true } }
+    val openedSection = section
+    val permission = adminSections.find { it.key == openedSection }?.permission
+    val permissionScope = permission?.let { permissions.optJSONObject(it)?.toString() }
+    val controller = remember(binding, openedSection, permissionScope) {
+        AdminController(vm.api, scope) {
+            val live = vm.state.value
+            live.authReady && live.profile?.id == owner && live.endpoint == state.endpoint &&
+                live.access.optBoolean("adminVisible") && section == openedSection &&
+                (permission == null || live.access.optJSONObject("permissions")?.optJSONObject(permission)?.toString() == permissionScope) &&
+                (openedSection !in listOf("permissions", "accessCodes") || live.access.optJSONObject("identity")?.text("role") == "super")
+        }
     }
-    fun goBack() { if (!controller.saving) { if (section.isBlank()) close() else section = "" } }
+    val window = LocalActivity.current?.window
+    DisposableEffect(window) {
+        val alreadySecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE)?.let { it != 0 } == true
+        window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { if (!alreadySecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+    DisposableEffect(controller) { onDispose { controller.close() } }
+    fun goBack() { if (!controller.submitting) { if (section.isBlank()) close() else section = "" } }
     Dialog(onDismissRequest = ::goBack, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false, securePolicy = SecureFlagPolicy.SecureOn)) {
       Surface(Modifier.fillMaxSize()) {
        Scaffold(topBar = {
            TopAppBar(title = { Text(when(section) { "permissions" -> "成员功能权限与范围"; "accessCodes" -> "临时管理员口令"; else -> visible.find { it.key == section }?.title ?: "管理员后台" }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-               navigationIcon = { IconButton(onClick = ::goBack, enabled = !controller.saving) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
-               actions = { IconButton(onClick = close, enabled = !controller.saving) { Icon(Icons.Outlined.Close, "关闭后台") } })
+               navigationIcon = { IconButton(onClick = ::goBack, enabled = !controller.submitting) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回") } },
+               actions = { IconButton(onClick = close, enabled = !controller.submitting) { Icon(Icons.Outlined.Close, "关闭后台") } })
        }) { padding -> Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-        if (!state.access.optBoolean("adminVisible") || owner.isBlank()) { Text("当前账号没有后台权限", Modifier.padding(24.dp)); return@Column }
+        if (!state.authReady || !state.access.optBoolean("adminVisible") || owner.isBlank()) { Text("当前账号没有后台权限", Modifier.padding(24.dp)); return@Column }
         controller.error?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error) }
         controller.info?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.primary) }
-        if (controller.loading || controller.saving) Text(if (controller.saving) "正在提交…" else "正在读取…", Modifier.padding(16.dp))
+        if (controller.loading || controller.saving) Text(if (controller.submitting) "正在提交…" else "正在读取…", Modifier.padding(16.dp))
         val resource = visible.find { it.key == section }?.permission
         val canOperate = resource?.let { permissions.optJSONObject(it)?.optBoolean("operate") } == true
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        key(controller) {
+        if (resource != null && section == "users") {
+            AdminUsersPanel(controller, state, canOperate, initialUserQuery = userQuery)
+        } else if (resource != null && section == "machines") {
+            AdminMachinesPanel(controller, state, canOperate) { id ->
+                if (permissions.optJSONObject("adminUsers")?.optBoolean("view") == true) { userQuery = id; section = "users" }
+                else controller.localError("当前账号没有用户管理查看权限")
+            }
+        } else AdminPanelList {
             if (section.isBlank()) {
                 visible.groupBy { it.group }.forEach { (group, entries) ->
                     item { Text(group, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -97,11 +118,6 @@ private val adminSections = listOf(
                         "assistant" -> AdminAssistantPanel(controller, canOperate)
                         "system" -> AdminSystemPanel(controller, canOperate)
                         "telemetry" -> AdminTelemetryPanel(controller, state)
-                        "users" -> AdminUsersPanel(controller, state, canOperate, initialUserQuery = userQuery)
-                        "machines" -> AdminMachinesPanel(controller, state, canOperate, onUserSelected = { id ->
-                            if (permissions.optJSONObject("adminUsers")?.optBoolean("view") == true) { userQuery = id; section = "users" }
-                            else controller.localError("当前账号没有用户管理查看权限")
-                        })
                         "messages" -> AdminModerationPanel(controller, state, canOperate)
                         "audits" -> AdminAuditPanel(controller, permissions.optJSONObject("adminSystem")?.optBoolean("operate") == true)
                         "dashboard" -> AdminDashboardPanel(controller, state, permissions.optJSONObject("adminSystem")?.optBoolean("operate") == true)
@@ -110,8 +126,20 @@ private val adminSections = listOf(
                 }
             }
         }
+        }
        } }
       }
+    }
+}
+
+@Composable internal fun AdminPanelList(modifier: Modifier = Modifier, content: LazyListScope.() -> Unit) {
+    LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
+}
+
+internal fun LazyListScope.adminReadOnlyNotice(operate: Boolean) {
+    if (!operate) item {
+        Text("当前为只读权限，可查看授权范围内的信息。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

@@ -21,6 +21,8 @@ import com.laoke.weshirt.ui.WeShirtApp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -83,7 +85,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun login() {
-        vm.mutate(null, allowRestoring = true) {
+        vm.mutate(null, allowRestoring = true, refreshAfter = false) {
             try {
                 vm.api.beginNativeLogin()
                 vm.clearFeedback()
@@ -104,14 +106,15 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().clear().commit()
         if(origin == null || origin != vm.api.baseUrl) { vm.message(DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId)); return }
         if(reply.authCode == null) { vm.message(DingTalkLoginBridge.failureMessage(reply.errorCode ?: "LOGIN_CALLBACK_FAILED", reply.eventId)); return }
-        vm.mutate("登录成功", wait = true, allowRestoring = true) {
+        vm.mutate("登录成功", wait = true, allowRestoring = true, refreshAfter = false) {
             check(origin == vm.api.baseUrl) { DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId) }
             // Also isolate callbacks restored after process death or app upgrade.
             // Old refresh/401 responses must not cancel a valid one-time code.
             vm.api.beginNativeLogin(origin)
+            val exchange = vm.api.sessionFence()
             vm.clearFeedback()
             val j = vm.api.call("/api/mobile/auth/exchange", "POST", JSONObject().put("challengeId", reply.challengeId).put("state", reply.state).put("codeVerifier", reply.codeVerifier).put("authCode", reply.authCode), auth = false)
-            vm.api.saveSession(j, origin)
+            withContext(Dispatchers.IO) { vm.api.saveSession(j, origin, exchange) }
             vm.platformSessionChanged()
         }
     }

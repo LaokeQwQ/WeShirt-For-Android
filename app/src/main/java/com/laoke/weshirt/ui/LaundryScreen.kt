@@ -24,7 +24,6 @@ import com.laoke.weshirt.ui.social.SocialDialog
 import com.laoke.weshirt.ui.social.QueueNoticeDialog
 import com.laoke.weshirt.ui.user.*
 import kotlinx.coroutines.delay
-import org.json.JSONObject
 
 private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
 
@@ -43,11 +42,11 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     var queueNotices by remember { mutableStateOf(false) }
     var pickupTaskId by remember { mutableStateOf<String?>(null) }
     var picker by remember { mutableStateOf(false) }
-    var registerId by remember { mutableStateOf<String?>(null) }
+    var registration by remember(state.profile?.id, state.building) { mutableStateOf<Machine?>(null) }
+    var registrationError by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<TaskConfirmation?>(null) }
     var history by rememberSaveable { mutableStateOf(false) }
     var historyQuery by rememberSaveable { mutableStateOf("") }
-    var taskDetails by remember { mutableStateOf<Map<String, JSONObject>>(emptyMap()) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val owner = LocalLifecycleOwner.current
     val busy = session.busy || state.busy
@@ -57,12 +56,6 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     val socialView = permissions?.optJSONObject("social")?.optBoolean("view", true) != false
     val role = state.access.optJSONObject("identity")?.str("role", state.profile?.role ?: "user") ?: state.profile?.role.orEmpty()
     val inspectionView = permissions?.optJSONObject("inspections")?.optBoolean("view", role in setOf("super", "admin", "volunteer")) ?: (role in setOf("super", "admin", "volunteer"))
-    fun loadDetails() {
-        if (tasksView) session.run(silent = true) {
-            taskDetails = request("/api/tasks").optJSONArray("tasks")?.objects().orEmpty().associateBy { it.str("id") }
-        }
-    }
-    LaunchedEffect(session, state.tasks) { loadDetails() }
     LaunchedEffect(owner) { owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { while (true) { now = System.currentTimeMillis(); delay(30_000) } } }
     val records = laundryRecords(state.tasks, now)
     val active = records.current
@@ -79,7 +72,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                         LaundryStat("当前登记", if (tasksView) active.size else 0, Modifier.weight(1f))
                         LaundryStat("我的排队", state.queues.count { it.optBoolean("mine") }, Modifier.weight(1f))
                     }
-                    if (tasksView) Button(onClick = { picker = true }, enabled = !busy && tasksOperate && state.machines.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("laundry-register")) {
+                    if (tasksView) Button(onClick = { picker = true }, enabled = !busy && state.authReady && tasksOperate && state.machines.isNotEmpty(), modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("laundry-register")) {
                         Icon(Icons.Outlined.Add, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("登记一次洗衣")
                     }
                 }
@@ -103,9 +96,8 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 }
             }
             items(active, key = { it.id }) { task ->
-                val raw = taskDetails[task.id]
-                val finished = task.completionConfirmed || raw?.str("takeState") == "pending" || task.timingSource != "upstream" && task.endAt?.let { it <= now + task.clockOffsetMs } == true
-                LaundryTaskCard(task, raw, now, finished, busy, tasksOperate, socialView,
+                val finished = task.completionConfirmed || task.takeState == "pending" || task.timingSource != "upstream" && task.endAt?.let { it <= now + task.clockOffsetMs } == true
+                LaundryTaskCard(task, now, finished, busy, tasksOperate, socialView,
                     take = { confirm = TaskConfirmation(task, false) }, pickup = { pickupTaskId = task.id },
                     delete = { confirm = TaskConfirmation(task, true) })
             }
@@ -149,24 +141,20 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                     Text(task.name, style = MaterialTheme.typography.titleMedium)
                     Text(if (task.done) "已取衣 · 已归档" else "已归档 · 未确认取衣", color = MaterialTheme.colorScheme.primary)
                     task.startAt?.let { Text(java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")), style = MaterialTheme.typography.bodySmall) }
-                    TaskDetailText(task, taskDetails[task.id])
+                    TaskDetailText(task)
                     TextButton(onClick = { confirm = TaskConfirmation(task, true) }, enabled = !busy && tasksOperate) { Text("删除记录", color = MaterialTheme.colorScheme.error) }
                 } } }
             }
         }
     }
     if (picker) AlertDialog(onDismissRequest = { picker = false }, title = { Text("选择机器") }, text = {
-        LazyColumn(Modifier.heightIn(max = 420.dp)) { items(state.machines.sortedBy { it.availability(now) }, key = { it.id }) { machine -> TextButton(onClick = { registerId = machine.id; picker = false; session.error = null }, modifier = Modifier.fillMaxWidth()) { Text("${machine.name} · ${machine.stateLabel}") } } }
+        LazyColumn(Modifier.heightIn(max = 420.dp)) { items(state.machines.sortedBy { it.availability(now) }, key = { it.id }) { machine -> TextButton(onClick = { registration = machine; picker = false; registrationError = null }, modifier = Modifier.fillMaxWidth()) { Text("${machine.name} · ${machine.stateLabel}") } } }
     }, confirmButton = { TextButton(onClick = { picker = false }) { Text("返回") } })
-    registerId?.let { id ->
-        val machine = state.machines.find { it.id == id }
-        if (machine != null) RegisterDialog(machine, busy, session.error, { registerId = null }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
-            session.run(refresh = true) {
-                val currentMachine = vm.state.value.machines.find { it.id == machine.id } ?: throw IllegalStateException("机器信息已变化，请重新选择")
-                if (currentMachine != machine) throw IllegalStateException("机器信息已变化，请重新核对并确认登记")
-                request("/api/tasks", "POST", TaskRegistration.body(currentMachine, minutes, note, disinfectant, cleaned, useMachine, selfClean))
-                registerId = null; vm.message("登记成功")
-            }
+    registration?.takeIf { state.authReady }?.let { machine ->
+        RegisterDialog(machine, busy, registrationError, { registration = null }) { minutes, note, disinfectant, cleaned, useMachine, selfClean ->
+            registrationError = null
+            vm.register(machine, minutes, note, disinfectant, cleaned, useMachine, selfClean,
+                onSuccess = { registration = null }, onFailure = { registrationError = it })
         }
     }
     confirm?.let { ask -> AlertDialog(onDismissRequest = { confirm = null }, title = { Text(if (ask.delete) "删除登记？" else "确认已取衣？") }, text = { Text(ask.task.name + if (ask.delete) "\n删除这条记录并释放登记占用，机器远端状态不会随登记删除改变。" else "\n请确认已经取走自己的衣物。确认后会结束这条登记并释放登记占用。") }, dismissButton = { TextButton(onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
@@ -203,7 +191,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     }
 }
 
-@Composable internal fun LaundryTaskCard(task: LaundryTask, raw: JSONObject?, now: Long, finished: Boolean, busy: Boolean,
+@Composable internal fun LaundryTaskCard(task: LaundryTask, now: Long, finished: Boolean, busy: Boolean,
                                        tasksOperate: Boolean, socialView: Boolean, take: () -> Unit, pickup: () -> Unit, delete: () -> Unit) {
     var menu by remember(task.id) { mutableStateOf(false) }
     val scheme = MaterialTheme.colorScheme
@@ -227,7 +215,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 Text(laundryTimeLabel(task, now), Modifier.padding(16.dp).testTag("laundry-task-time:${task.id}"), style = MaterialTheme.typography.titleLarge,
                     color = if (finished) scheme.onTertiaryContainer else scheme.onPrimaryContainer)
             }
-            TaskDetailText(task, raw)
+            TaskDetailText(task)
             if (!task.done && (finished || socialView)) {
                 HorizontalDivider(color = scheme.outlineVariant)
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -239,15 +227,15 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     }
 }
 
-@Composable private fun TaskDetailText(task: LaundryTask, raw: JSONObject?) {
-    raw?.let {
-        Text(when {
-            task.timingSource == "upstream" -> "按最新平台时间同步" + if (task.timeOffsetMinutes != 0) " · 校准 ${if(task.timeOffsetMinutes > 0) "+" else ""}${task.timeOffsetMinutes} 分钟" else ""
-            it.str("mode") == "machine" -> if (task.estimated) "按估算时间提醒，请核对现场状态" else "按机器时间提醒 · 程序未提供"
-            it.str("program") == "self_clean" -> "桶自洁 · 6 分钟提醒"
-            else -> "自行设置 ${it.optInt("minutes")} 分钟提醒，不代表机器远端状态"
-        }, style = MaterialTheme.typography.bodySmall)
+@Composable private fun TaskDetailText(task: LaundryTask) {
+    val timing = when {
+        task.timingSource == "upstream" -> "按最新平台时间同步" + if (task.timeOffsetMinutes != 0) " · 校准 ${if(task.timeOffsetMinutes > 0) "+" else ""}${task.timeOffsetMinutes} 分钟" else ""
+        task.mode == "machine" -> if (task.estimated) "按估算时间提醒，请核对现场状态" else "按机器时间提醒 · 程序未提供"
+        task.program == "self_clean" -> "桶自洁 · 6 分钟提醒"
+        task.minutes != null -> "自行设置 ${task.minutes} 分钟提醒，不代表机器远端状态"
+        else -> null
     }
+    if (timing != null) Text(timing, style = MaterialTheme.typography.bodySmall)
     if (task.note.isNotBlank()) Text("公开备注：${task.note}")
     if (task.kind != "dryer") Text("消毒液：${if (task.disinfectant) "使用" else "未使用"} · 自清洁：${if (task.selfCleaned) "已记录" else "未记录"}", style = MaterialTheme.typography.bodySmall)
 }

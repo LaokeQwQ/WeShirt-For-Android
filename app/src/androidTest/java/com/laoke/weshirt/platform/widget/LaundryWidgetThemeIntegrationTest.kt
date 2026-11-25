@@ -140,10 +140,9 @@ class LaundryWidgetThemeIntegrationTest {
     private fun assertTheme(view: View, colors: WidgetArtworkPalette) {
         assertEquals(colors.primaryText, view.findViewById<TextView>(R.id.widget_task).currentTextColor)
         assertEquals(colors.secondaryText, view.findViewById<TextView>(R.id.widget_updated).currentTextColor)
-        assertEquals(colors.accent, view.findViewById<TextView>(R.id.widget_task_eta).currentTextColor)
+        assertEquals(colors.secondaryText, view.findViewById<TextView>(R.id.widget_task_eta).currentTextColor)
         assertBitmap(LaundryWidgetArtwork.background(colors, 320, 140), bitmap(view, R.id.widget_backdrop))
         assertBitmap(LaundryWidgetArtwork.shell(colors), bitmap(view, R.id.widget_machine_shell))
-        assertBitmap(LaundryWidgetArtwork.ring(colors, 50), bitmap(view, R.id.widget_machine_ring))
         assertBitmap(LaundryWidgetArtwork.refresh(colors), bitmap(view, R.id.widget_refresh))
         val flipper = view.findViewById<ViewFlipper>(R.id.widget_drum_active)
         assertNotNull(flipper)

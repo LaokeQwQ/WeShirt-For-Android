@@ -40,7 +40,7 @@ internal class MachineActionSession(private val vm:AppViewModel,private val scop
         if(busy || vm.state.value.busy || !current()) return
         busy=true;error=null;feedback=null
         job=scope.launch {
-            try { validate(frozen,resource);block();if(current()) vm.refresh() }
+            try { validate(frozen,resource);block();if(current()) vm.refresh(afterCurrent = true) }
             catch(e:CancellationException){throw e}
             catch(e:Exception){if(current()) error=clientFailure(e,"操作未完成，请重试")}
             finally { if(active) busy=false }

@@ -1,6 +1,7 @@
 package com.laoke.weshirt.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -46,7 +47,12 @@ internal fun withLatestSessionProfile(next: JSONObject, current: JSONObject?): J
     return merged
 }
 class SecureSession(context: Context) : SessionStore {
-    companion object { private val processGuard = Any() }
+    companion object {
+        private val processGuard = Any()
+        private var cachedOwner: SharedPreferences? = null
+        private var cachedSeal: String? = null
+        private var cachedJson: String? = null
+    }
     private val prefs = context.getSharedPreferences("native_session", Context.MODE_PRIVATE)
     private val alias = "weshirt.session.v1"
     override val installationId: String = synchronized(processGuard) {
@@ -62,31 +68,44 @@ class SecureSession(context: Context) : SessionStore {
     override fun read(): JSONObject? = synchronized(processGuard) { readLocked() }
     private fun readLocked(): JSONObject? = runCatching {
         val raw = prefs.getString("sealed", null) ?: return null
+        if (cachedOwner === prefs && raw == cachedSeal) return cachedJson?.let(::JSONObject)
         val pieces = raw.split(":")
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(pieces[0], Base64.NO_WRAP)))
-        JSONObject(String(cipher.doFinal(Base64.decode(pieces[1], Base64.NO_WRAP)), Charsets.UTF_8))
+        val decoded = String(cipher.doFinal(Base64.decode(pieces[1], Base64.NO_WRAP)), Charsets.UTF_8)
+        JSONObject(decoded).also { cacheLocked(raw, decoded) }
     }.getOrNull()
     override fun save(value: JSONObject) = synchronized(processGuard) { saveLocked(value) }
     private fun saveLocked(value: JSONObject) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val sealed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(cipher.doFinal(value.toString().toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+        val decoded = value.toString()
+        val sealed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(cipher.doFinal(decoded.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
         check(prefs.edit().putString("sealed", sealed).commit())
+        cacheLocked(sealed, decoded)
     }
-    override fun clear() = synchronized(processGuard) { check(prefs.edit().remove("sealed").commit()) }
+    private fun cacheLocked(sealed: String?, decoded: String?) {
+        cachedOwner = prefs
+        cachedSeal = sealed
+        cachedJson = decoded
+    }
+    private fun clearLocked() {
+        cacheLocked(null, null)
+        if (prefs.contains("sealed")) check(prefs.edit().remove("sealed").commit())
+    }
+    override fun clear() = synchronized(processGuard) { clearLocked() }
 
     /** Protect background clients against another instance logging out, signing in,
      * rotating credentials or caching a newer profile during an outstanding call. */
     override fun compareAndSet(expected: JSONObject?, next: JSONObject?): Boolean = synchronized(processGuard) {
         if (readLocked()?.toString() != expected?.toString()) return@synchronized false
-        if (next == null) check(prefs.edit().remove("sealed").commit()) else saveLocked(next)
+        if (next == null) clearLocked() else saveLocked(next)
         true
     }
 
     override fun compareAndSetCredentials(expected: JSONObject?, next: JSONObject?): Boolean = synchronized(processGuard) {
         val current = readLocked()
         if (!sameSessionCredentials(expected, current)) return@synchronized false
-        if (next == null) check(prefs.edit().remove("sealed").commit()) else saveLocked(withLatestSessionProfile(next, current))
+        if (next == null) clearLocked() else saveLocked(withLatestSessionProfile(next, current))
         true
     }
 }

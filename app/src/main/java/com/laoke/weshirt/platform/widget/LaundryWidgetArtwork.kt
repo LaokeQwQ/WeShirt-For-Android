@@ -54,30 +54,33 @@ internal object LaundryWidgetArtwork {
             val cardLayer = canvas.saveLayerAlpha(0f, 0f, canvas.width.toFloat(), canvas.height.toFloat(), 191)
             canvas.scale(scale, scale)
             val bounds = RectF(.6f, .6f, logicalWidth - .6f, logicalHeight - .6f)
-            val radius = min(28f, logicalHeight / 3f)
+            val radius = min(26f, logicalHeight * .26f)
             val card = Path().apply { addRoundRect(bounds, radius, radius, Path.Direction.CW) }
             canvas.save()
             canvas.clipPath(card)
-            paint.shader = LinearGradient(0f, 0f, logicalWidth * .45f, logicalHeight,
-                palette.surface, palette.insetSurface, Shader.TileMode.CLAMP)
+            val deepSurface = if (palette.dark) mix(palette.surface, Color.BLACK, .36f)
+                else mix(palette.surface, Color.WHITE, .32f)
+            paint.shader = LinearGradient(0f, 0f, logicalWidth * .48f, logicalHeight,
+                deepSurface, palette.surface, Shader.TileMode.CLAMP)
             canvas.drawRect(bounds, paint)
-            // A low contrast coloured reflection sits behind content, not over it.
-            val glowRadius = min(logicalWidth, logicalHeight) * 1.1f
-            paint.shader = RadialGradient(logicalWidth * .84f, logicalHeight * 1.04f, glowRadius,
-                intArrayOf(alpha(palette.accent, if (palette.dark) 70 else 39), alpha(palette.accentSoft, if (palette.dark) 19 else 28), Color.TRANSPARENT),
-                floatArrayOf(0f, .46f, 1f), Shader.TileMode.CLAMP)
+            // Localize the reflection under the illustration, leaving an even surface under the labels.
+            val square = logicalWidth <= logicalHeight * 1.25f
+            val lightX = logicalWidth * if (square) .50f else .19f
+            val lightY = logicalHeight * if (square) .46f else .73f
+            val glowRadius = logicalHeight * if (square) .49f else .82f
+            paint.shader = RadialGradient(lightX, lightY, glowRadius,
+                intArrayOf(alpha(palette.accent, if (palette.dark) 115 else 49),
+                    alpha(palette.accent, if (palette.dark) 36 else 18), Color.TRANSPARENT),
+                floatArrayOf(0f, .45f, 1f), Shader.TileMode.CLAMP)
             canvas.drawRect(bounds, paint)
-            paint.shader = RadialGradient(logicalWidth * .05f, logicalHeight * .94f, glowRadius * .62f,
-                alpha(palette.accentSoft, if (palette.dark) 24 else 30), Color.TRANSPARENT, Shader.TileMode.CLAMP)
-            canvas.drawRect(bounds, paint)
-            paint.shader = LinearGradient(0f, 0f, 0f, logicalHeight * .5f,
-                alpha(Color.WHITE, if (palette.dark) 3 else 85), Color.TRANSPARENT, Shader.TileMode.CLAMP)
+            paint.shader = LinearGradient(0f, 0f, 0f, logicalHeight * .30f,
+                alpha(Color.WHITE, if (palette.dark) 11 else 118), Color.TRANSPARENT, Shader.TileMode.CLAMP)
             canvas.drawRect(bounds, paint)
             canvas.restore()
             paint.shader = null
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = 1f
-            paint.color = alpha(palette.outline, if (palette.dark) 110 else 92)
+            paint.color = alpha(palette.outline, if (palette.dark) 136 else 126)
             canvas.drawRoundRect(bounds, radius, radius, paint)
             canvas.restoreToCount(cardLayer)
         }
@@ -93,7 +96,10 @@ internal object LaundryWidgetArtwork {
         canvas.drawRoundRect(RectF(14f, 105f, 25f, 111f), 2f, 2f, paint)
         canvas.drawRoundRect(RectF(71f, 105f, 82f, 111f), 2f, 2f, paint)
 
-        val body = RectF(5f, 2f, 91f, 108f)
+        // A darker right return and foot turn the front panel into an appliance rather than a flat icon.
+        paint.color = mix(palette.machineEdge, Color.BLACK, if (palette.dark) .18f else .27f)
+        canvas.drawRoundRect(RectF(9f, 3.5f, 94f, 108f), 10f, 10f, paint)
+        val body = RectF(4f, 2f, 90f, 106f)
         paint.shader = LinearGradient(5f, 5f, 91f, 102f,
             intArrayOf(mix(palette.machineBody, Color.WHITE, .22f), palette.machineBody,
                 mix(palette.machineBody, palette.machineEdge, .20f)), floatArrayOf(0f, .56f, 1f), Shader.TileMode.CLAMP)
@@ -108,7 +114,7 @@ internal object LaundryWidgetArtwork {
         paint.style = Paint.Style.FILL
 
         // Recessed detergent drawer, dial and two small indicator lights.
-        paint.color = mix(palette.machineBody, palette.machineEdge, .14f)
+        paint.color = mix(palette.machineBody, palette.machineEdge, if (palette.dark) .40f else .20f)
         canvas.drawRoundRect(RectF(9f, 7f, 87f, 28f), 6f, 6f, paint)
         paint.color = alpha(palette.machineEdge, 96)
         canvas.drawRoundRect(RectF(15f, 12f, 43f, 20.3f), 2f, 2f, paint)
@@ -138,11 +144,12 @@ internal object LaundryWidgetArtwork {
                 mix(palette.machineEdge, palette.glass, .6f)), floatArrayOf(0f, .46f, 1f), Shader.TileMode.CLAMP)
         canvas.drawCircle(DOOR_X, DOOR_Y, 30.8f, paint)
         paint.shader = null
-        paint.color = mix(palette.glass, Color.BLACK, .34f)
+        val deepGlass = mix(palette.glass, Color.BLACK, if (palette.dark) .57f else .78f)
+        paint.color = deepGlass
         canvas.drawCircle(DOOR_X, DOOR_Y, 27.2f, paint)
         paint.shader = RadialGradient(40f, 56f, 38f,
-            intArrayOf(mix(palette.glass, palette.accentSoft, .35f), palette.glass,
-                mix(palette.glass, Color.BLACK, .42f)), floatArrayOf(0f, .65f, 1f), Shader.TileMode.CLAMP)
+            intArrayOf(mix(deepGlass, palette.accent, .37f), deepGlass,
+                mix(deepGlass, Color.BLACK, .48f)), floatArrayOf(0f, .63f, 1f), Shader.TileMode.CLAMP)
         canvas.drawCircle(DOOR_X, DOOR_Y, 24.8f, paint)
         paint.shader = null
         paint.color = alpha(palette.machineEdge, if (palette.dark) 75 else 95)
@@ -199,8 +206,8 @@ internal object LaundryWidgetArtwork {
         canvas.drawPath(shirt, paint)
         canvas.restore()
         paint.shader = LinearGradient(35f, 47f, 58f, 81f,
-            mix(palette.accentSoft, Color.WHITE, palette.dark.then(.16f, .35f)),
-            mix(palette.accent, palette.accentSoft, .32f), Shader.TileMode.CLAMP)
+            mix(palette.accent, Color.WHITE, if (palette.dark) .42f else .66f),
+            mix(palette.accent, Color.WHITE, if (palette.dark) .08f else .26f), Shader.TileMode.CLAMP)
         canvas.drawPath(shirt, paint)
         paint.shader = null
         paint.style = Paint.Style.STROKE
@@ -225,29 +232,12 @@ internal object LaundryWidgetArtwork {
         canvas.restore()
     }
 
-    /** A null estimate leaves a neutral rim, never an invented percentage. */
-    fun ring(palette: WidgetArtworkPalette, progress: Int?): Bitmap = washer { canvas, paint ->
-        val rim = RectF(17.5f, 35.5f, 78.5f, 96.5f)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2.3f
-        paint.color = alpha(palette.outline, if (palette.dark) 125 else 105)
-        canvas.drawOval(rim, paint)
-        val value = progress?.coerceIn(0, 100) ?: return@washer
-        if (value == 0) return@washer
-        paint.strokeCap = Paint.Cap.ROUND
-        paint.strokeWidth = 4.8f
-        paint.color = alpha(palette.accent, if (palette.dark) 43 else 26)
-        canvas.drawArc(rim, -90f, value * 3.6f, false, paint)
-        paint.strokeWidth = 2.5f
-        paint.shader = LinearGradient(20f, 36f, 76f, 96f,
-            mix(palette.accent, palette.accentSoft, .3f), palette.accent, Shader.TileMode.CLAMP)
-        canvas.drawArc(rim, -90f, value * 3.6f, false, paint)
-    }
-
     fun refresh(palette: WidgetArtworkPalette): Bitmap = bitmap(64, 64) { canvas, paint ->
-        paint.color = palette.accent
+        paint.color = alpha(palette.outline, if (palette.dark) 166 else 122)
+        canvas.drawCircle(32f, 32f, 30f, paint)
+        paint.color = palette.primaryText
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 4f
+        paint.strokeWidth = 4.1f
         paint.strokeCap = Paint.Cap.ROUND
         canvas.drawArc(RectF(15f, 15f, 49f, 49f), 45f, 290f, false, paint)
         paint.style = Paint.Style.FILL
@@ -287,11 +277,14 @@ internal object LaundryWidgetArtwork {
         }
         canvas.save()
         canvas.clipPath(circle)
-        paint.color = palette.insetSurface
+        paint.shader = RadialGradient(41f, 26f, 78f,
+            mix(palette.surface, Color.WHITE, if (palette.dark) .125f else .56f),
+            mix(palette.insetSurface, Color.BLACK, if (palette.dark) .33f else .04f), Shader.TileMode.CLAMP)
         canvas.drawCircle(56f, 56f, 48f, paint)
+        paint.shader = null
         if (value != null && value > 0) {
-            paint.shader = LinearGradient(0f, 8f, 0f, 104f,
-                palette.accent, mix(palette.accent, Color.BLACK, .08f), Shader.TileMode.CLAMP)
+            paint.shader = LinearGradient(8f, level, 104f, 104f,
+                mix(palette.accent, Color.WHITE, .12f), mix(palette.accent, Color.BLACK, .19f), Shader.TileMode.CLAMP)
             canvas.drawPath(water, paint)
             paint.shader = null
         }
@@ -299,7 +292,7 @@ internal object LaundryWidgetArtwork {
         val label = value?.let { "$it%" } ?: "—"
         paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         paint.textAlign = Paint.Align.CENTER
-        paint.textSize = if (value == 100) 29f else 33f
+        paint.textSize = if (value == 100) 29f else 35f
         val metrics = paint.fontMetrics
         val baseline = 56f - (metrics.ascent + metrics.descent) / 2f
         // Paint exactly the same glyphs on each side of the actual wave path.
@@ -318,9 +311,13 @@ internal object LaundryWidgetArtwork {
         }
         canvas.restore()
         paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2.5f
-        paint.color = alpha(palette.outline, if (palette.dark) 175 else 150)
+        paint.strokeWidth = 4.3f
+        paint.color = alpha(mix(palette.outline, palette.accent, .18f), if (palette.dark) 210 else 192)
         canvas.drawCircle(56f, 56f, 49.5f, paint)
+        paint.strokeCap = Paint.Cap.ROUND
+        paint.strokeWidth = 1.6f
+        paint.color = alpha(Color.WHITE, if (palette.dark) 100 else 225)
+        canvas.drawArc(RectF(7.5f, 7.5f, 104.5f, 104.5f), 210f, 74f, false, paint)
     }
 
     fun track(palette: WidgetArtworkPalette, progress: Int?): Bitmap = bitmap(512, 12) { canvas, paint ->

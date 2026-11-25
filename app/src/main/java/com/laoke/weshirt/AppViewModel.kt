@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import okhttp3.OkHttpClient
@@ -27,7 +28,10 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     val session = SecureSession(app)
     val api = ApiClient(session, app.cacheDir, client)
     private val channelInbox = ChannelInbox(api)
-    private val publicRooms = PublicRoomCache(java.io.File(app.cacheDir, "public-rooms"))
+    private val publicRooms = PublicRoomCache(
+        java.io.File(app.noBackupFilesDir, "public-rooms"),
+        java.io.File(app.cacheDir, "public-rooms"),
+    )
     private val assistantPreloader = AssistantPreloader({ path -> api.call(path) })
     private var channelsJob: kotlinx.coroutines.Job? = null
     private var refreshJob: Job? = null
@@ -51,17 +55,15 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private var telemetrySentAt = 0L
     private val _state = MutableStateFlow(AppState(endpoint = serviceEndpoint(BuildConfig.DEBUG, BuildConfig.API_BASE_URL, prefs.getString("endpoint", null)), building = prefs.getString("building", "").orEmpty(), appearance = prefs.getString("appearance", "system").orEmpty(), palette = prefs.getString("palette", "blue").orEmpty(), quality = prefs.getString("quality", "AUTO").orEmpty(), telemetryOn = prefs.getBoolean("telemetry", false), announcementsOn = prefs.getBoolean("announcements", true)))
     val state = _state.asStateFlow()
-    private val platform: PlatformCoordinator = PlatformCoordinator(app, session, api) { refresh() }
+    private val platform: PlatformCoordinator = PlatformCoordinator(app, session, api) { refresh(afterCurrent = true) }
     init {
         if (!BuildConfig.DEBUG) prefs.edit().remove("endpoint").apply()
         api.baseUrl = _state.value.endpoint
-        if (session.read()?.str("origin")?.let { it != api.baseUrl } == true) session.clear()
-        val restoring = session.read() != null
-        val cachedProfile = api.cachedProfile()
-        _state.update { it.copy(profile = cachedProfile, building = it.building.ifBlank { cachedProfile?.building.orEmpty() }, authReady = !restoring, sessionRestoring = restoring) }
-        publicRooms.read(api.baseUrl, _state.value.building)?.let { cached ->
-            _state.update { it.copy(machines = cached.machines, updatedAt = cached.updatedAt, boardWarning = cached.warning, boardFromCache = true) }
-        }
+        val saved = session.read()
+        if (saved != null && saved.str("origin") != api.baseUrl) session.compareAndSetCredentials(saved, null)
+        val restoring = saved != null && saved.str("origin") == api.baseUrl
+        val cachedProfile = cachedSessionProfile(saved, api.baseUrl)?.let(Profile::parse)
+        _state.update { it.copy(profile = cachedProfile, building = cachedProfile?.building?.takeIf(String::isNotBlank) ?: it.building, authReady = !restoring, sessionRestoring = restoring) }
         api.onMetric = { path, duration, status -> viewModelScope.launch {
             if(_state.value.telemetryOn) {
                 val safePath = when { path.matches(Regex("/api/tasks/[^/]+/take")) -> "/api/tasks/:id/take"; path.matches(Regex("/api/tasks/[^/]+")) -> "/api/tasks/:id"; path in setOf("/api/machines","/api/tasks","/api/auth/me","/api/messages","/api/queue","/api/occupancy","/api/user/profile","/api/user/notify") -> path; else -> "/api/other" }
@@ -118,7 +120,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         // Opening a directory must not wait for the board, queue and notification requests.
         if (value == 2 && _state.value.profile != null && _state.value.authReady) refreshChannels()
         else if (value == 4 && _state.value.authReady) preloadAssistant()
-        else refresh()
+        else refresh(afterCurrent = value == 1)
     }
     private fun route() = nativeTabRoute(_state.value.tab)
     private fun flushTelemetry() {
@@ -150,19 +152,24 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     }
     fun selectBuilding(code: String) {
         if (!_state.value.authReady && _state.value.profile != null) { message("账号仍在恢复，绑定住宿楼请稍后重试"); return }
-        if (_state.value.profile == null) { generation.incrementAndGet(); prefs.edit().putString("building", code).apply(); val cached = publicRooms.read(api.baseUrl, code); _state.update { it.copy(building = code, machines = cached?.machines.orEmpty(), updatedAt = cached?.updatedAt, boardWarning = cached?.warning, boardFromCache = cached != null) }; refresh() }
+        if (_state.value.profile == null) {
+            generation.incrementAndGet()
+            prefs.edit().putString("building", code).apply()
+            _state.update { it.copy(building = code, machines = emptyList(), updatedAt = null, boardWarning = null, boardFromCache = false) }
+            refresh()
+        }
         else mutate("住宿楼已更新") { api.call("/api/user/profile", "POST", JSONObject().put("dormBuilding", code)); generation.incrementAndGet(); assistantPreloader.clear(); prefs.edit().putString("building", code).apply(); _state.update { it.copy(building = code, machines = emptyList(), updatedAt = null, boardWarning = null, boardFromCache = false, assistant = AssistantSnapshot()) } }
     }
     /** Public room and authenticated features never wait for one another. */
-    fun refresh(forceMetadata: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
-        beginRefresh(forceMetadata).join()
+    fun refresh(forceMetadata: Boolean = false, afterCurrent: Boolean = false): kotlinx.coroutines.Job = viewModelScope.launch {
+        beginRefresh(forceMetadata, afterCurrent).join()
     }
     /** Runs on the model's Main scope. A replaced generation never owns the new pass's loading state. */
-    private fun beginRefresh(forceMetadata: Boolean): Job {
+    private fun beginRefresh(forceMetadata: Boolean, afterCurrent: Boolean): Job {
         if (forceMetadata) { metadata.clear(); channelInbox.invalidate(); invalidateAssistant() }
         val version = generation.get()
         refreshJob?.takeIf { it.isActive && refreshGeneration == version }?.let { current ->
-            refreshPending = true
+            refreshPending = refreshPending || forceMetadata || afterCurrent
             return current
         }
         refreshJob?.cancel()
@@ -220,13 +227,23 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     }
     private suspend fun refreshPublicBoard(version: Int, building: String) {
         try {
+            val origin = api.baseUrl
+            if (_state.value.machines.isEmpty()) {
+                val cached = withContext(Dispatchers.IO) { publicRooms.read(origin, building) }
+                if (version != generation.get() || _state.value.building != building) return
+                if (cached != null && _state.value.machines.isEmpty()) {
+                    _state.update { it.copy(machines = cached.machines, updatedAt = cached.updatedAt, boardWarning = cached.warning, boardFromCache = true) }
+                }
+            }
             val incoming = parseBoardSnapshot(api.call("/api/machines?dorm=${api.encoded(building)}", auth = false), building)
             if (version != generation.get() || _state.value.building != building) return
             val before = _state.value
             val board = preferLatestBoard(incoming, building, before.building, before.machines, before.updatedAt)
             _state.update { it.copy(machines = board.machines, updatedAt = board.updatedAt, boardWarning = board.warning, boardFromCache = false, error = null) }
             platform.synchronizeWidget(_state.value)
-            publicRooms.save(api.baseUrl, building, board)
+            if (board.updatedAt != null || board.machines.isNotEmpty()) withContext(Dispatchers.IO) {
+                publicRooms.save(origin, building, board)
+            }
             // Public care/status details are independent from session recovery too.
             val occupancy = optionalRefresh { api.call("/api/occupancy?dorm=${api.encoded(building)}", auth = false).optJSONObject("occupancy") }
             if (version == generation.get() && _state.value.building == building) {
@@ -255,22 +272,28 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
         _state.update { it.copy(sessionRestoring = !it.authReady, authError = null) }
         try {
-            val user = api.call("/api/auth/me").optJSONObject("user")
-                ?: throw ApiException(502, "profile_missing", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂未返回，请重试")
-            if (user.str("id").isBlank()) throw ApiException(502, "profile_invalid", "client_" + UUID.randomUUID().toString().replace("-", ""), "账号资料暂不可用，请重试")
-            // Restore authorization as well as display identity. A cached profile grants no access.
-            val access = api.call("/api/user/permissions")
+            val (user, access) = coroutineScope {
+                val permissions = async { optionalRefresh { api.call("/api/user/permissions") } }
+                val identity = api.call("/api/auth/me").optJSONObject("user")
+                    ?: throw ApiException(502, "profile_missing", "client_" + UUID.randomUUID(), "账号资料暂未返回，请重试")
+                if (identity.str("id").isBlank())
+                    throw ApiException(502, "profile_invalid", "client_" + UUID.randomUUID(), "账号资料暂不可用，请重试")
+                // Permission verification can finish later; the verified
+                // display identity is immediately available.
+                if (version == generation.get()) _state.update { it.copy(profile = Profile.parse(identity)) }
+                identity to permissions.await().getOrThrow()
+            }
             if (version != generation.get()) return
-            api.cacheProfile(user)
+            withContext(Dispatchers.IO) { api.cacheProfile(user) }
+            if (version != generation.get()) return
             val profile = Profile.parse(user)
             val target = profile.building.takeIf { it.isNotBlank() && (_state.value.buildings.isEmpty() || _state.value.buildings.any { row -> row.code == it }) } ?: _state.value.building
             val changed = target != _state.value.building
-            val cached = if (changed) publicRooms.read(api.baseUrl, target) else null
             _state.update { it.copy(profile = profile, authReady = true, sessionRestoring = false, authError = null, access = access,
-                building = target, machines = if (changed) cached?.machines.orEmpty() else it.machines,
-                updatedAt = if (changed) cached?.updatedAt else it.updatedAt,
-                boardWarning = if (changed) cached?.warning else it.boardWarning,
-                boardFromCache = if (changed) cached != null else it.boardFromCache) }
+                building = target, machines = if (changed) emptyList() else it.machines,
+                updatedAt = if (changed) null else it.updatedAt,
+                boardWarning = if (changed) null else it.boardWarning,
+                boardFromCache = !changed && it.boardFromCache) }
             if (target.isNotBlank()) prefs.edit().putString("building", target).apply()
             if (prefs.getBoolean("pendingGuestNotifyEnable", false) && platform.notificationsEnabled) toggleNotify(true)
             if (changed && target.isNotBlank()) viewModelScope.launch { refreshPublicBoard(version, target) }
@@ -279,21 +302,30 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             val permissions = access.optJSONObject("permissions")
             val mayReadTasks = permissions?.optJSONObject("tasks")?.optBoolean("view", true) != false
             val mayReadQueue = target.isNotBlank() && permissions?.optJSONObject("queue")?.optBoolean("view", true) != false
+            val taskReadRevision = taskRegistrationRevision
             val results = coroutineScope {
-                val tasks = async { optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) } }
+                val tasks = async {
+                    val result = optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) }
+                    if (version == generation.get() && _state.value.authReady) {
+                        if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
+                        else if (taskReadRevision == taskRegistrationRevision) {
+                            result.onSuccess { response ->
+                                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
+                                val items = response.optJSONArray("tasks")?.objects().orEmpty().map { row ->
+                                    LaundryTask.parse(row).copy(clockOffsetMs = offset)
+                                }
+                                _state.update { it.copy(tasks = items, tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
+                            }.onFailure { _state.update { it.copy(tasksRefreshFailed = true) } }
+                        }
+                    }
+                    result
+                }
                 val queue = async { optionalRefresh { if (mayReadQueue) api.call("/api/queue?dorm=${api.encoded(target)}") else JSONObject().put("queue", JSONArray()) } }
                 val laundry = async { optionalRefresh { metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() } }
                 val announcements = async { optionalRefresh { metadata("/api/user/announcements") } }
                 listOf(tasks.await(), queue.await(), laundry.await(), announcements.await())
             }
             if (version != generation.get() || !_state.value.authReady) return
-            results[0].getOrNull()?.let { response ->
-                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
-                _state.update { it.copy(tasks = response.optJSONArray("tasks")?.objects().orEmpty().map { row -> LaundryTask.parse(row).copy(clockOffsetMs = offset) },
-                    tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
-            }
-            if (results[0].isFailure) _state.update { it.copy(tasksRefreshFailed = true) }
-            if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
             results[1].getOrNull()?.let { response -> _state.update { it.copy(queues = response.optJSONArray("queue")?.objects().orEmpty()) } }
             if (!mayReadQueue) _state.update { it.copy(queues = emptyList()) }
             results[2].getOrNull()?.let { laundry -> _state.update { it.copy(
@@ -311,7 +343,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             if (version == generation.get() && problem != null) _state.update { it.copy(error = "部分账号信息暂未刷新。\n" + problem.message.orEmpty()) }
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) {
-            if (version == generation.get() && session.read() != null) _state.update { it.copy(profile = api.cachedProfile() ?: it.profile,
+            if (version == generation.get() && session.read() != null) _state.update { it.copy(profile = it.profile ?: api.cachedProfile(),
                 authReady = previouslyVerified, sessionRestoring = false,
                 authError = "账号恢复暂未完成，已保留本机登录状态。洗衣房可继续查看，请稍后重试。\n" + problem.message.orEmpty()) }
         }
@@ -355,22 +387,66 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
         seenAnnouncements.add(a.str("id") + ":" + a.str("version")); _state.update { it.copy(announcements = it.announcements.drop(1)) }
     }
-    fun mutate(success: String? = "已保存", wait: Boolean = false, allowRestoring: Boolean = false, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
+    fun mutate(success: String? = "已保存", wait: Boolean = false, allowRestoring: Boolean = false, refreshAfter: Boolean = true, block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
         if (!allowRestoring && session.read() != null && !_state.value.authReady) { message("账号仍在恢复，请稍后重试此操作"); return@launch }
         if(wait) mutationMutex.lock() else if(!mutationMutex.tryLock()) return@launch
         if (!allowRestoring && session.read() != null && !_state.value.authReady) { mutationMutex.unlock(); return@launch }
         _state.update { it.copy(busy = true) }
-        try { block(); metadata.clear(); channelInbox.invalidate(); if(success != null) message(success); refresh() }
+        try {
+            block()
+            if (success != null) message(success)
+            if (refreshAfter) { metadata.clear(); channelInbox.invalidate(); refresh(afterCurrent = true) }
+        }
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }
+    private var taskRegistrationRevision = 0L
     fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
-                 useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = mutate("登记成功") {
+                 useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = viewModelScope.launch {
+        val start = _state.value
+        val version = generation.get()
+        val owner = start.profile?.id ?: return@launch
+        val fence = api.sessionFence()
+        fun currentAccount() = generation.get() == version && _state.value.let {
+            it.authReady && it.profile?.id == owner && it.endpoint == start.endpoint && api.sessionFence() == fence
+        }
+        if (!currentAccount() || !mutationMutex.tryLock()) return@launch
+        _state.update { it.copy(busy = true) }
         try {
-            api.call("/api/tasks", "POST", TaskRegistration.body(machine, minutes, note, disinfectant, cleaned, useMachine, selfCleanProgram))
+            if (_state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("operate", true) == false) {
+                throw ApiException(403, "forbidden", "client_${UUID.randomUUID()}", "当前账号没有登记权限")
+            }
+            val latest = _state.value.machines.find { it.id == machine.id }
+            if (latest == null || !TaskRegistration.sameTarget(machine, latest, useMachine)) {
+                throw ApiException(409, "machine_changed", "client_${UUID.randomUUID()}", "机器信息已变化，请重新核对并确认登记")
+            }
+            val body = TaskRegistration.body(latest, minutes, note, disinfectant, cleaned, useMachine, selfCleanProgram)
+            val response = api.call("/api/tasks", "POST", body)
+            if (!currentAccount()) return@launch
+            val task = response.optJSONObject("task")?.let(LaundryTask::parse)
+                ?.takeIf { it.id.isNotBlank() && it.machineId == machine.id }
+            if (task != null && _state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) != false) {
+                taskRegistrationRevision++
+                _state.update { now ->
+                    val timed = task.copy(clockOffsetMs = now.tasks.firstOrNull()?.clockOffsetMs ?: latest.clockOffsetMs)
+                    now.copy(tasks = listOf(timed) + now.tasks.filterNot { it.id == timed.id },
+                        tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false)
+                }
+            }
+            message("登记成功")
             onSuccess()
+            refresh(afterCurrent = true)
+            viewModelScope.launch {
+                if (currentAccount()) platform.synchronizeWidget(_state.value)
+            }
         } catch (cancel: CancellationException) { throw cancel }
-        catch (problem: Exception) { onFailure(problem.message ?: "登记未完成，请重试"); throw problem }
+        catch (problem: Exception) {
+            if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "登记未完成，请重试"))
+        }
+        finally {
+            _state.update { it.copy(busy = false) }
+            mutationMutex.unlock()
+        }
     }
     fun favorite(machine: Machine) = mutate(null) { api.call("/api/user/favorites/toggle", "POST", JSONObject().put("machineId", machine.id)) }
     fun testMobileNotification() = mutate(null) {

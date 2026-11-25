@@ -137,7 +137,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
             views.setViewVisibility(R.id.widget_machine_ring, if (movingWater) View.GONE else View.VISIBLE)
         }
-        views.setViewVisibility(R.id.widget_activity, if (running) View.VISIBLE else View.GONE)
+        val showActivity = running && (size != WidgetSize.MINI || progress == null)
+        views.setViewVisibility(R.id.widget_activity, if (showActivity) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_label, View.GONE)
@@ -209,7 +210,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
     private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?) {
         val actions = ThemeActions(context, views)
         val dimensions = when (size) {
-            WidgetSize.MINI -> 180 to 70
+            WidgetSize.MINI -> 180 to 80
             WidgetSize.COMPACT -> 180 to 180
             WidgetSize.WIDE -> 320 to 140
         }
@@ -224,12 +225,11 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         } else {
             actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
             actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
-            actions.image(R.id.widget_machine_ring, "ring:$progress") { LaundryWidgetArtwork.ring(it, progress) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
         actions.text(R.id.widget_updated) { it.secondaryText }
         actions.text(R.id.widget_task) { it.primaryText }
-        actions.text(R.id.widget_task_eta) { it.accent }
+        actions.text(R.id.widget_task_eta) { it.secondaryText }
         actions.text(R.id.widget_progress_label) { it.secondaryText }
         actions.text(R.id.widget_task_note) { it.secondaryText }
         if (Build.VERSION.SDK_INT >= 31) {
