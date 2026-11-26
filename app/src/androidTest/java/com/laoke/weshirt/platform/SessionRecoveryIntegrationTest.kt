@@ -5,6 +5,10 @@ import android.app.Application
 import android.os.Build
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -18,6 +22,7 @@ import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.push.PushRuntime
 import com.laoke.weshirt.ui.SettingsScreen
+import com.laoke.weshirt.ui.TaskTakeDialog
 import com.laoke.weshirt.ui.WeShirtTheme
 import com.laoke.weshirt.ui.WeShirtApp
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +42,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 
 /** A cold ViewModel and the real settings UI; all HTTPS calls terminate in the fixture interceptor. */
 @RunWith(AndroidJUnit4::class)
@@ -51,10 +57,13 @@ class SessionRecoveryIntegrationTest {
     private val replacementBoardStarted = CountDownLatch(1)
     private val replacementIdentityRelease = CountDownLatch(1)
     private val replacementIdentityStarted = CountDownLatch(1)
+    private val firstTakeReply = CountDownLatch(1)
+    private val takeAttempts = AtomicInteger()
     private var previous = emptyMap<String, Any?>()
     @Volatile private var profileStatus = 503
     @Volatile private var blockReplacementBoard = false
     @Volatile private var blockReplacementIdentity = false
+    @Volatile private var withLaundryTask = false
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
     private val origin = "https://recovery.invalid"
@@ -91,6 +100,15 @@ class SessionRecoveryIntegrationTest {
                 }
                 "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
+                "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else "{}"
+                "/api/tasks/washer-task/take" -> {
+                    check(request.method == "POST" && withLaundryTask)
+                    if (takeAttempts.incrementAndGet() == 1) {
+                        check(firstTakeReply.await(20, TimeUnit.SECONDS))
+                        status = 503
+                        """{"error":{"code":"fixture_busy","message":"服务暂不可用","eventId":"evt_pickup_fixture"}}"""
+                    } else """{"ok":true,"task":{"id":"washer-task","machineId":"public-machine","done":true}}"""
+                }
                 "/api/user/test-notify" -> """{"ok":true,"accepted":true,"channel":"mobile","provider":"fcm"}"""
                 "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"unauthorized","message":"fixture expired"}}""" }
                 "/api/mobile/auth/refresh" -> { status = 401; """{"error":{"code":"invalid_refresh_token"}}""" }
@@ -102,7 +120,7 @@ class SessionRecoveryIntegrationTest {
     }
 
     @After fun cleanup() {
-        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); onMain { models.clear() }
+        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); firstTakeReply.countDown(); onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow()
         prefs.edit().clear().apply { previous.forEach { (key, value) -> when (value) {
@@ -121,6 +139,40 @@ class SessionRecoveryIntegrationTest {
     private fun render(vm: AppViewModel) = compose.setContent {
         val state by vm.state.collectAsState()
         WeShirtTheme("light", "blue") { SettingsScreen(state, vm, {}, {}, {}) }
+    }
+
+    @Test fun takeShowsPendingAndInDialogErrorThenKeepsAcknowledgedCompletionWhenReadLags() {
+        withLaundryTask = true
+        profileStatus = 200
+        saved(true)
+        val vm = model()
+        release.countDown()
+        compose.setContent {
+            val state by vm.state.collectAsState()
+            var shown by remember { mutableStateOf(true) }
+            WeShirtTheme("light", "blue") {
+                if (shown && state.authReady && state.tasks.isNotEmpty()) {
+                    TaskTakeDialog("确认已取衣？", "测试洗衣机", "取消", "已取走衣物", state.busy, { shown = false }) { success, failure ->
+                        vm.take("washer-task", onSuccess = success, onFailure = failure)
+                    }
+                }
+            }
+        }
+        compose.waitUntil(10_000) { vm.state.value.tasks.any { it.id == "washer-task" } }
+        compose.onNodeWithText("已取走衣物").performClick()
+        compose.onNodeWithText("正在确认…").assertIsDisplayed().assertIsNotEnabled()
+        assertFalse(vm.state.value.tasks.single().done)
+        firstTakeReply.countDown()
+        compose.waitUntil(10_000) { !vm.state.value.busy }
+        compose.onNodeWithText("evt_pickup_fixture", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已取走衣物").performClick()
+        compose.waitUntil(10_000) { vm.state.value.tasks.singleOrNull()?.done == true }
+        compose.onNodeWithText("确认已取衣？").assertDoesNotExist()
+        val refresh = onMain { vm.refresh(afterCurrent = true) }
+        runBlocking { refresh.join() }
+        assertTrue(vm.state.value.tasks.single().done)
+        assertEquals("taken", vm.state.value.tasks.single().takeState)
+        assertEquals(2, takeAttempts.get())
     }
 
     @Test fun coldRestoreNeverShowsLoginAndTransientFailureKeepsSavedIdentityAndCredentials() {

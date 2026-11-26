@@ -15,11 +15,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-class ApiException(val status: Int, val code: String, val eventId: String, message: String) : IOException("$message\n状态码 $status · 事件 $eventId")
+class ApiException(val status: Int, val code: String, val eventId: String, message: String) :
+    IOException("$message\n${if (status == 0 && code in setOf("network_error", "network_timeout")) "连接错误" else "状态码 $status"} · 事件 $eventId")
 internal data class ApiSessionFence(val origin: String, val revision: Long)
 
 /** Bind the origin before acquiring credentials. Late responses cannot revive an old session. */
@@ -65,9 +67,9 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             } catch (problem: ApiException) {
                 if (authorization == null || !problem.isAccessRejection()) throw problem
                 val renewed = refreshSession(origin, version, authorization, rejected = true)
-                // A registration's explicit auth rejection occurs before the
-                // server writes anything. Preserve its original idempotency key.
-                if (method != "GET" && !(method == "POST" && path == "/api/tasks")) throw problem
+                // These task writes authenticate before committing. A verified
+                // 401 can be retried once with the same idempotency key.
+                if (method != "GET" && !(method == "POST" && (path == "/api/tasks" || PICKUP_PATH.matches(path)))) throw problem
                 currentAuthorization(origin, version, renewed)
                 raw(origin, path, method, body, renewed.str("accessToken"), requestKey)
                     .also { currentAuthorization(origin, version, renewed) }
@@ -224,7 +226,13 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
                 if(!r.isSuccessful) { val e = j.optJSONObject("error") ?: JSONObject(); throw ApiException(r.code, e.str("code", "http_error"), e.str("eventId", r.header("X-Event-ID") ?: requestId), e.str("message", "请求未完成")) }
                 j
             }
-        } catch(e: ApiException) { throw e } catch(e: IOException) { throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) } }
+        } catch (e: ApiException) {
+            throw e
+        } catch (e: SocketTimeoutException) {
+            throw ApiException(0, "network_timeout", requestId, "等待服务器响应超时，请重试").apply { initCause(e) }
+        } catch (e: IOException) {
+            throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) }
+        }
     }
     suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessSession(origin,version)?.str("accessToken") }
     /** Only a short-lived channel ticket is sent to the configured relay, never an access token. */
@@ -315,6 +323,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     }
     private fun eventId() = "client_" + UUID.randomUUID().toString().replace("-", "")
     companion object {
+        private val PICKUP_PATH = Regex("/api/tasks/[^/?#]+/take")
         private const val MAX_RESPONSE = 2L * 1024 * 1024
         private val refreshLocks = ConcurrentHashMap<String, Mutex>()
     }

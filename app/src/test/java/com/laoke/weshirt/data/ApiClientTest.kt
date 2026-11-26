@@ -239,6 +239,23 @@ class ApiClientTest {
         assertEquals(2, server.requestCount)
     }
 
+    @Test fun pickupResumesAfterAnExpiredAccessTokenWithoutChangingTheRequestKey() = runBlocking {
+        valid()
+        server.enqueue(json("""{"error":{"code":"unauthorized"}}""").setResponseCode(401))
+        server.enqueue(json(refreshed))
+        server.enqueue(json("""{"ok":true,"task":{"id":"task_1","done":true}}"""))
+        val path = "/api/tasks/task_1/take"
+        assertTrue(api.call(path, "POST").getJSONObject("task").getBoolean("done"))
+        val initial = server.takeRequest()
+        assertEquals("/api/mobile/auth/refresh", server.takeRequest().path)
+        val retry = server.takeRequest()
+        assertEquals(path, initial.path)
+        assertEquals(path, retry.path)
+        assertEquals("Bearer new-access", retry.getHeader("Authorization"))
+        assertNotNull(initial.getHeader("Idempotency-Key"))
+        assertEquals(initial.getHeader("Idempotency-Key"), retry.getHeader("Idempotency-Key"))
+    }
+
     @Test fun previousRefresh401CannotCancelAnInFlightNativeExchange() = runBlocking {
         expired()
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
