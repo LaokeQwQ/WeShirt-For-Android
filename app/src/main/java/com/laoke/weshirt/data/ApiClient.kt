@@ -3,6 +3,11 @@ package com.laoke.weshirt.data
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -232,6 +237,78 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
             throw ApiException(0, "network_timeout", requestId, "等待服务器响应超时，请重试").apply { initCause(e) }
         } catch (e: IOException) {
             throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) }
+        }
+    }
+    /** A single authenticated POST; partial answers are never retried or stored as final history. */
+    internal suspend fun streamAssistant(body: JSONObject, onReset: suspend () -> Unit = {}, onDelta: suspend (String) -> Unit): JSONObject {
+        val (origin, version) = snapshot()
+        val authorization = accessSession(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
+        currentAuthorization(origin, version, authorization)
+        val trace = eventId()
+        val request = Request.Builder().url(origin + "/api/assistant/chat/stream")
+            .header("Authorization", "Bearer " + authorization.str("accessToken"))
+            .header("Accept", "text/event-stream").header("Cache-Control", "no-cache, no-store")
+            .header("X-Request-ID", trace).header("Idempotency-Key", UUID.randomUUID().toString())
+            .post(body.toString().toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        return withContext(Dispatchers.IO) {
+            val call = http.newBuilder().cache(null).readTimeout(60, TimeUnit.SECONDS).callTimeout(120, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false).build().newCall(request)
+            // Closing the page/account must interrupt a blocked read, not wait
+            // for the provider's next token or the socket timeout.
+            val cancellation = launch(start = CoroutineStart.UNDISPATCHED) {
+                try { awaitCancellation() } finally { call.cancel() }
+            }
+            var status = 0
+            val started = System.nanoTime()
+            try {
+                call.execute().use { response ->
+                    status = response.code
+                    currentCoroutineContext().ensureActive()
+                    currentAuthorization(origin, version, authorization)
+                    val streamTrace = response.header("X-Event-ID")?.takeIf { it.isNotBlank() } ?: trace
+                    val payload = response.body ?: throw IOException("empty response")
+                    if (!response.isSuccessful) {
+                        val source = payload.source(); source.request(MAX_RESPONSE + 1)
+                        if (source.buffer.size > MAX_RESPONSE) throw ApiException(502, "assistant_stream_invalid", streamTrace, "助手返回数据过大")
+                        val error = runCatching { JSONObject(source.readUtf8()).optJSONObject("error") }.getOrNull()
+                        throw ApiException(response.code, error?.str("code", "http_error") ?: "http_error",
+                            error?.str("eventId", streamTrace) ?: streamTrace, error?.str("message", "助手请求未完成") ?: "助手请求未完成")
+                    }
+                    if (payload.contentType()?.type != "text" || payload.contentType()?.subtype != "event-stream")
+                        throw ApiException(502, "assistant_stream_invalid", streamTrace, "助手暂未返回流式回答，请稍后重试")
+                    val decoder = AssistantSseDecoder(streamTrace)
+                    val source = payload.source()
+                    while (!source.exhausted()) {
+                        currentCoroutineContext().ensureActive()
+                        currentAuthorization(origin, version, authorization)
+                        val line = try { source.readUtf8LineStrict(AssistantSseDecoder.MAX_LINE_BYTES) }
+                        catch (_: java.io.EOFException) { throw ApiException(502, "assistant_stream_interrupted", streamTrace, "回答连接已中断，请刷新聊天记录确认") }
+                        when (val event = decoder.line(line)) {
+                            AssistantStreamEvent.Reset -> onReset()
+                            is AssistantStreamEvent.Delta -> onDelta(event.text)
+                            is AssistantStreamEvent.Done -> {
+                                currentCoroutineContext().ensureActive()
+                                currentAuthorization(origin, version, authorization)
+                                return@withContext event.result
+                            }
+                            null -> Unit
+                        }
+                    }
+                    decoder.end()
+                    throw ApiException(502, "assistant_stream_interrupted", streamTrace, "回答连接已中断，请刷新聊天记录确认")
+                }
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (problem: ApiException) { status = problem.status; throw problem }
+            catch (_: SocketTimeoutException) {
+                currentCoroutineContext().ensureActive()
+                throw ApiException(0, "network_timeout", trace, "回答等待超时，已显示的内容尚未确认保存，请刷新聊天记录")
+            } catch (_: IOException) {
+                currentCoroutineContext().ensureActive()
+                throw ApiException(0, "network_error", trace, "回答连接已中断，已显示的内容尚未确认保存，请刷新聊天记录")
+            } finally {
+                cancellation.cancel(); call.cancel()
+                onMetric?.invoke("/api/assistant/chat/stream", ((System.nanoTime() - started) / 1_000_000).coerceIn(0, 120_000), status)
+            }
         }
     }
     suspend fun mediaToken(): String? { val (origin,version) = snapshot(); return accessSession(origin,version)?.str("accessToken") }

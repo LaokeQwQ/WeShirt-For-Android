@@ -129,9 +129,8 @@ fun MachineBoard(
                     }
                 }
                 Text(updatedAt?.let { "更新于 " + DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(it)) } ?: "更新时间待确认", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (staleMinutes != null && staleMinutes >= 3) Surface(color = MaterialTheme.colorScheme.tertiaryContainer, shape = RoundedCornerShape(12.dp)) {
-                    Text("数据已 $staleMinutes 分钟未更新，请以现场为准", Modifier.fillMaxWidth().padding(12.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                }
+                if (staleMinutes != null && staleMinutes >= 3)
+                    Text("平台状态已有 $staleMinutes 分钟未更新，请以现场为准", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         item(key = "board-controls", span = { GridItemSpan(maxLineSpan) }, contentType = "controls") {
