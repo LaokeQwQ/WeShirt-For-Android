@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.laoke.weshirt.data.*
 import com.laoke.weshirt.platform.PlatformCoordinator
+import com.laoke.weshirt.platform.widget.TASK_REGISTRATION_VISIBILITY_MILLIS
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +28,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private val prefs = app.getSharedPreferences("preferences", 0)
     val session = SecureSession(app)
     val api = ApiClient(session, app.cacheDir, client)
+    internal val loginPreparation = com.laoke.weshirt.platform.login.nativeLoginPreparation(viewModelScope, app, api, session)
     private val channelInbox = ChannelInbox(api)
     private val publicRooms = PublicRoomCache(
         java.io.File(app.noBackupFilesDir, "public-rooms"),
@@ -316,8 +318,19 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                                 }
                                 _state.update { state ->
                                     val taken = state.tasks.asSequence().filter { it.done }.map { it.id }.toSet()
-                                    state.copy(tasks = items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
-                                        tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false)
+                                    val now = System.currentTimeMillis()
+                                    val ids = items.mapTo(HashSet()) { it.id }
+                                    val acknowledged = state.tasks.filter { task ->
+                                        val receipt = taskRegistrationReceipts[task.id]
+                                        !task.done && task.id !in ids && receipt?.let {
+                                            it.generation == version && now - it.at in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
+                                        } == true
+                                    }
+                                    taskRegistrationReceipts.entries.removeAll {
+                                        it.value.generation != version || now - it.value.at !in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
+                                    }
+                                    state.copy(tasks = acknowledged + items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
+                                        tasksUpdatedAt = now, tasksRefreshFailed = false)
                                 }
                             }.onFailure { _state.update { it.copy(tasksRefreshFailed = true) } }
                         }
@@ -405,6 +418,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }
     private var taskRevision = 0L
+    private data class TaskRegistrationReceipt(val generation: Int, val at: Long)
+    private val taskRegistrationReceipts = mutableMapOf<String, TaskRegistrationReceipt>()
     fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
                  useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = viewModelScope.launch {
         val start = _state.value
@@ -431,18 +446,18 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 ?.takeIf { it.id.isNotBlank() && it.machineId == machine.id }
             if (task != null && _state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) != false) {
                 taskRevision++
+                val acknowledgedAt = System.currentTimeMillis()
+                taskRegistrationReceipts[task.id] = TaskRegistrationReceipt(version, acknowledgedAt)
                 _state.update { now ->
                     val timed = task.copy(clockOffsetMs = now.tasks.firstOrNull()?.clockOffsetMs ?: latest.clockOffsetMs)
                     now.copy(tasks = listOf(timed) + now.tasks.filterNot { it.id == timed.id },
-                        tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false)
+                        tasksUpdatedAt = acknowledgedAt, tasksRefreshFailed = false)
                 }
+                platform.synchronizeWidget(_state.value, acknowledgedTaskId = task.id)
             }
             message("登记成功")
             onSuccess()
             refresh(afterCurrent = true)
-            viewModelScope.launch {
-                if (currentAccount()) platform.synchronizeWidget(_state.value)
-            }
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) {
             if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "登记未完成，请重试"))
@@ -507,7 +522,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             message("已确认取衣")
             onSuccess()
             viewModelScope.launch {
-                if (currentAccount()) platform.synchronize(_state.value)
+                if (currentAccount()) platform.synchronize(_state.value, confirmedRemoval = true)
             }
             refresh(afterCurrent = true)
         } catch (cancel: CancellationException) { throw cancel }

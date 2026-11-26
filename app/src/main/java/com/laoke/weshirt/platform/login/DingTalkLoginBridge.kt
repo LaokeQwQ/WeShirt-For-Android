@@ -11,6 +11,10 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 
 data class NativeLoginRequest(
     val installationId: String,
@@ -59,9 +63,36 @@ object DingTalkLoginBridge {
         return NativeLoginRequest(installationId, state, challengeFor(verifier))
     }
 
+    suspend fun begin(activity: Activity, challenge: NativeLoginChallenge): LoginLaunchResult {
+        val problem = withContext(Dispatchers.IO) { prepareLaunch(activity.applicationContext, challenge) }
+        if (problem != null) return problem
+        return withContext(Dispatchers.Main.immediate) { launchPrepared(activity, challenge) }
+    }
+
+    internal fun availability(context: Context): LoginLaunchResult.Unavailable? = when {
+        !DDAuthUtil.isDDAppInstalled(context, DINGTALK_PACKAGE) -> LoginLaunchResult.Unavailable("DINGTALK_NOT_INSTALLED", failureMessage("DINGTALK_NOT_INSTALLED"))
+        !DDAuthUtil.isDDSupportAPI(context, DINGTALK_PACKAGE) -> LoginLaunchResult.Unavailable("DINGTALK_UPDATE_REQUIRED", failureMessage("DINGTALK_UPDATE_REQUIRED"))
+        else -> null
+    }
+
     @Synchronized
-    fun begin(activity: Activity, challenge: NativeLoginChallenge): LoginLaunchResult {
-        val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    internal fun canPrepare(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return !prefs.getBoolean("launched", false) && !prefs.getBoolean("ready", false)
+    }
+
+    @Synchronized
+    internal fun preparedMatches(context: Context, challenge: NativeLoginChallenge): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val created = prefs.getLong("created", 0L)
+        return !prefs.getBoolean("launched", false) && !prefs.getBoolean("ready", false) &&
+            same(prefs.getString("state", null), challenge.state) && now >= created && now - created <= MAX_AGE_MS
+    }
+
+    @Synchronized
+    private fun prepareLaunch(context: Context, challenge: NativeLoginChallenge): LoginLaunchResult.Unavailable? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val now = System.currentTimeMillis()
         val created = prefs.getLong("created", 0L)
         if (!same(prefs.getString("state", null), challenge.state) ||
@@ -72,17 +103,24 @@ object DingTalkLoginBridge {
             challenge.challengeId.isBlank() || challenge.scope != "openid") {
             return LoginLaunchResult.Unavailable("LOGIN_NOT_CONFIGURED", failureMessage("LOGIN_NOT_CONFIGURED"))
         }
-        if (!DDAuthUtil.isDDAppInstalled(activity, DINGTALK_PACKAGE)) {
-            return LoginLaunchResult.Unavailable("DINGTALK_NOT_INSTALLED", failureMessage("DINGTALK_NOT_INSTALLED"))
-        }
-        if (!DDAuthUtil.isDDSupportAPI(activity, DINGTALK_PACKAGE)) {
-            return LoginLaunchResult.Unavailable("DINGTALK_UPDATE_REQUIRED", failureMessage("DINGTALK_UPDATE_REQUIRED"))
-        }
+        availability(context)?.let { return it }
         if (!prefs.edit().putString("challenge", challenge.challengeId)
             .putLong("expires", minOf(challenge.expiresAtMillis, created + MAX_AGE_MS))
             .putBoolean("launched", true).commit()) {
             return LoginLaunchResult.Unavailable("LOGIN_STORAGE_FAILED", failureMessage("LOGIN_STORAGE_FAILED"))
         }
+        return null
+    }
+
+    @Synchronized
+    private fun launchPrepared(activity: Activity, challenge: NativeLoginChallenge): LoginLaunchResult {
+        if (activity.isFinishing || activity.isDestroyed ||
+            (activity is LifecycleOwner && !activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)))
+            return LoginLaunchResult.Unavailable("LOGIN_CALLBACK_PENDING", failureMessage("LOGIN_CALLBACK_PENDING"))
+        val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("launched", false) || prefs.getBoolean("ready", false) ||
+            !same(prefs.getString("state", null), challenge.state) || System.currentTimeMillis() >= prefs.getLong("expires", 0L))
+            return LoginLaunchResult.Unavailable("LOGIN_CHALLENGE_EXPIRED", failureMessage("LOGIN_CHALLENGE_EXPIRED"))
         return try {
             val params = AuthLoginParam.AuthLoginParamBuilder.newBuilder()
                 .appId(challenge.clientId).redirectUri(challenge.redirectUri)

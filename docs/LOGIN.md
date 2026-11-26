@@ -14,6 +14,8 @@
 
 `DingTalkLoginBridge.createRequest(context, installationId)` 产生随机 state 与 S256 codeChallenge。将其提交后端 challenge 接口。服务端返回 challengeId、原样 state、到期时间，以及 provider 的 clientId、redirectUri、scope。客户端把结果转换成 `NativeLoginChallenge`，调用 `begin(activity, challenge)`。
 
+未登录用户进入带登录入口的页面时，前台预准备一个尚未使用的短期 challenge；点击时复用同一结果或等待同一个正在进行的请求。预准备不清除账号，未安装钉钉时不发送 challenge 请求，失败后短暂节流且不打扰用户。临近过期、服务地址变化、state 已消费或明确重试会重新准备，不缓存授权码或用户会话。页面重建不会重复请求；准备、包检查和持久化在后台线程完成，真正拉起 SDK 在主线程且要求页面仍在前台。
+
 正式包通过官方约定的实际 `com.laoke.weshirt.ddauth.DDAuthActivity` 接收回调；测试包使用对应 applicationId 的别名。只有已发起且 state 一致的请求能写入结果；重复或错误 state 不会覆盖有效请求。仅接受原生回调和符合服务端长度/字符规则的授权码。临时授权码与 codeVerifier 留在应用私有存储，通过显式 Intent 唤醒主 Activity，Intent 不携带授权材料。
 
 主 Activity 在创建、收到新 Intent 和恢复前台时调用 `consumeReply(context, intent)`。唤醒标记只是提示，恢复任务时即使该标记丢失，已验证的私有结果仍可单次消费。过期、取消、拒绝和服务地址变化会显示中文原因、状态码与事件编号；切换服务地址或退出登录会清除请求，旧服务的结果不能兑换到新服务。返回前台后仍无回调时，等待短窗口再提示重试，同时保留未过期请求以接收延迟结果。

@@ -50,7 +50,9 @@ interface PushRegistrationSink {
     suspend fun unregister(installationId: String)
 }
 
-enum class PushEventKind { QUEUE_THREE_MINUTES, ESTIMATED_END, TASK_FINISHED, CHAT_MENTION, ANNOUNCEMENT, PICKUP_REQUEST }
+enum class PushEventKind { QUEUE_THREE_MINUTES, ESTIMATED_END, TASK_FINISHED, CHAT_MENTION, ANNOUNCEMENT, PICKUP_REQUEST, TASK_REGISTERED }
+
+internal val widgetTaskIdPattern = Regex("t_[A-Za-z0-9_-]{1,126}")
 
 data class NativePushEvent(
     val eventId: String,
@@ -63,7 +65,8 @@ data class NativePushEvent(
     val finishAtMillis: Long? = null,
 ) {
     fun valid(): Boolean = eventId.isNotBlank() && eventId.length <= 160 && revision >= 0 &&
-        title.isNotBlank() && title.length <= 160 && body.length <= 1500 &&
+        (if (kind == PushEventKind.TASK_REGISTERED) taskId?.matches(widgetTaskIdPattern) == true
+        else title.isNotBlank()) && title.length <= 160 && body.length <= 1500 &&
         (taskId == null || taskId.length <= 160) && (finishAtMillis == null || finishAtMillis > 0) &&
         (kind != PushEventKind.TASK_FINISHED || serverConfirmed)
 }

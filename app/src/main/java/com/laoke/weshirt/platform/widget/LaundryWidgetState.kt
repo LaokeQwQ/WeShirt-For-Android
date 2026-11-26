@@ -14,7 +14,7 @@ internal object LaundryWidgetState {
 
     fun freshness(snapshot: LaundryWidgetSnapshot?, now: Long): WidgetFreshness {
         if (snapshot == null) return WidgetFreshness.MISSING
-        val updated = snapshot.updatedAtMillis
+        val updated = taskClock(snapshot)
         if (updated <= 0L || updated > now && updated - now > FUTURE_TOLERANCE_MILLIS) return WidgetFreshness.INVALID_TIME
         return if (now >= updated && now - updated >= STALE_AFTER_MILLIS) WidgetFreshness.OUTDATED else WidgetFreshness.RECENT
     }
@@ -53,6 +53,8 @@ internal object LaundryWidgetState {
     }
 
     fun isRunning(snapshot: LaundryWidgetSnapshot?, now: Long): Boolean = taskState(snapshot, now) == WidgetTaskState.ESTIMATED
+
+    fun taskClock(snapshot: LaundryWidgetSnapshot): Long = snapshot.taskObservedAtMillis ?: snapshot.updatedAtMillis
 
     fun safeLabel(value: String): String = value.filterNot(Char::isISOControl).trim().take(100)
 }

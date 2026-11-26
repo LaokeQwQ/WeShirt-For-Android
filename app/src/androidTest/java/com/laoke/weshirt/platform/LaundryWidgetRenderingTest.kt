@@ -1,6 +1,9 @@
 package com.laoke.weshirt.platform
 
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetHostView
 import android.content.Context
+import android.content.ComponentName
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -9,6 +12,9 @@ import android.graphics.RectF
 import android.graphics.drawable.Animatable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.LayerDrawable
+import android.os.Build
+import android.os.Bundle
+import android.util.SizeF
 import android.view.View
 import android.view.ViewGroup
 import android.view.Gravity
@@ -169,6 +175,96 @@ class LaundryWidgetRenderingTest {
                     }
                 }
         }
+    }
+
+    @Test fun miniFollowsHostSizesAndKeepsItsCardHorizontalAcrossLaunchers() {
+        val provider = LaundryWidgetMiniProvider()
+        val component = ComponentName(app, LaundryWidgetMiniProvider::class.java)
+        val providerInfo = AppWidgetManager.getInstance(app).installedProviders.single { it.provider == component }
+        val now = System.currentTimeMillis()
+        instrumentation.runOnMainSync {
+            for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
+                for (night in listOf(Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES)) {
+                    for (font in listOf(1f, 1.4f)) {
+                        val configuration = Configuration(app.resources.configuration).apply {
+                            setLocale(locale)
+                            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or night
+                            fontScale = font
+                            orientation = Configuration.ORIENTATION_PORTRAIT
+                        }
+                        val context = app.createConfigurationContext(configuration)
+                        val draw = { width: Int, height: Int, options: Bundle, name: String ->
+                            val remote = provider.renderForHost(context, 905, task(now), now, options)
+                            val view = if (name == "legacy") remote.apply(context, FrameLayout(context)) else {
+                                val host = AppWidgetHostView(context).apply {
+                                    setAppWidget(905, providerInfo)
+                                    // Report inner cell dimensions, as the launcher does after its own padding.
+                                    setPadding(0, 0, 0, 0)
+                                }
+                                measure(host, width, height)
+                                host.updateAppWidget(remote)
+                                measure(host, width, height)
+                                requireNotNull(host.findViewById<View>(R.id.widget_root))
+                            }
+                            assertResponsiveMini(view, width, height, name)
+                            captureView(view, "native-widget-2x1-host-$name-${width}x$height-${locale.language}-" +
+                                "${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-${if (font == 1.4f) "large-font" else "default-font"}")
+                        }
+                        val legacy = Bundle().apply {
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 128)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 260)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 50)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 108)
+                        }
+                        draw(128, 108, legacy, "legacy")
+                        val landscape = context.createConfigurationContext(Configuration(configuration).apply {
+                            orientation = Configuration.ORIENTATION_LANDSCAPE
+                        })
+                        val landscapeView = provider.renderForHost(landscape, 905, task(now), now, legacy)
+                            .apply(landscape, FrameLayout(landscape))
+                        assertResponsiveMini(landscapeView, 260, 50, "flat")
+                        assertResponsiveMini(provider.renderForHost(context, 905, task(now), now, Bundle.EMPTY)
+                            .apply(context, FrameLayout(context)), 150, 52, "picker fallback")
+                        if (Build.VERSION.SDK_INT < 31) continue
+                        val host = Bundle().apply {
+                            putParcelableArrayList(AppWidgetManager.OPTION_APPWIDGET_SIZES,
+                                arrayListOf(SizeF(132f, 50f), SizeF(154f, 104f), SizeF(260f, 52f)))
+                        }
+                        draw(132, 50, host, "narrow")
+                        draw(154, 104, host, "tall")
+                        draw(260, 52, host, "flat")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun assertResponsiveMini(view: View, width: Int, height: Int, name: String) {
+        measure(view, width, height)
+        val label = "$name ${width}x$height, ${view.resources.configuration.locales[0]}, font ${view.resources.configuration.fontScale}"
+        val backdrop = view.findViewById<ImageView>(R.id.widget_backdrop)
+        val cardWidth = view.width - backdrop.paddingLeft - backdrop.paddingRight
+        val cardHeight = view.height - backdrop.paddingTop - backdrop.paddingBottom
+        assertTrue("Host cells retain a horizontal card ($label)", cardWidth > cardHeight * 1.65)
+        assertEquals(backdrop.paddingLeft, backdrop.paddingRight)
+        assertEquals(backdrop.paddingTop, backdrop.paddingBottom)
+        if (name == "tall" || name == "legacy") assertTrue(backdrop.paddingTop >= dp(view.context, 10))
+        if (name == "flat") assertTrue(backdrop.paddingLeft >= dp(view.context, 10))
+        val card = Rect(backdrop.paddingLeft, backdrop.paddingTop,
+            view.width - backdrop.paddingRight, view.height - backdrop.paddingBottom)
+        val machine = rect(view, view.findViewById(R.id.widget_machine))
+        val title = view.findViewById<TextView>(R.id.widget_task)
+        val eta = view.findViewById<TextView>(R.id.widget_task_eta)
+        for (text in listOf(title, eta)) {
+            assertInside(view, text)
+            assertReadable(text, label)
+            assertTextInset(view, text, label, card)
+        }
+        assertTrue("The dial stays to the left of both labels ($label)", machine.right <= rect(view, title).left)
+        assertTrue("Labels must stay on separate rows ($label)", rect(view, title).bottom <= rect(view, eta).top)
+        assertTrue("The dial must remain readable ($label)", minOf(machine.width(), machine.height()) >= dp(view.context, 34))
+        assertNoRefreshControls(view)
+        assertWaterState(view, true, label)
     }
 
     @Test fun responsiveTaskCardsApplyInBothThemesLanguagesAndLargeFontsWithoutCountSummary() {
@@ -504,7 +600,8 @@ class LaundryWidgetRenderingTest {
             assertEquals("$name must remain readable ($case)", 0, layout.getEllipsisCount(line))
         }
     }
-    private fun assertTextInset(root: View, label: TextView, case: String) {
+    private fun assertTextInset(root: View, label: TextView, case: String,
+        card: Rect = Rect(0, 0, root.width, root.height)) {
         val layout = requireNotNull(label.layout)
         val box = rect(root, label)
         val availableHeight = label.height - label.compoundPaddingTop - label.compoundPaddingBottom
@@ -518,8 +615,8 @@ class LaundryWidgetRenderingTest {
         val top = box.top + label.compoundPaddingTop + vertical
         val bottom = top + layout.height
         val safe = dp(root.context, 6)
-        assertTrue("Visible text must keep safe space from every rounded card edge ($case, text=${label.text}, glyph=[$left,$top,$right,$bottom], root=${root.width}x${root.height})",
-            left >= safe && top >= safe && right <= root.width - safe && bottom <= root.height - safe)
+        assertTrue("Visible text must keep safe space from every rounded card edge ($case, text=${label.text}, glyph=[$left,$top,$right,$bottom], card=$card)",
+            left >= card.left + safe && top >= card.top + safe && right <= card.right - safe && bottom <= card.bottom - safe)
     }
     private fun artworkBounds(root: View, image: ImageView): RectF {
         val drawable = requireNotNull(image.drawable)

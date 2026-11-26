@@ -51,7 +51,7 @@ class LaundryNotifications(context: Context) {
     /** Returns true only when a valid, newer revision was actually posted. */
     @SuppressLint("MissingPermission") // Permission is checked by capabilities immediately before delivery.
     fun post(event: NativePushEvent): Boolean = synchronized(lock) {
-        if (!event.valid() || !PushRuntime.notificationsAllowed(app)) return false
+        if (event.kind == PushEventKind.TASK_REGISTERED || !event.valid() || !PushRuntime.notificationsAllowed(app)) return false
         if (event.kind == PushEventKind.QUEUE_THREE_MINUTES && event.finishAtMillis?.let { it <= System.currentTimeMillis() } == true) return false
         val capability = capabilities()
         if (!capability.permissionGranted || !capability.notificationsEnabled) return false

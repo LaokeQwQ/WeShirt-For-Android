@@ -47,6 +47,7 @@ import java.io.ByteArrayOutputStream
     var logout by remember { mutableStateOf(false) }; var reminderStart by remember(state.reminderStart) { mutableStateOf(state.reminderStart) }; var reminderEnd by remember(state.reminderEnd) { mutableStateOf(state.reminderEnd) }
     var admin by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
     var favoriteSettings by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
+    var widgetsSettings by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val owner = state.profile?.id?.let { state.endpoint + "|" + it }
     var avatarOwner by remember { mutableStateOf<String?>(null) }
@@ -102,6 +103,10 @@ import java.io.ByteArrayOutputStream
             Text("仅测试当前手机的 FCM/U-Push；服务商接受请求不代表已送达。", style = MaterialTheme.typography.bodySmall)
             FilledTonalButton(onClick = { favoriteSettings = true }, enabled = state.profile != null && !state.busy, modifier = Modifier.fillMaxWidth()) { Text("常用机器与洗衣时段 · ${if (state.favoriteRemindersOn) "提醒已开启" else "提醒已关闭"}") }
         } }
+        item { SettingsCard("桌面小组件") {
+            Text("选择 2×1、2×2 或 4×2 卡片，在桌面查看洗衣任务。")
+            FilledTonalButton(onClick = { widgetsSettings = true }, modifier = Modifier.fillMaxWidth().testTag("settings-widgets-management")) { Text("管理与添加小组件") }
+        } }
         item { SettingsCard("显示与性能") {
             Text("外观", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key,label) -> FilterChip(state.appearance == key, { vm.preference("appearance", key) }, label = { Text(label) }) } }
@@ -129,6 +134,7 @@ import java.io.ByteArrayOutputStream
     }
     if (admin && state.access.optBoolean("adminVisible")) com.laoke.weshirt.ui.admin.NativeAdminScreen(state, vm) { admin = false }
     if (favoriteSettings && state.profile != null) FavoritePreferencesDialog(state, vm) { favoriteSettings = false }
+    if (widgetsSettings) WidgetsSettingsScreen { widgetsSettings = false }
     if(avatarMenu) AlertDialog(onDismissRequest = { avatarMenu = false }, title = { Text("头像") }, text = { Column {
         TextButton(onClick = { vm.mutate { vm.api.call("/api/user/dingtalk-avatar") }; avatarMenu = false }) { Text("用钉钉头像") }
         TextButton(onClick = { vm.mutate { vm.api.call("/api/user/profile", "POST", JSONObject().put("avatarUrl", "")) }; avatarMenu = false }) { Text("移除头像，使用昵称首字") }

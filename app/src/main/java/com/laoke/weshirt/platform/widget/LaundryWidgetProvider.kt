@@ -10,12 +10,15 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import android.util.LruCache
+import android.util.SizeF
 import android.view.View
 import android.widget.RemoteViews
+import androidx.core.os.BundleCompat
 import com.laoke.weshirt.R
 import com.laoke.weshirt.platform.NativeNavigation
 import java.text.SimpleDateFormat
 import java.util.Date
+import kotlin.math.roundToInt
 
 /** The original component remains the 4×2 entry so installed widgets keep working. */
 open class LaundryWidgetProvider : AppWidgetProvider() {
@@ -33,7 +36,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         LaundryWidgetTheme.observe(context)
         val snapshot = LaundryWidgetStore.read(context)
         for (id in appWidgetIds) {
-            manager.updateAppWidget(id, render(context, id, snapshot, widgetSize, System.currentTimeMillis()))
+            val options = if (widgetSize == WidgetSize.MINI) manager.getAppWidgetOptions(id) else Bundle.EMPTY
+            manager.updateAppWidget(id, renderForHost(context, id, snapshot, System.currentTimeMillis(), options))
         }
     }
 
@@ -46,10 +50,41 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, appWidgetId: Int, newOptions: Bundle) {
         manager.updateAppWidget(appWidgetId,
-            render(context, appWidgetId, LaundryWidgetStore.read(context), widgetSize, System.currentTimeMillis()))
+            renderForHost(context, appWidgetId, LaundryWidgetStore.read(context), System.currentTimeMillis(), newOptions))
     }
 
-    internal fun render(context: Context, id: Int, snapshot: LaundryWidgetSnapshot?, size: WidgetSize, now: Long): RemoteViews {
+    internal fun renderForHost(context: Context, id: Int, snapshot: LaundryWidgetSnapshot?, now: Long, options: Bundle): RemoteViews {
+        if (widgetSize != WidgetSize.MINI) return render(context, id, snapshot, widgetSize, now)
+        fun mini(width: Int, height: Int) =
+            render(context, id, snapshot, WidgetSize.MINI, now, MiniWidgetLayout.fit(width, height))
+        if (Build.VERSION.SDK_INT >= 31) {
+            val sizes = BundleCompat.getParcelableArrayList(options, AppWidgetManager.OPTION_APPWIDGET_SIZES, SizeF::class.java)
+                ?.filter { it.width in 64f..640f && it.height in 32f..320f }
+                ?.distinct().orEmpty()
+            if (sizes.size == 1) return mini(sizes.first().width.roundToInt(), sizes.first().height.roundToInt())
+            // Portrait, landscape and folded/unfolded sizes may all be supplied.
+            // Bound the number of themed bitmaps carried in a single update.
+            if (sizes.size in 2..4) return RemoteViews(sizes.associateWith { mini(it.width.roundToInt(), it.height.roundToInt()) })
+        }
+        val minWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH).takeIf { it > 0 }
+        val maxWidth = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH).takeIf { it > 0 }
+        val minHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT).takeIf { it > 0 }
+        val maxHeight = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT).takeIf { it > 0 }
+        if (minWidth == null && maxWidth == null && minHeight == null && maxHeight == null)
+            return render(context, id, snapshot, WidgetSize.MINI, now)
+        val portraitWidth = minWidth ?: maxWidth ?: 128
+        val portraitHeight = maxHeight ?: minHeight ?: 76
+        val landscapeWidth = maxWidth ?: portraitWidth
+        val landscapeHeight = minHeight ?: portraitHeight
+        val portrait = mini(portraitWidth, portraitHeight)
+        if (landscapeWidth == portraitWidth && landscapeHeight == portraitHeight) return portrait
+        return RemoteViews(mini(landscapeWidth, landscapeHeight), portrait)
+    }
+
+    internal fun render(
+        context: Context, id: Int, snapshot: LaundryWidgetSnapshot?, size: WidgetSize, now: Long,
+        mini: MiniWidgetLayout? = null,
+    ): RemoteViews {
         val layout = when (size) {
             WidgetSize.MINI -> R.layout.laundry_widget_mini
             WidgetSize.COMPACT -> R.layout.laundry_widget
@@ -62,6 +97,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val refreshError = if (hasSession) LaundryWidgetStore.refreshError(context) else null
         val running = LaundryWidgetState.isRunning(snapshot, now)
         val progress = LaundryWidgetState.progressPercent(snapshot, now)
+        val showActivity = running && (size != WidgetSize.MINI || progress == null)
         val building = snapshot?.buildingName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
             ?: context.getString(if (snapshot == null) R.string.widget_brand else R.string.widget_current_building)
         val machine = snapshot?.taskMachineName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
@@ -123,7 +159,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
             views.setViewVisibility(R.id.widget_machine_ring, if (movingWater) View.GONE else View.VISIBLE)
         }
-        val showActivity = running && (size != WidgetSize.MINI || progress == null)
+        if (size == WidgetSize.MINI)
+            views.setViewVisibility(R.id.widget_mini_activity_holder, if (showActivity) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_activity, if (showActivity) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
@@ -139,7 +176,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             machine == null -> R.string.widget_idle_detail
             else -> R.string.widget_expected_disclaimer
         }))
-        applyTheme(context, views, size, progress)
+        if (mini != null) applyMiniLayout(context, views, mini)
+        applyTheme(context, views, size, progress, mini)
         return views
     }
 
@@ -193,10 +231,22 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         }
     }
 
-    private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?) {
+    private fun applyMiniLayout(context: Context, views: RemoteViews, layout: MiniWidgetLayout) {
+        fun px(dp: Int) = (dp * context.resources.displayMetrics.density).roundToInt()
+        val outsideY = px(layout.verticalInset)
+        val outsideX = px(layout.horizontalInset)
+        val horizontal = outsideX + px(layout.horizontalPadding)
+        val vertical = outsideY + px(layout.verticalPadding)
+        val labelInset = px(layout.labelInset)
+        views.setViewPadding(R.id.widget_backdrop, outsideX, outsideY, outsideX, outsideY)
+        views.setViewPadding(R.id.widget_content, horizontal, vertical, horizontal, vertical)
+        views.setViewPadding(R.id.widget_task_section, 0, labelInset, 0, labelInset)
+    }
+
+    private fun applyTheme(context: Context, views: RemoteViews, size: WidgetSize, progress: Int?, mini: MiniWidgetLayout?) {
         val actions = ThemeActions(context, views)
         val dimensions = when (size) {
-            WidgetSize.MINI -> 180 to 80
+            WidgetSize.MINI -> (mini?.width ?: 180) to (mini?.cardHeight ?: 80)
             WidgetSize.COMPACT -> 180 to 180
             WidgetSize.WIDE -> 320 to 140
         }
