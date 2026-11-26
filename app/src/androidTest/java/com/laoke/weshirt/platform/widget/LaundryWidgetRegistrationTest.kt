@@ -3,9 +3,7 @@ package com.laoke.weshirt.platform.widget
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -52,7 +50,7 @@ class LaundryWidgetRegistrationTest {
     @Suppress("DEPRECATION")
     private fun assertMetadata(component: ComponentName, size: WidgetSize) {
         val receiver = context.packageManager.getReceiverInfo(component, PackageManager.GET_META_DATA)
-        assertFalse("Manual refresh receivers must stay private", receiver.exported)
+        assertFalse("Widget receivers must stay private", receiver.exported)
         assertTrue(receiver.loadLabel(context.packageManager).contains("${size.columns}×${size.rows}"))
         val parser = requireNotNull(receiver.loadXmlMetaData(context.packageManager, AppWidgetManager.META_DATA_APPWIDGET_PROVIDER))
         parser.use {
@@ -66,32 +64,6 @@ class LaundryWidgetRegistrationTest {
             val height = parser.getAttributeValue(namespace, "minHeight").removeSuffix("dip").removeSuffix("dp").toFloat()
             assertEquals(if (size.columns == 2) 150f else 250f, width, 0f)
             assertEquals(when (size) { WidgetSize.MINI -> 76f; WidgetSize.COMPACT -> 150f; WidgetSize.WIDE -> 120f }, height, 0f)
-        }
-    }
-
-    @Test fun eachRefreshTargetsAndAcceptsOnlyItsOwnInstalledWidget() {
-        LaundryWidgetRegistry.entries.forEachIndexed { index, entry ->
-            val provider = entry.create()
-            val id = 910 + index
-            val request = provider.refreshIntent(context, id)
-            assertEquals(ComponentName(context, entry.providerClass), request.component)
-            assertEquals("weshirt-widget://refresh/$id", request.dataString)
-            assertEquals(id, provider.acceptedRefreshId(context, request, intArrayOf(id)))
-            assertNull(provider.acceptedRefreshId(context, request, intArrayOf(id + 100)))
-            assertNull(provider.acceptedRefreshId(context, Intent(request).setComponent(null), intArrayOf(id)))
-            assertNull(provider.acceptedRefreshId(context, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(id)))
-            assertNull(provider.acceptedRefreshId(context, Intent(request).setData(Uri.parse("weshirt-widget://refresh/${id + 1}")), intArrayOf(id)))
-            assertNull(provider.acceptedRefreshId(context,
-                Intent(request).apply { removeExtra(AppWidgetManager.EXTRA_APPWIDGET_ID) }, intArrayOf(id)))
-            val pending = provider.refreshPendingIntent(context, id)
-            assertTrue(pending.isBroadcast)
-            if (Build.VERSION.SDK_INT >= 31) assertTrue(pending.isImmutable)
-            assertEquals(context.packageName, pending.creatorPackage)
-
-            LaundryWidgetRegistry.entries.filter { it.providerClass != entry.providerClass }.forEach { other ->
-                assertNull("Even a guessed installed ID cannot cross component boundaries",
-                    other.create().acceptedRefreshId(context, request, intArrayOf(id)))
-            }
         }
     }
 

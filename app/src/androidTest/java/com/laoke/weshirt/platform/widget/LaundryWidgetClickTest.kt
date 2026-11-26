@@ -9,12 +9,14 @@ import android.view.View
 import android.widget.TextView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.laoke.weshirt.R
 import com.laoke.weshirt.data.SecureSession
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +30,7 @@ class LaundryWidgetClickTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val app = instrumentation.targetContext.applicationContext
 
-    @Test fun eachInstalledRefreshIconStartsNetworkWorkAndFailureKeepsLastUpdateTime() {
+    @Test fun installedWidgetsShareAutomaticRefreshOnlyWhileAnActiveTaskExists() {
         val manager = AppWidgetManager.getInstance(app)
         val host = AppWidgetHost(app, 658)
         val worker = WorkManager.getInstance(app)
@@ -51,50 +53,56 @@ class LaundryWidgetClickTest {
                     .put("user", JSONObject().put("id", "refresh-user")))
                 val scope = requireNotNull(LaundryWidgetStore.captureScope(app))
                 val now = System.currentTimeMillis()
-                val snapshot = LaundryWidgetSnapshot("测试楼", 2, 0, 0, now - 120_000)
-                assertTrue(LaundryWidgetStore.update(app, snapshot, scope))
-
-                LaundryWidgetRegistry.entries.forEachIndexed { index, entry ->
+                val idle = LaundryWidgetSnapshot("测试楼", 2, 0, 0, now - 120_001)
+                assertTrue(LaundryWidgetStore.update(app, idle, scope))
+                val views = LaundryWidgetRegistry.entries.map { entry ->
                     val id = host.allocateAppWidgetId()
                     val component = ComponentName(app, entry.providerClass)
                     assertTrue(manager.bindAppWidgetIdIfAllowed(id, component))
                     val view = onMain { host.createView(app, id, requireNotNull(manager.getAppWidgetInfo(id))) }
-                    fun updateTime() = onMain { view.findViewById<TextView>(R.id.widget_updated)?.text?.toString() }
                     await("Widget did not receive the saved snapshot") {
-                        onMain { view.findViewById<View>(R.id.widget_root)?.contentDescription?.contains(snapshot.buildingName) == true }
+                        onMain { view.findViewById<View>(R.id.widget_root)?.contentDescription?.contains(idle.buildingName) == true }
                     }
-                    val previousTime = requireNotNull(updateTime())
-                    val previousError = LaundryWidgetStore.refreshError(app)
-                    val previousWork = worker.getWorkInfosForUniqueWork(LaundryWidgetRefresh.REFRESH_NAME).get(4, TimeUnit.SECONDS)
-                        .map { it.id }.toSet()
-                    onMain { assertTrue(view.findViewById<View>(R.id.widget_refresh).performClick()) }
-                    // The real worker must open a socket. Closing it without a TLS
-                    // response exercises the failure path without any external API.
-                    server.accept().use { socket ->
-                        socket.soTimeout = 4_000
-                        assertEquals(22, socket.getInputStream().read()) // TLS handshake record
-                        if (index == 0) {
-                            val duplicate = requireNotNull(LaundryWidgetRefresh.enqueue(app, id))
-                            duplicate.getResult().get(4, TimeUnit.SECONDS)
-                            val newJobs = worker.getWorkInfosForUniqueWork(LaundryWidgetRefresh.REFRESH_NAME).get(4, TimeUnit.SECONDS)
-                                .filter { it.id !in previousWork }
-                            assertEquals("Concurrent taps must share one job", 1, newJobs.size)
-                        }
-                    }
-                    await("Click did not finish the network refresh for ${entry.providerClass.simpleName}") {
-                        val work = worker.getWorkInfosForUniqueWork(LaundryWidgetRefresh.REFRESH_NAME).get(4, TimeUnit.SECONDS)
-                            .filter { it.id !in previousWork }
-                        val error = LaundryWidgetStore.refreshError(app)
-                        work.singleOrNull()?.state?.isFinished == true && error?.contains("HTTP 0") == true && error != previousError
-                    }
+                    view
+                }
+                fun jobs() = worker.getWorkInfosForUniqueWork(LaundryWidgetRefresh.REFRESH_NAME)
+                    .get(4, TimeUnit.SECONDS).filterNot { it.state.isFinished }
+                assertNull(LaundryWidgetRefresh.reconcile(app))
+                assertTrue("Idle widgets must not schedule a network job", jobs().isEmpty())
+                val snapshot = idle.copy(updatedAtMillis = now - 120_000, taskMachineName = "1号洗衣机",
+                    taskEstimatedFinishAtMillis = now + 600_000, taskStartedAtMillis = now - 600_000,
+                    taskId = "active-test-task")
+                assertTrue(LaundryWidgetStore.update(app, snapshot, scope))
+                // Exercise the same framework callback that fires when a launcher adds a widget.
+                val entry = LaundryWidgetRegistry.entries.first()
+                val installed = manager.getAppWidgetIds(ComponentName(app, entry.providerClass))
+                onMain { entry.create().onUpdate(app, manager, installed) }
+                server.accept().use { socket ->
+                    socket.soTimeout = 4_000
+                    assertEquals(22, socket.getInputStream().read())
+                    assertNull(LaundryWidgetRefresh.reconcile(app))
+                    val job = jobs().single()
+                    assertNotNull(job.periodicityInfo)
+                    assertEquals(TimeUnit.MINUTES.toMillis(15), job.periodicityInfo?.repeatIntervalMillis)
+                }
+                await("The periodic job did not persist the network failure") {
+                    jobs().singleOrNull()?.state == WorkInfo.State.ENQUEUED &&
+                        LaundryWidgetStore.refreshError(app)?.contains("HTTP 0") == true
+                }
+                views.forEach { view ->
                     await("Widget did not display the refresh failure") {
                         onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString() == app.getString(R.string.widget_refresh_failed) }
                     }
-                    assertNotEquals(previousError, LaundryWidgetStore.refreshError(app))
-                    assertEquals(snapshot.updatedAtMillis, LaundryWidgetStore.read(app)?.updatedAtMillis)
-                    assertEquals(previousTime, updateTime())
-                    // The next size is clicked immediately, inside the old 30s cooldown.
+                    onMain {
+                        assertNull(view.findViewById<View>(R.id.widget_refresh))
+                        assertNull(view.findViewById<View>(R.id.widget_updated))
+                    }
                 }
+                assertEquals(snapshot.updatedAtMillis, LaundryWidgetStore.read(app)?.updatedAtMillis)
+
+                assertTrue(LaundryWidgetStore.update(app, snapshot.copy(taskCompletionConfirmed = true), scope))
+                requireNotNull(LaundryWidgetRefresh.reconcile(app)).result.get(4, TimeUnit.SECONDS)
+                assertTrue("A confirmed completion must cancel periodic network work", jobs().isEmpty())
             }
         } finally {
             host.stopListening()

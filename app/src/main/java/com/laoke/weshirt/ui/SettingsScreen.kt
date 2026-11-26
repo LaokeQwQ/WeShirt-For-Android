@@ -27,12 +27,22 @@ import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.R
 import com.laoke.weshirt.data.*
+import com.laoke.weshirt.platform.update.AppUpdateViewModel
 import org.json.JSONObject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
-@Composable fun SettingsScreen(state: AppState, vm: AppViewModel, login: () -> Unit, requestNotifications: () -> Unit, building: () -> Unit, backgroundSettings: () -> Unit = {}) {
+@Composable internal fun SettingsScreen(
+    state: AppState,
+    vm: AppViewModel,
+    login: () -> Unit,
+    requestNotifications: () -> Unit,
+    building: () -> Unit,
+    backgroundSettings: () -> Unit = {},
+    appUpdates: AppUpdateViewModel? = null,
+    onInstallUpdate: () -> Unit = {},
+) {
     var nick by remember(state.profile?.nick) { mutableStateOf(state.profile?.nick.orEmpty()) }; var avatarMenu by remember { mutableStateOf(false) }
     var logout by remember { mutableStateOf(false) }; var reminderStart by remember(state.reminderStart) { mutableStateOf(state.reminderStart) }; var reminderEnd by remember(state.reminderEnd) { mutableStateOf(state.reminderEnd) }
     var admin by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
@@ -106,6 +116,7 @@ import java.io.ByteArrayOutputStream
         if (state.access.optBoolean("adminVisible")) item { SettingsCard("管理") {
             FilledTonalButton(onClick = { admin = true }, modifier = Modifier.fillMaxWidth()) { Text("管理员后台") }
         } }
+        if (appUpdates?.enabled == true) item { SettingsCard("应用更新") { AppUpdatePanel(appUpdates, onInstallUpdate) } }
         item { SettingsCard("关于 WeShirt") {
             Text("WeShirt v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
             Text("本程序的初衷只是为了方便作者自己洗衣服。若有帮到您，您的认可是对我最大的鼓励。如果可以的话，可以请我喝杯咖啡嘛。")

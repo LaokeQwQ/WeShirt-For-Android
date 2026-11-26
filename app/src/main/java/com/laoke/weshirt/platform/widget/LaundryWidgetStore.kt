@@ -25,6 +25,8 @@ data class LaundryWidgetSnapshot(
     val taskKind: String? = null,
     val taskUnverified: Boolean = false,
     val taskCompletionConfirmed: Boolean = false,
+    val taskRefreshUntilMillis: Long? = null,
+    val taskObservedAtMillis: Long? = null,
 )
 
 /** Runtime identity. Only its digest is persisted alongside the display snapshot. */
@@ -92,6 +94,11 @@ fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()
         taskKind = task?.kind,
         taskUnverified = !mayReadTasks || state.boardFromCache || state.boardWarning != null || state.tasksRefreshFailed || verifiedAt == null,
         taskCompletionConfirmed = task?.completionConfirmed == true,
+        taskRefreshUntilMillis = task?.takeUnless { it.completionConfirmed }?.let { pending ->
+            val reference = (pending.endAt ?: pending.startAt ?: pending.createdAt)?.minus(pending.clockOffsetMs)
+            WidgetRefreshPolicy.followUntil(verifiedAt, reference)
+        },
+        taskObservedAtMillis = verifiedAt.takeUnless { mayReadTasks && state.tasksRefreshFailed },
     )
 }
 
@@ -109,12 +116,33 @@ object LaundryWidgetStore {
     @Synchronized fun update(context: Context, snapshot: LaundryWidgetSnapshot,
         expectedScope: LaundryWidgetScope? = captureScope(context)): Boolean {
         if (expectedScope == null || captureScope(context) != expectedScope) return false
-        if (!acceptWidgetSnapshot(read(context), snapshot)) return false
-        val saved = encodeWidgetSnapshot(snapshot)
+        val previous = read(context)
+        val observed = snapshot.taskObservedAtMillis
+        val lastObserved = previous?.taskObservedAtMillis
+        if (observed != null && lastObserved != null && observed < lastObserved) return false
+        if (previous?.taskCompletionConfirmed == true && previous.taskId == snapshot.taskId &&
+            !snapshot.taskCompletionConfirmed) return false
+        val accepted = if (acceptWidgetSnapshot(previous, snapshot)) snapshot else {
+            // Room data can lag private task confirmation. Preserve its timestamp
+            // and counts when a subsequent task read confirms idle or pickup.
+            if (previous == null || observed == null || observed < (lastObserved ?: previous.updatedAtMillis) ||
+                (snapshot.taskId != null && !snapshot.taskCompletionConfirmed)) return false
+            snapshot.copy(buildingName = previous.buildingName, idle = previous.idle, busy = previous.busy,
+                unknown = previous.unknown, updatedAtMillis = previous.updatedAtMillis)
+        }
+        val saved = encodeWidgetSnapshot(accepted)
         val committed = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("scope", expectedScope.key).putString("snapshot", saved.toString()).remove("error").commit()
         if (committed) refresh(context)
         return committed
+    }
+
+    /** A late network response must not restore a task ended or replaced in the app. */
+    @Synchronized internal fun updateFromRefresh(context: Context, incoming: LaundryWidgetSnapshot,
+        expectedScope: LaundryWidgetScope, tracking: String): Boolean {
+        val previous = read(context) ?: return false
+        if (WidgetRefreshPolicy.activeTask(previous, System.currentTimeMillis()) != tracking) return false
+        return update(context, incoming, expectedScope)
     }
 
     @Synchronized internal fun read(context: Context): LaundryWidgetSnapshot? {
@@ -130,14 +158,15 @@ object LaundryWidgetStore {
         val old = read(context) ?: return true
         return update(context, old.copy(taskMachineName = null, taskEstimatedFinishAtMillis = null,
             taskStartedAtMillis = null, taskId = null, taskKind = null, taskUnverified = true,
-            taskCompletionConfirmed = false), expectedScope)
+            taskCompletionConfirmed = false, taskRefreshUntilMillis = null), expectedScope)
     }
 
     /** The caller supplies only a safe status/event description, never an API response body. */
-    @Synchronized fun setError(context: Context, error: String, expectedScope: LaundryWidgetScope?): Boolean {
+    @Synchronized fun setError(context: Context, error: String, expectedScope: LaundryWidgetScope?, tracking: String? = null): Boolean {
         if (expectedScope == null || captureScope(context) != expectedScope) return false
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val old = if (prefs.getString("scope", null) == expectedScope.key) read(context) else null
+        if (tracking != null && WidgetRefreshPolicy.activeTask(old, System.currentTimeMillis()) != tracking) return false
         val edit = prefs.edit().putString("scope", expectedScope.key)
             .putString("error", LaundryWidgetState.safeLabel(error))
         if (old == null) edit.remove("snapshot") else edit.putString("snapshot", encodeWidgetSnapshot(old.copy(taskUnverified = true)).toString())
@@ -173,6 +202,8 @@ internal fun encodeWidgetSnapshot(snapshot: LaundryWidgetSnapshot): JSONObject =
     .put("finish", snapshot.taskEstimatedFinishAtMillis).put("start", snapshot.taskStartedAtMillis)
     .put("task", snapshot.taskId?.take(128)).put("kind", snapshot.taskKind?.takeIf { it in setOf("washer", "dryer") })
     .put("unverified", snapshot.taskUnverified).put("confirmed", snapshot.taskCompletionConfirmed)
+    .put("refreshUntil", snapshot.taskRefreshUntilMillis)
+    .put("taskObservedAt", snapshot.taskObservedAtMillis)
 
 internal fun decodeWidgetSnapshot(value: JSONObject) = LaundryWidgetSnapshot(
     LaundryWidgetState.safeLabel(value.str("building")), value.optInt("idle").coerceAtLeast(0),
@@ -183,4 +214,6 @@ internal fun decodeWidgetSnapshot(value: JSONObject) = LaundryWidgetSnapshot(
     value.str("task").takeIf(String::isNotBlank)?.take(128),
     value.str("kind").takeIf { it in setOf("washer", "dryer") },
     value.optBoolean("unverified"), value.optBoolean("confirmed"),
+    value.optLong("refreshUntil").takeIf { it > 0 },
+    value.optLong("taskObservedAt").takeIf { it > 0 },
 )

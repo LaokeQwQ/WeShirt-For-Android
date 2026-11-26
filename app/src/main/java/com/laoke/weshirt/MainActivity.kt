@@ -17,6 +17,7 @@ import androidx.lifecycle.Lifecycle
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.login.*
 import com.laoke.weshirt.platform.NativeNavigation
+import com.laoke.weshirt.platform.update.AppUpdateViewModel
 import com.laoke.weshirt.ui.WeShirtApp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
@@ -27,6 +28,7 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
+    private val appUpdates: AppUpdateViewModel by viewModels()
     private var notificationRequest: Long? = null
     private var loginResumeFeedback: Job? = null
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -40,7 +42,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         consumeLogin(intent)
         consumeNavigation(intent)
-        setContent { WeShirtApp(vm, onLogin = ::login, onRequestNotifications = ::requestNotifications, onRequestBackground = ::requestBackground) }
+        setContent {
+            WeShirtApp(vm, onLogin = ::login, onRequestNotifications = ::requestNotifications,
+                onRequestBackground = ::requestBackground, appUpdates = appUpdates,
+                onInstallUpdate = { appUpdates.install(this) })
+        }
+    }
+    override fun onStart() {
+        super.onStart()
+        appUpdates.check(automatic = true)
     }
     override fun onSaveInstanceState(outState: Bundle) { notificationRequest?.let { outState.putLong("notificationRequest", it) }; super.onSaveInstanceState(outState) }
     private fun requestNotifications() {
