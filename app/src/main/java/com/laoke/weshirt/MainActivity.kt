@@ -14,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.login.*
 import com.laoke.weshirt.platform.NativeNavigation
@@ -24,6 +25,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -42,6 +46,18 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         consumeLogin(intent)
         consumeNavigation(intent)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                vm.state.map { state ->
+                    state.endpoint.takeIf { state.profile == null && state.authReady && !state.busy && state.tab in 1..4 }
+                }.distinctUntilChanged().collectLatest { origin ->
+                    // Prepare once while a signed-out page offers login. A tap
+                    // shares this exact request instead of starting another one.
+                    if (!origin.isNullOrBlank() && vm.session.read() == null)
+                        vm.loginPreparation.warm(origin)
+                }
+            }
+        }
         setContent {
             WeShirtApp(vm, onLogin = ::login, onRequestNotifications = ::requestNotifications,
                 onRequestBackground = ::requestBackground, appUpdates = appUpdates,
@@ -97,15 +113,28 @@ class MainActivity : ComponentActivity() {
     private fun login() {
         vm.mutate(null, allowRestoring = true, refreshAfter = false) {
             try {
-                vm.api.beginNativeLogin()
                 vm.clearFeedback()
-                val request = DingTalkLoginBridge.createRequest(this, vm.session.installationId)
-                check(getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().putString("origin", vm.api.baseUrl).commit()) { DingTalkLoginBridge.failureMessage("LOGIN_STORAGE_FAILED") }
-                val j = vm.api.call("/api/mobile/auth/challenge", "POST", JSONObject().put("installationId", request.installationId).put("state", request.state).put("codeChallenge", request.codeChallenge).put("platform", "android").put("packageName", "com.laoke.weshirt"), auth = false)
-                val provider = j.optJSONObject("provider") ?: JSONObject()
-                val result = DingTalkLoginBridge.begin(this, NativeLoginChallenge(j.str("challengeId"), j.str("state"), provider.str("clientId"), provider.str("redirectUri"), System.currentTimeMillis() + j.optLong("expiresIn", 300) * 1000, provider.str("scope", "openid")))
+                val origin = vm.api.baseUrl
+                // A restored old session is isolated before a cold challenge.
+                // Signed-out warm requests must finish before advancing the
+                // API generation, otherwise that advance cancels their result.
+                if (vm.session.read() != null) {
+                    vm.loginPreparation.discard()
+                    withContext(Dispatchers.IO) { vm.api.beginNativeLogin(origin) }
+                }
+                withContext(Dispatchers.IO) {
+                    if (!DingTalkLoginBridge.canPrepare(this@MainActivity)) {
+                        vm.loginPreparation.discard()
+                        DingTalkLoginBridge.clear(this@MainActivity)
+                    }
+                }
+                val prepared = vm.loginPreparation.obtain(origin)
+                check(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) { DingTalkLoginBridge.failureMessage("LOGIN_CALLBACK_PENDING") }
+                withContext(Dispatchers.IO) { vm.api.beginNativeLogin(origin) }
+                val result = DingTalkLoginBridge.begin(this, prepared.challenge)
                 if(result is LoginLaunchResult.Unavailable) { DingTalkLoginBridge.clear(this); vm.message(result.message) }
             } catch (problem: Exception) { DingTalkLoginBridge.clear(this); throw problem }
+            finally { vm.loginPreparation.discard() }
         }
     }
     private fun consumeLogin(intent: Intent?) {
@@ -113,6 +142,7 @@ class MainActivity : ComponentActivity() {
         val reply = try { DingTalkLoginBridge.consumeReply(this, intent) }
             catch (problem: IllegalStateException) { vm.message(problem.message ?: DingTalkLoginBridge.failureMessage("LOGIN_STORAGE_FAILED")); return }
             ?: return
+        vm.loginPreparation.discard()
         getSharedPreferences("native_login_origin", MODE_PRIVATE).edit().clear().commit()
         if(origin == null || origin != vm.api.baseUrl) { vm.message(DingTalkLoginBridge.failureMessage("LOGIN_ORIGIN_CHANGED", reply.eventId)); return }
         if(reply.authCode == null) { vm.message(DingTalkLoginBridge.failureMessage(reply.errorCode ?: "LOGIN_CALLBACK_FAILED", reply.eventId)); return }

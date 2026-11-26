@@ -68,7 +68,7 @@ class PlatformCoordinator(
             return if (enabled) "请在系统设置中允许 WeShirt 通知" else "通知已关闭"
         }
         if (session.read() == null) return "通知已开启，登录后接收洗衣与消息提醒"
-        lastState?.let(::synchronize)
+        lastState?.let { synchronize(it) }
         return if (route.provider == PushProvider.NONE) "本地提醒已开启，远程推送尚未配置" else "本地提醒已开启；远程推送正在登记"
     }
 
@@ -80,9 +80,9 @@ class PlatformCoordinator(
     }
 
     /** Runs after a successful board refresh. No extra network calls or polling timer. */
-    fun synchronize(state: AppState) {
+    fun synchronize(state: AppState, confirmedRemoval: Boolean = false) {
         if (session.read() == null) { clearLocal(); return }
-        if (!synchronizeWidget(state)) return
+        if (!synchronizeWidget(state, confirmedRemoval = confirmedRemoval)) return
         val profile = state.profile ?: return
         lastState = state
         if (!PushRuntime.isSessionActive(app)) PushRuntime.onSessionAvailable(app)
@@ -110,7 +110,7 @@ class PlatformCoordinator(
     }
 
     /** Publishing public room data must not arrange private reminders a second time. */
-    fun synchronizeWidget(state: AppState): Boolean {
+    fun synchronizeWidget(state: AppState, acknowledgedTaskId: String? = null, confirmedRemoval: Boolean = false): Boolean {
         val scope = LaundryWidgetStore.captureScope(app)
         if (scope == null) { LaundryWidgetStore.clear(app); return false }
         // A cached profile is display-only while the account is being restored.
@@ -122,8 +122,8 @@ class PlatformCoordinator(
             LaundryWidgetStore.redactTask(app, scope)
         if (state.building.isBlank()) LaundryWidgetStore.clear(app)
         else if (!mayViewTasks || state.tasksUpdatedAt != null) {
-            val widget = projectLaundryWidget(state)
-            if (widget != null && LaundryWidgetStore.update(app, widget, scope)) LaundryWidgetRefresh.scheduleTicks(app)
+            val widget = projectLaundryWidget(state, acknowledgedTaskId = acknowledgedTaskId)
+            if (widget != null && LaundryWidgetStore.update(app, widget, scope, confirmedRemoval)) LaundryWidgetRefresh.scheduleTicks(app)
         }
         LaundryWidgetRefresh.reconcile(app)
         return true

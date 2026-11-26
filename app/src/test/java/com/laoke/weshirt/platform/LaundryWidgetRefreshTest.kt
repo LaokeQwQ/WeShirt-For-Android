@@ -1,6 +1,8 @@
 package com.laoke.weshirt.platform.widget
 
 import com.laoke.weshirt.data.ApiException
+import com.laoke.weshirt.platform.push.PushEventKind
+import com.laoke.weshirt.platform.push.PushRuntime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.CompletableDeferred
@@ -97,6 +99,28 @@ class LaundryWidgetRefreshTest {
             .put(JSONObject().put("id", "foreign").put("userId", "two")))
         val state = readVerifiedWidgetState("one", { path, _ -> if (path == "/api/tasks") tasks else response(path) }, { true }, { now })
         assertEquals(listOf("mine"), state.tasks.map { it.id })
+    }
+
+    @Test fun registrationSignalHasNoNotificationCopyAndOnlyShowsTheVerifiedTask() = runTest {
+        val data = mapOf("eventId" to "registration-fixture", "revision" to "1", "kind" to "TASK_REGISTERED", "taskId" to "t_fixture")
+        assertEquals(PushEventKind.TASK_REGISTERED, PushRuntime.parseEvent(data)?.kind)
+        assertNull(PushRuntime.parseEvent(data - "taskId"))
+        assertNull(PushRuntime.parseEvent(data + ("kind" to "ANNOUNCEMENT")))
+        val tasks = JSONObject().put("serverNow", at).put("tasks", JSONArray().put(JSONObject()
+            .put("id", "t_fixture").put("userId", "one").put("machineId", "machine-one").put("machineName", "测试机器")
+            .put("startAt", at).put("endAt", Instant.ofEpochMilli(now + 600_000).toString())))
+        val state = readVerifiedWidgetState("one", { path, _ -> when (path) {
+            "/api/tasks" -> tasks
+            "/api/machines?dorm=guiyuan" -> throw ApiException(503, "fixture", "evt_fixture", "暂不可用")
+            else -> response(path)
+        } }, { true }, { now }, allowMissingBoard = true)
+        val snapshot = projectRegisteredWidgetTask(state, "t_fixture", now)
+        assertEquals("t_fixture", snapshot?.taskId)
+        assertEquals(now, snapshot?.taskAcknowledgedAtMillis)
+        assertEquals(WidgetTaskState.ESTIMATED, LaundryWidgetState.taskState(snapshot, now))
+        assertNull(projectRegisteredWidgetTask(state, "t_other", now))
+        assertNull(projectRegisteredWidgetTask(state.copy(tasks = state.tasks.map { it.copy(done = true) }), "t_fixture", now))
+        assertNull(projectRegisteredWidgetTask(state.copy(access = access(view = false)), "t_fixture", now))
     }
 
     @Test fun minuteRedrawChainIsBoundedAndCannotDeclareHardwareCompletion() {

@@ -16,6 +16,7 @@ import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.data.ApiClient
 import com.laoke.weshirt.data.ApiException
 import com.laoke.weshirt.data.AppState
+import com.laoke.weshirt.data.BoardSnapshot
 import com.laoke.weshirt.data.Building
 import com.laoke.weshirt.data.LaundryTask
 import com.laoke.weshirt.data.Profile
@@ -23,10 +24,13 @@ import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.SessionStore
 import com.laoke.weshirt.data.epoch
 import com.laoke.weshirt.data.objects
+import com.laoke.weshirt.data.optionalRefresh
 import com.laoke.weshirt.data.parseBoardSnapshot
 import com.laoke.weshirt.data.serviceEndpoint
 import com.laoke.weshirt.data.sameSessionCredentials
 import com.laoke.weshirt.data.str
+import com.laoke.weshirt.platform.push.EventRevisionLedger
+import com.laoke.weshirt.platform.push.widgetTaskIdPattern
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
@@ -75,6 +79,7 @@ internal suspend fun readVerifiedWidgetState(
     request: suspend (path: String, auth: Boolean) -> JSONObject,
     current: () -> Boolean,
     now: () -> Long = System::currentTimeMillis,
+    allowMissingBoard: Boolean = false,
 ): AppState {
     fun checkCurrent() { if (!current()) throw CancellationException("Widget account changed") }
     suspend fun read(path: String, auth: Boolean = true): JSONObject {
@@ -97,7 +102,12 @@ internal suspend fun readVerifiedWidgetState(
     if (!Regex("[a-z][a-z0-9_-]{0,63}").matches(building) || buildings.none { it.code == building })
         throw widgetProblem(409, "building_required", "请在应用内选择已启用的住宿楼")
     val (board, tasks) = coroutineScope {
-        val board = async { read("/api/machines?dorm=$building", false) }
+        val board = async {
+            val readBoard = { response: JSONObject -> parseBoardSnapshot(response, building) }
+            if (allowMissingBoard) optionalRefresh { readBoard(read("/api/machines?dorm=$building", false)) }
+                .getOrElse { BoardSnapshot(emptyList(), null) }
+            else readBoard(read("/api/machines?dorm=$building", false))
+        }
         val tasks = async {
             val started = now()
             val response = if (permissions.optJSONObject("tasks")?.optBoolean("view", true) != false) read("/api/tasks")
@@ -107,7 +117,7 @@ internal suspend fun readVerifiedWidgetState(
         board.await() to tasks.await()
     }
     checkCurrent()
-    val snapshot = parseBoardSnapshot(board, building)
+    val snapshot = board
     val (taskResponse, taskStartedAt, taskReceivedAt) = tasks
     val offset = epoch(taskResponse.str("serverNow"))?.minus(taskReceivedAt) ?: 0L
     val taskRows = taskResponse.optJSONArray("tasks")
@@ -145,7 +155,7 @@ internal object WidgetRefreshPolicy {
 
     fun activeTask(snapshot: LaundryWidgetSnapshot?, now: Long): String? {
         if (snapshot == null || snapshot.taskCompletionConfirmed || snapshot.taskMachineName.isNullOrBlank()) return null
-        val until = snapshot.taskRefreshUntilMillis ?: followUntil(snapshot.updatedAtMillis,
+        val until = snapshot.taskRefreshUntilMillis ?: followUntil(LaundryWidgetState.taskClock(snapshot),
             snapshot.taskEstimatedFinishAtMillis ?: snapshot.taskStartedAtMillis)
         return snapshot.taskId?.takeUnless(String::isBlank)?.takeIf { until != null && now < until }
     }
@@ -153,8 +163,9 @@ internal object WidgetRefreshPolicy {
     fun tickDelay(snapshot: LaundryWidgetSnapshot?, now: Long): Long? {
         snapshot ?: return null
         if (snapshot.taskMachineName.isNullOrBlank() || snapshot.taskEstimatedFinishAtMillis?.takeIf { it > 0 } == null || snapshot.taskUnverified || snapshot.taskCompletionConfirmed) return null
-        val age = now - snapshot.updatedAtMillis
-        if (snapshot.updatedAtMillis <= 0 || age < -30_000L || age >= FRESH_MILLIS) return null
+        val clock = LaundryWidgetState.taskClock(snapshot)
+        val age = now - clock
+        if (clock <= 0 || age < -30_000L || age >= FRESH_MILLIS) return null
         // A bounded chain redraws the existing estimate only; reaching zero is
         // awaiting platform confirmation, never a synthetic idle/completed state.
         return minOf(60_000L, FRESH_MILLIS - age.coerceAtLeast(0)).coerceAtLeast(1)
@@ -170,6 +181,7 @@ object LaundryWidgetRefresh {
     private const val PREFS = "laundry_widget_refresh_runtime"
     private const val LEGACY_REFRESH_NAME = "laundry_widget_refresh"
     private const val REFRESH_INTERVAL_MINUTES = 15L
+    private const val SIGNAL_RECEIPTS = "registration_signals"
     private var reconciled = false
     private var scheduledScope: String? = null
 
@@ -208,6 +220,39 @@ object LaundryWidgetRefresh {
         return operation
     }
 
+    /** Only a task registration event can wake an idle widget. Work rechecks its current account and task. */
+    @Synchronized internal fun onTaskRegistered(context: Context, eventId: String, revision: Long, taskId: String) {
+        if (!taskId.matches(widgetTaskIdPattern) || eventId.isBlank() || eventId.length > 160 || revision < 0) return
+        val app = context.applicationContext
+        if (installedIds(app).isEmpty()) return
+        val scope = LaundryWidgetStore.captureScope(app) ?: return
+        val current = LaundryWidgetStore.read(app)
+        if (current?.taskId == taskId) return
+        val receipt = "${scope.key}:$eventId"
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!registrationLedger(prefs.getString(SIGNAL_RECEIPTS, null)).shouldAccept(receipt, revision)) return
+        val request = OneTimeWorkRequestBuilder<LaundryWidgetRefreshWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setInputData(Data.Builder().putString("scope", scope.key).putLong("generation", generation(app))
+                .putString("registeredTask", taskId).putLong("receivedAt", System.currentTimeMillis()).build())
+            // Give eventually consistent task storage a moment to expose the confirmed write.
+            .setInitialDelay(2, TimeUnit.SECONDS)
+            .addTag(TAG).build()
+        val operation = WorkManager.getInstance(app).enqueueUniqueWork("laundry_widget_registration_${scope.key}_$taskId", ExistingWorkPolicy.KEEP, request)
+        operation.result.addListener({
+            if (runCatching { operation.result.get() }.isSuccess) synchronized(this) {
+                val ledger = registrationLedger(prefs.getString(SIGNAL_RECEIPTS, null))
+                ledger.record(receipt, revision)
+                prefs.edit().putString(SIGNAL_RECEIPTS, JSONObject(ledger.entries()).toString()).apply()
+            }
+        }, Runnable::run)
+    }
+
+    private fun registrationLedger(raw: String?) = EventRevisionLedger(64).also { ledger ->
+        val saved = raw?.let { runCatching { JSONObject(it) }.getOrNull() } ?: return@also
+        saved.keys().forEach { key -> ledger.record(key, saved.optLong(key, -1)) }
+    }
+
     fun scheduleTicks(context: Context) = scheduleTick(context.applicationContext, append = false)
     internal fun scheduleTick(context: Context, append: Boolean) {
         val scope = LaundryWidgetStore.captureScope(context) ?: return
@@ -239,13 +284,18 @@ object LaundryWidgetRefresh {
 class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     override suspend fun doWork(): Result {
         if (isStopped) return Result.success()
+        val registeredTask = inputData.getString("registeredTask")?.takeIf(widgetTaskIdPattern::matches)
+        val now = System.currentTimeMillis()
+        if (registeredTask != null && now - inputData.getLong("receivedAt", 0L) !in 0L until 10 * 60_000L) return Result.success()
         val scope = LaundryWidgetStore.captureScope(applicationContext)
-        val tracking = WidgetRefreshPolicy.activeTask(LaundryWidgetStore.read(applicationContext), System.currentTimeMillis())
-        if (scope == null || tracking == null || LaundryWidgetRefresh.installedIds(applicationContext).isEmpty()) {
+        val existing = LaundryWidgetStore.read(applicationContext)
+        val tracking = WidgetRefreshPolicy.activeTask(existing, now)
+        if (scope == null || (tracking == null && registeredTask == null) || LaundryWidgetRefresh.installedIds(applicationContext).isEmpty()) {
             LaundryWidgetStore.refresh(applicationContext)
             LaundryWidgetRefresh.reconcile(applicationContext)
             return Result.success()
         }
+        if (registeredTask != null && existing?.taskId == registeredTask) return Result.success()
         if (inputData.getString("scope") != scope.key) return Result.success()
         val generation = inputData.getLong("generation", -1L)
         if (generation != LaundryWidgetRefresh.generation(applicationContext)) return Result.success()
@@ -259,19 +309,28 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
         val api = ApiClient(bound, applicationContext.cacheDir, client).also { it.baseUrl = origin }
         fun currentSession() = !isStopped && LaundryWidgetRefresh.generation(applicationContext) == generation &&
             LaundryWidgetStore.captureScope(applicationContext) == scope && LaundryWidgetRefresh.origin(applicationContext) == origin
-        fun current() = currentSession() &&
-            WidgetRefreshPolicy.activeTask(LaundryWidgetStore.read(applicationContext), System.currentTimeMillis()) == tracking
+        fun current() = currentSession() && (registeredTask != null ||
+            WidgetRefreshPolicy.activeTask(LaundryWidgetStore.read(applicationContext), System.currentTimeMillis()) == tracking)
         try {
-            val state = withTimeout(45_000L) { readVerifiedWidgetState(scope.userId, { path, auth -> api.call(path, auth = auth) }, ::current) }
-            val snapshot = projectLaundryWidget(state, System.currentTimeMillis())
+            val state = withTimeout(45_000L) {
+                readVerifiedWidgetState(scope.userId, { path, auth -> api.call(path, auth = auth) }, ::current,
+                    allowMissingBoard = registeredTask != null)
+            }
+            val refreshedAt = System.currentTimeMillis()
+            val snapshot = if (registeredTask != null) projectRegisteredWidgetTask(state, registeredTask, refreshedAt)
+                ?: return Result.success()
+            else projectLaundryWidget(state, refreshedAt)
                 ?: throw widgetProblem(502, "widget_snapshot_missing", "暂无可显示的洗衣房状态，请重试")
             synchronized(LaundryWidgetRefresh) {
-                if (current() && LaundryWidgetStore.updateFromRefresh(applicationContext, snapshot, scope, tracking))
-                    LaundryWidgetRefresh.scheduleTicks(applicationContext)
+                if (current()) {
+                    val saved = if (registeredTask != null) LaundryWidgetStore.update(applicationContext, snapshot, scope)
+                    else tracking?.let { LaundryWidgetStore.updateFromRefresh(applicationContext, snapshot, scope, it) } == true
+                    if (saved) LaundryWidgetRefresh.scheduleTicks(applicationContext)
+                }
             }
         } catch (_: TimeoutCancellationException) {
             synchronized(LaundryWidgetRefresh) {
-                if (current()) LaundryWidgetStore.setError(applicationContext,
+                if (registeredTask == null && current()) LaundryWidgetStore.setError(applicationContext,
                     widgetRefreshError(widgetProblem(0, "widget_timeout", "刷新超时，请稍后重试")), scope, tracking)
             }
         } catch (cancel: CancellationException) {
@@ -281,7 +340,7 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
             return Result.success()
         } catch (error: Exception) {
             synchronized(LaundryWidgetRefresh) {
-                if (current()) {
+                if (registeredTask == null && current()) {
                     val safe = if (error is ApiException) error else widgetProblem(0, "widget_network", "暂时无法连接，请稍后重试")
                     LaundryWidgetStore.setError(applicationContext, widgetRefreshError(safe), scope, tracking)
                 }

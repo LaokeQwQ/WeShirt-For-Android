@@ -3,6 +3,7 @@ package com.laoke.weshirt.platform.widget
 import android.content.Context
 import com.laoke.weshirt.BuildConfig
 import com.laoke.weshirt.data.AppState
+import com.laoke.weshirt.data.LaundryTask
 import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.isArchived
 import com.laoke.weshirt.data.isExpired
@@ -27,7 +28,10 @@ data class LaundryWidgetSnapshot(
     val taskCompletionConfirmed: Boolean = false,
     val taskRefreshUntilMillis: Long? = null,
     val taskObservedAtMillis: Long? = null,
+    val taskAcknowledgedAtMillis: Long? = null,
 )
+
+internal const val TASK_REGISTRATION_VISIBILITY_MILLIS = 90_000L
 
 /** Runtime identity. Only its digest is persisted alongside the display snapshot. */
 data class LaundryWidgetScope internal constructor(val key: String, val origin: String, val userId: String) {
@@ -51,16 +55,24 @@ internal fun laundryWidgetScope(saved: JSONObject?): LaundryWidgetScope? {
     return LaundryWidgetScope(digest, origin, userId)
 }
 
+private fun LaundryTask.isWidgetTask(now: Long): Boolean {
+    val serverNow = now + clockOffsetMs
+    return !done && !isArchived(serverNow) && !isExpired(serverNow)
+}
+
+/** Treat a push as a nudge, never as authority to display a private task. */
+internal fun projectRegisteredWidgetTask(state: AppState, taskId: String, now: Long): LaundryWidgetSnapshot? {
+    if (state.tasks.none { it.id == taskId && it.isWidgetTask(now) }) return null
+    return projectLaundryWidget(state, now, taskId)?.takeIf { it.taskId != null && !it.taskUnverified }
+}
+
 /** Both foreground refresh and the background widget worker use this projection. */
-fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()): LaundryWidgetSnapshot? {
+fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis(), acknowledgedTaskId: String? = null): LaundryWidgetSnapshot? {
     val profile = state.profile ?: return null
     if (!state.authReady || profile.id.isBlank() || state.building.isBlank()) return null
     val permissions = state.access.optJSONObject("permissions") ?: return null
     val mayReadTasks = permissions.optJSONObject("tasks")?.optBoolean("view", true) != false
-    val tasks = if (mayReadTasks) state.tasks.filter {
-        val serverNow = now + it.clockOffsetMs
-        !it.done && !it.isArchived(serverNow) && !it.isExpired(serverNow)
-    } else emptyList()
+    val tasks = if (mayReadTasks) state.tasks.filter { it.isWidgetTask(now) } else emptyList()
     val running = tasks.filterNot { it.completionConfirmed }
     val task = running.filter { (it.endAt?.minus(it.clockOffsetMs) ?: Long.MIN_VALUE) > now }
         .minByOrNull { it.endAt!!.minus(it.clockOffsetMs) }
@@ -92,13 +104,14 @@ fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()
         taskStartedAtMillis = task?.startAt?.takeIf { it > 0 }?.minus(task.clockOffsetMs),
         taskId = task?.id,
         taskKind = task?.kind,
-        taskUnverified = !mayReadTasks || state.boardFromCache || state.boardWarning != null || state.tasksRefreshFailed || verifiedAt == null,
+        taskUnverified = !mayReadTasks || state.tasksRefreshFailed || verifiedAt == null,
         taskCompletionConfirmed = task?.completionConfirmed == true,
         taskRefreshUntilMillis = task?.takeUnless { it.completionConfirmed }?.let { pending ->
             val reference = (pending.endAt ?: pending.startAt ?: pending.createdAt)?.minus(pending.clockOffsetMs)
             WidgetRefreshPolicy.followUntil(verifiedAt, reference)
         },
         taskObservedAtMillis = verifiedAt.takeUnless { mayReadTasks && state.tasksRefreshFailed },
+        taskAcknowledgedAtMillis = now.takeIf { acknowledgedTaskId != null && task?.id == acknowledgedTaskId },
     )
 }
 
@@ -114,22 +127,27 @@ object LaundryWidgetStore {
 
     /** Capture scope before doing network work; a different login can never receive that work's result. */
     @Synchronized fun update(context: Context, snapshot: LaundryWidgetSnapshot,
-        expectedScope: LaundryWidgetScope? = captureScope(context)): Boolean {
+        expectedScope: LaundryWidgetScope? = captureScope(context), confirmedRemoval: Boolean = false): Boolean {
         if (expectedScope == null || captureScope(context) != expectedScope) return false
         val previous = read(context)
         val observed = snapshot.taskObservedAtMillis
         val lastObserved = previous?.taskObservedAtMillis
         if (observed != null && lastObserved != null && observed < lastObserved) return false
+        val acknowledged = previous?.taskAcknowledgedAtMillis
+        if (!confirmedRemoval && snapshot.taskId != previous?.taskId &&
+            snapshot.taskAcknowledgedAtMillis == null && acknowledged != null &&
+            System.currentTimeMillis() - acknowledged in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS) return false
         if (previous?.taskCompletionConfirmed == true && previous.taskId == snapshot.taskId &&
             !snapshot.taskCompletionConfirmed) return false
-        val accepted = if (acceptWidgetSnapshot(previous, snapshot)) snapshot else {
-            // Room data can lag private task confirmation. Preserve its timestamp
-            // and counts when a subsequent task read confirms idle or pickup.
-            if (previous == null || observed == null || observed < (lastObserved ?: previous.updatedAtMillis) ||
-                (snapshot.taskId != null && !snapshot.taskCompletionConfirmed)) return false
+        val projected = if (acceptWidgetSnapshot(previous, snapshot)) snapshot else {
+            // The private task clock can advance even when the public room is cached.
+            if (previous == null || observed == null || observed < (lastObserved ?: 0L)) return false
             snapshot.copy(buildingName = previous.buildingName, idle = previous.idle, busy = previous.busy,
                 unknown = previous.unknown, updatedAtMillis = previous.updatedAtMillis)
         }
+        val accepted = if (projected.taskId != null && projected.taskId == previous?.taskId &&
+            projected.taskAcknowledgedAtMillis == null && !projected.taskCompletionConfirmed)
+            projected.copy(taskAcknowledgedAtMillis = acknowledged) else projected
         val saved = encodeWidgetSnapshot(accepted)
         val committed = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("scope", expectedScope.key).putString("snapshot", saved.toString()).remove("error").commit()
@@ -158,7 +176,7 @@ object LaundryWidgetStore {
         val old = read(context) ?: return true
         return update(context, old.copy(taskMachineName = null, taskEstimatedFinishAtMillis = null,
             taskStartedAtMillis = null, taskId = null, taskKind = null, taskUnverified = true,
-            taskCompletionConfirmed = false, taskRefreshUntilMillis = null), expectedScope)
+            taskCompletionConfirmed = false, taskRefreshUntilMillis = null, taskAcknowledgedAtMillis = null), expectedScope, confirmedRemoval = true)
     }
 
     /** The caller supplies only a safe status/event description, never an API response body. */
@@ -204,6 +222,7 @@ internal fun encodeWidgetSnapshot(snapshot: LaundryWidgetSnapshot): JSONObject =
     .put("unverified", snapshot.taskUnverified).put("confirmed", snapshot.taskCompletionConfirmed)
     .put("refreshUntil", snapshot.taskRefreshUntilMillis)
     .put("taskObservedAt", snapshot.taskObservedAtMillis)
+    .put("taskAcknowledgedAt", snapshot.taskAcknowledgedAtMillis)
 
 internal fun decodeWidgetSnapshot(value: JSONObject) = LaundryWidgetSnapshot(
     LaundryWidgetState.safeLabel(value.str("building")), value.optInt("idle").coerceAtLeast(0),
@@ -216,4 +235,5 @@ internal fun decodeWidgetSnapshot(value: JSONObject) = LaundryWidgetSnapshot(
     value.optBoolean("unverified"), value.optBoolean("confirmed"),
     value.optLong("refreshUntil").takeIf { it > 0 },
     value.optLong("taskObservedAt").takeIf { it > 0 },
+    value.optLong("taskAcknowledgedAt").takeIf { it > 0 },
 )

@@ -15,6 +15,7 @@ import com.laoke.weshirt.R
 import com.laoke.weshirt.data.SecureSession
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -69,10 +70,14 @@ class LaundryWidgetClickTest {
                     .get(4, TimeUnit.SECONDS).filterNot { it.state.isFinished }
                 assertNull(LaundryWidgetRefresh.reconcile(app))
                 assertTrue("Idle widgets must not schedule a network job", jobs().isEmpty())
-                val snapshot = idle.copy(updatedAtMillis = now - 120_000, taskMachineName = "1号洗衣机",
+                val snapshot = idle.copy(updatedAtMillis = now - 1_800_000, taskMachineName = "1号洗衣机",
                     taskEstimatedFinishAtMillis = now + 600_000, taskStartedAtMillis = now - 600_000,
-                    taskId = "active-test-task")
+                    taskId = "active-test-task", taskObservedAtMillis = now, taskAcknowledgedAtMillis = now)
                 assertTrue(LaundryWidgetStore.update(app, snapshot, scope))
+                assertFalse(LaundryWidgetStore.update(app, idle.copy(taskObservedAtMillis = now + 1), scope))
+                val saved = requireNotNull(LaundryWidgetStore.read(app))
+                assertEquals(idle.updatedAtMillis, saved.updatedAtMillis)
+                assertEquals(WidgetTaskState.ESTIMATED, LaundryWidgetState.taskState(saved, System.currentTimeMillis()))
                 // Exercise the same framework callback that fires when a launcher adds a widget.
                 val entry = LaundryWidgetRegistry.entries.first()
                 val installed = manager.getAppWidgetIds(ComponentName(app, entry.providerClass))
@@ -98,7 +103,7 @@ class LaundryWidgetClickTest {
                         assertNull(view.findViewById<View>(R.id.widget_updated))
                     }
                 }
-                assertEquals(snapshot.updatedAtMillis, LaundryWidgetStore.read(app)?.updatedAtMillis)
+                assertEquals(idle.updatedAtMillis, LaundryWidgetStore.read(app)?.updatedAtMillis)
 
                 assertTrue(LaundryWidgetStore.update(app, snapshot.copy(taskCompletionConfirmed = true), scope))
                 requireNotNull(LaundryWidgetRefresh.reconcile(app)).result.get(4, TimeUnit.SECONDS)

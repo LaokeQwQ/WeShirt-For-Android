@@ -71,7 +71,16 @@ class LaundryWidgetProjectionTest {
         assertNull(LaundryWidgetState.remainingMinutes(failed, now)); assertNull(LaundryWidgetState.progressPercent(failed, now))
         assertFalse(LaundryWidgetState.isRunning(failed, now))
         assertTrue(projectLaundryWidget(state().copy(tasksUpdatedAt = null), now)!!.taskUnverified)
-        assertTrue(projectLaundryWidget(state().copy(boardFromCache = true), now)!!.taskUnverified)
+    }
+
+    @Test fun acknowledgedRegistrationUsesItsOwnClockWhenThePublicBoardIsStale() {
+        val registered = state().copy(updatedAt = now + offset - 1_800_000, tasksUpdatedAt = now,
+            boardFromCache = true, boardWarning = "public board unavailable")
+        val snapshot = projectLaundryWidget(registered, now, acknowledgedTaskId = task.id)!!
+        assertEquals(now - 1_800_000, snapshot.updatedAtMillis)
+        assertEquals(now, snapshot.taskAcknowledgedAtMillis)
+        assertEquals(WidgetTaskState.ESTIMATED, LaundryWidgetState.taskState(snapshot, now))
+        assertEquals(task.id, com.laoke.weshirt.platform.widget.WidgetRefreshPolicy.activeTask(snapshot, now))
     }
 
     @Test fun realStartIsRequiredForPercentageAndZeroDoesNotMeanFinished() {

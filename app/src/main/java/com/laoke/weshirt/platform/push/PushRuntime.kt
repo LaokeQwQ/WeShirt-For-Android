@@ -8,6 +8,7 @@ import com.google.firebase.messaging.RemoteMessage
 import com.laoke.weshirt.platform.login.DingTalkLoginBridge
 import com.laoke.weshirt.platform.notification.LaundryNotifications
 import com.laoke.weshirt.platform.notification.LaundryReminders
+import com.laoke.weshirt.platform.widget.LaundryWidgetRefresh
 import com.laoke.weshirt.platform.widget.LaundryWidgetStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
@@ -262,6 +263,10 @@ object PushRuntime {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!prefs.getBoolean("session", false) || !prefs.getBoolean("consent", false) || prefs.getString("provider", "") != provider.name) return
         val event = parseEvent(data) ?: return
+        if (event.kind == PushEventKind.TASK_REGISTERED) {
+            event.taskId?.let { LaundryWidgetRefresh.onTaskRegistered(context, event.eventId, event.revision, it) }
+            return
+        }
         if (event.kind == PushEventKind.TASK_FINISHED && event.taskId != null) LaundryReminders.confirmFinished(context, event.taskId)
         val notifications = LaundryNotifications(context)
         if (notifications.post(event) || notifications.wasHandled(event)) LaundryReminders.receivedRemotePhase(context, event)
