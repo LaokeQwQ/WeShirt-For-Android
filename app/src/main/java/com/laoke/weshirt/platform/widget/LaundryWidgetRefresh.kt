@@ -183,6 +183,7 @@ object LaundryWidgetRefresh {
         if (!reconciled) manager.cancelUniqueWork(LEGACY_REFRESH_NAME)
         val previousScope = scheduledScope
         val operation = if (scope == null) {
+            manager.cancelUniqueWork(TICK_NAME)
             manager.cancelUniqueWork(REFRESH_NAME)
         } else {
             val request = PeriodicWorkRequestBuilder<LaundryWidgetRefreshWorker>(REFRESH_INTERVAL_MINUTES, TimeUnit.MINUTES)
@@ -304,7 +305,8 @@ class LaundryWidgetTickWorker(context: Context, parameters: WorkerParameters) : 
         if (inputData.getString("scope") != scope.key || inputData.getLong("generation", -1L) != LaundryWidgetRefresh.generation(applicationContext) || LaundryWidgetRefresh.installedIds(applicationContext).isEmpty()) return Result.success()
         // Redraw never rewrites the snapshot timestamp or makes an API request.
         synchronized(LaundryWidgetRefresh) {
-            if (!isStopped && inputData.getLong("generation", -1L) == LaundryWidgetRefresh.generation(applicationContext)) {
+            if (!isStopped && inputData.getLong("generation", -1L) == LaundryWidgetRefresh.generation(applicationContext) &&
+                WidgetRefreshPolicy.activeTask(LaundryWidgetStore.read(applicationContext), System.currentTimeMillis()) != null) {
                 LaundryWidgetStore.refresh(applicationContext)
                 LaundryWidgetRefresh.scheduleTick(applicationContext, append = true)
             }

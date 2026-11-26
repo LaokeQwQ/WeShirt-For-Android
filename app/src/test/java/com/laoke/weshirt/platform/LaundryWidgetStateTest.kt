@@ -66,4 +66,13 @@ class LaundryWidgetStateTest {
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(empty.copy(taskUnverified = true), now))
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(empty.copy(updatedAtMillis = now - 700_000), now))
     }
+
+    @Test fun verifiedIdleAndCompletionStayVisibleWithoutBackgroundPolling() {
+        val finished = snapshot().copy(taskObservedAtMillis = now, taskCompletionConfirmed = true)
+        val idle = finished.copy(taskMachineName = null, taskCompletionConfirmed = false)
+        val later = now + 3_600_000
+        assertEquals(WidgetTaskState.READY_FOR_PICKUP, LaundryWidgetState.taskState(finished, later))
+        assertEquals(WidgetTaskState.NONE, LaundryWidgetState.taskState(idle, later))
+        assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(idle.copy(taskUnverified = true), later))
+    }
 }
