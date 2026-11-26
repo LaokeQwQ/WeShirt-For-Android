@@ -1,8 +1,6 @@
 package com.laoke.weshirt.platform
 
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -92,9 +90,7 @@ class LaundryWidgetRenderingTest {
             Case("missing-start", task(now).copy(taskStartedAtMillis = null), R.string.widget_expected_finish, null),
             Case("missing-finish", task(now).copy(taskEstimatedFinishAtMillis = null), R.string.widget_mini_unverified, null),
         )
-        val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
-        try {
-            instrumentation.runOnMainSync {
+        instrumentation.runOnMainSync {
                 for (locale in listOf(Locale.SIMPLIFIED_CHINESE, Locale.ENGLISH)) {
                     for (night in listOf(Configuration.UI_MODE_NIGHT_NO, Configuration.UI_MODE_NIGHT_YES)) {
                         for (font in listOf(1f, 1.4f)) {
@@ -111,7 +107,7 @@ class LaundryWidgetRenderingTest {
                                 val label = "2x1 at ${width}x$height, ${locale.language}, night $night, font $font, ${case.name}"
                                 captureView(view,
                                     "native-widget-2x1-${width}x$height-${locale.language}-${if (night == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"}-${if (font == 1.4f) "large-font" else "default-font"}-${case.name}")
-                                for (id in listOf(R.id.widget_machine, R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta, R.id.widget_refresh)) {
+                                for (id in listOf(R.id.widget_machine, R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta)) {
                                     val child = view.findViewById<View>(id)
                                     assertInside(view, child)
                                     assertTrue("Mini content must retain height ($label, id=$id)", child.height > 0)
@@ -133,26 +129,15 @@ class LaundryWidgetRenderingTest {
                                 assertTextInset(view, eta, label)
                                 val machine = rect(view, view.findViewById(R.id.widget_machine))
                                 val section = rect(view, view.findViewById(R.id.widget_task_section))
-                                val header = rect(view, view.findViewById(R.id.widget_header))
-                                val refresh = view.findViewById<View>(R.id.widget_refresh)
                                 assertTrue("Mini dial and task cannot overlap ($label)", machine.right <= section.left)
-                                assertTrue("Mini dial and metadata cannot overlap ($label)", machine.right <= header.left)
-                                assertTrue("Mini task must stay above update metadata ($label)", section.bottom <= header.top)
-                                val updateLabel = view.findViewById<TextView>(R.id.widget_updated)
-                                assertInside(view, updateLabel)
-                                assertReadable(updateLabel, label)
-                                assertTextInset(view, updateLabel, label)
-                                assertTrue("Mini update time must stay beside refresh ($label)", rect(view, updateLabel).right <= rect(view, refresh).left)
+                                assertNoRefreshControls(view)
+                                assertTrue("Mini task text should be vertically centered with the dial ($label)",
+                                    kotlin.math.abs((rect(view, title).top + rect(view, eta).bottom) / 2 - machine.centerY()) <= dp(context, 4))
                                 assertTrue("Mini task labels cannot overlap ($label)", rect(view, title).bottom <= rect(view, eta).top)
-                                assertTrue("Mini refresh must retain its click target ($label)", refresh.width >= dp(context, 28) && refresh.height >= dp(context, 28))
                                 assertEquals(View.GONE, view.findViewById<View>(R.id.widget_building).visibility)
                                 val description = view.contentDescription.toString()
                                 val building = case.snapshot?.buildingName ?: context.getString(R.string.widget_brand)
-                                val updated = case.snapshot?.let {
-                                    context.getString(R.string.widget_last_sync, SimpleDateFormat("HH:mm", locale).format(Date(it.updatedAtMillis)))
-                                } ?: context.getString(R.string.widget_update_unknown)
                                 assertTrue("Hidden mini building must remain accessible ($label)", description.contains(building))
-                                assertTrue("Hidden mini update time must remain accessible ($label)", description.contains(updated))
                                 case.snapshot?.taskMachineName?.let { fullName ->
                                     assertTrue("The full machine name remains accessible ($label)", description.contains(fullName))
                                 }
@@ -183,20 +168,7 @@ class LaundryWidgetRenderingTest {
                         }
                     }
                 }
-                val request = provider.refreshIntent(app, 905)
-                assertEquals(ComponentName(app, LaundryWidgetMiniProvider::class.java), request.component)
-                assertEquals(905, provider.acceptedRefreshId(app, request, intArrayOf(905)))
-                assertNull(provider.acceptedRefreshId(app, request, intArrayOf(906)))
-                assertNull(LaundryWidgetProvider().acceptedRefreshId(app, request, intArrayOf(905)))
-                val pending = provider.refreshPendingIntent(app, 905)
-                assertTrue(pending.isBroadcast)
-                if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(pending.isImmutable)
-                val view = provider.render(app, 905, task(now), WidgetSize.MINI, now).apply(app, FrameLayout(app))
-                assertTrue("Mini refresh remains independent from task navigation", view.findViewById<View>(R.id.widget_refresh).performClick())
-            }
-            instrumentation.waitForIdleSync()
-            assertEquals("Mini refresh must not launch the app", 0, monitor.hits)
-        } finally { instrumentation.removeMonitor(monitor) }
+        }
     }
 
     @Test fun responsiveTaskCardsApplyInBothThemesLanguagesAndLargeFontsWithoutCountSummary() {
@@ -229,34 +201,24 @@ class LaundryWidgetRenderingTest {
                                 assertEquals(context.getString(R.string.widget_expected_finish, SimpleDateFormat("HH:mm", locale).format(Date(now + 600_000))), view.findViewById<TextView>(R.id.widget_task_eta).text.toString())
                                 assertEquals(50, view.findViewById<ProgressBar>(R.id.widget_progress).progress)
                                 assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress_label).visibility)
-                                assertEquals(context.getString(R.string.widget_updated_compact, SimpleDateFormat("HH:mm", locale).format(Date(now))), view.findViewById<TextView>(R.id.widget_updated).text.toString())
+                                assertNoRefreshControls(view)
                                 assertFalse("A host countdown must never turn negative", containsChronometer(view))
                                 assertFalse("The widget describes the user's task, not an idle-machine count", allText(view).contains("台空闲"))
                                 assertFalse("The widget does not show a second usage summary", allText(view).contains("使用中") || allText(view).contains("Unknown") || allText(view).contains("未知"))
-                                val refresh = view.findViewById<View>(R.id.widget_refresh)
-                                val minimumTarget = when (size) {
-                                    WidgetSize.MINI -> 28
-                                    WidgetSize.COMPACT, WidgetSize.WIDE -> 32
-                                }
-                                assertTrue(refresh.width >= dp(context, minimumTarget))
-                                assertTrue(refresh.height >= dp(context, minimumTarget))
-                                for (id in listOf(R.id.widget_updated, R.id.widget_refresh, R.id.widget_task_section, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress)) {
+                                for (id in listOf(R.id.widget_task_section, R.id.widget_machine, R.id.widget_task, R.id.widget_task_eta, R.id.widget_progress)) {
                                     assertInside(view, view.findViewById(id))
                                 }
                                 assertEquals(View.GONE, view.findViewById<View>(R.id.widget_building).visibility)
-                                val updated = rect(view, view.findViewById(R.id.widget_updated))
-                                assertTrue("Update time must stay beside refresh", updated.right <= rect(view, refresh).left)
-                                for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
+                                for (id in listOf(R.id.widget_task, R.id.widget_task_eta)) {
                                     assertReadable(view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
                                     assertTextInset(view, view.findViewById(id), "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, font $font")
                                 }
-                                val header = rect(view, view.findViewById(R.id.widget_header))
                                 val section = rect(view, view.findViewById(R.id.widget_task_section))
                                 val machine = rect(view, view.findViewById(R.id.widget_machine))
                                 val title = rect(view, view.findViewById(R.id.widget_task))
                                 val eta = rect(view, view.findViewById(R.id.widget_task_eta))
                                 val progress = rect(view, view.findViewById(R.id.widget_progress))
-                                val measuredCase = "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, night $night, font $font; machine=$machine, section=$section, header=$header, title=$title, eta=$eta, progress=$progress"
+                                val measuredCase = "${size.columns}x${size.rows} at ${width}x$height, ${locale.language}, night $night, font $font; machine=$machine, section=$section, title=$title, eta=$eta, progress=$progress"
                                 assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
                                 val illustration = artworkBounds(view, view.findViewById(R.id.widget_machine_shell))
                                 val minimumArt = if (size == WidgetSize.COMPACT) {
@@ -265,21 +227,12 @@ class LaundryWidgetRenderingTest {
                                 assertTrue("The visible machine must remain prominent, artwork=$illustration ($measuredCase)",
                                     illustration.height() >= dp(context, minimumArt))
                                 if (size == WidgetSize.WIDE) {
-                                    assertTrue("The wide washer must stay to the left of the header and task ($measuredCase)",
-                                        machine.right <= minOf(header.left, section.left, title.left, eta.left, progress.left))
+                                    assertTrue("The wide washer must stay to the left of the task ($measuredCase)",
+                                        machine.right <= minOf(section.left, title.left, eta.left, progress.left))
                                     assertTrue("The wide washer must remain prominent ($measuredCase)",
                                         machine.width() >= dp(context, 72) && machine.height() >= dp(context, if (height == 120) 80 else 100))
-                                    assertTrue("The wide task text must stay below its own header ($measuredCase)", title.top >= header.bottom)
-                                } else {
-                                    // The refresh hit target extends into the illustration area, while its
-                                    // visible icon and update text sit above the centered machine.
-                                    val refreshBounds = rect(view, refresh)
-                                    val iconBottom = (refreshBounds.top + refresh.paddingTop +
-                                        minOf(refresh.width - refresh.paddingLeft - refresh.paddingRight,
-                                            refresh.height - refresh.paddingTop - refresh.paddingBottom))
-                                    assertTrue("The floating controls must not cover the washer artwork ($measuredCase)",
-                                        illustration.top >= maxOf(updated.bottom, iconBottom))
-                                    assertTrue("Task text must stay below the refresh target ($measuredCase)", title.top >= header.bottom)
+                                    assertTrue("The wide task information should be vertically centered ($measuredCase)",
+                                        kotlin.math.abs((title.top + progress.bottom) / 2 - machine.centerY()) <= dp(context, 2))
                                 }
                                 assertTrue("The machine name and remaining time cannot overlap ($measuredCase)", title.bottom <= eta.top)
                                 assertTrue("The remaining time must stay above progress ($measuredCase)", eta.bottom <= progress.top)
@@ -379,7 +332,7 @@ class LaundryWidgetRenderingTest {
         instrumentation.runOnMainSync {
             val signedIn = provider.render(app, 903, null, WidgetSize.WIDE, System.currentTimeMillis()).apply(app, FrameLayout(app))
             assertEquals(app.getString(R.string.widget_pending), signedIn.findViewById<TextView>(R.id.widget_task).text.toString())
-            assertEquals(app.getString(R.string.widget_tap_refresh), signedIn.findViewById<TextView>(R.id.widget_task_eta).text.toString())
+            assertEquals(app.getString(R.string.widget_waiting_for_sync), signedIn.findViewById<TextView>(R.id.widget_task_eta).text.toString())
         }
         assertTrue(LaundryWidgetStore.setError(app, "HTTP 503 · event_widget_fixture", scope))
         instrumentation.runOnMainSync {
@@ -398,7 +351,7 @@ class LaundryWidgetRenderingTest {
         }
     }
 
-    @Test fun attachedHostActuallyFlipsOnlyRunningDrumAndRefreshIsAnIndependentImmutableBroadcast() {
+    @Test fun attachedHostActuallyFlipsOnlyRunningDrum() {
         // CI disables animator duration globally. Opt this animation test in,
         // then restore the emulator's setting even when an assertion fails.
         val durationScale = shell("settings get global animator_duration_scale")
@@ -454,26 +407,10 @@ class LaundryWidgetRenderingTest {
                     scenario.onActivity { advanced = root.findViewById<ViewFlipper>(R.id.widget_drum_active).displayedChild != firstFrame }
                 }
                 assertTrue("The attached host must advance the drum on its own", advanced)
-                val monitor = instrumentation.addMonitor(MainActivity::class.java.name, null, false)
-                try {
-                    scenario.onActivity { activity ->
-                        val refresh = provider.refreshPendingIntent(activity, 902)
-                        assertTrue(refresh.isBroadcast)
-                        if (android.os.Build.VERSION.SDK_INT >= 31) assertTrue(refresh.isImmutable)
-                        assertEquals(activity.packageName, refresh.creatorPackage)
-                        assertTrue(root.findViewById<View>(R.id.widget_refresh).performClick())
-                        val request = provider.refreshIntent(activity, 902)
-                        assertEquals(902, provider.acceptedRefreshId(activity, request, intArrayOf(902)))
-                        assertNull(provider.acceptedRefreshId(activity, request, intArrayOf(903)))
-                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setComponent(null), intArrayOf(902)))
-                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setAction(Intent.ACTION_VIEW), intArrayOf(902)))
-                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(null), intArrayOf(902)))
-                        assertNull(provider.acceptedRefreshId(activity, Intent(request).setData(provider.refreshIntent(activity, 903).data), intArrayOf(902)))
-                        captureView(root, "native-widget-attached-running")
-                    }
-                    instrumentation.waitForIdleSync()
-                    assertEquals("The refresh button must not launch the app", 0, monitor.hits)
-                } finally { instrumentation.removeMonitor(monitor) }
+                scenario.onActivity {
+                    assertNoRefreshControls(root)
+                    captureView(root, "native-widget-attached-running")
+                }
                 scenario.onActivity { activity ->
                     provider.render(activity, 902, LaundryWidgetSnapshot("示例楼", 9, 0, 0, now), WidgetSize.WIDE, now).reapply(activity, root)
                     assertNull("Idle redraw detaches the timer rather than hiding a live flipper", root.findViewById<ViewFlipper>(R.id.widget_drum_active))
@@ -627,14 +564,12 @@ class LaundryWidgetRenderingTest {
         for (id in listOf(R.id.widget_task_section, R.id.widget_task, R.id.widget_task_eta)) assertInside(view, view.findViewById(id))
         val config = view.resources.configuration
         val case = "$size status at $width x $height, ${config.locales[0]}, font ${config.fontScale}, text=${view.findViewById<TextView>(R.id.widget_task).text} / ${view.findViewById<TextView>(R.id.widget_task_eta).text}"
-        for (id in listOf(R.id.widget_updated, R.id.widget_task, R.id.widget_task_eta)) {
+        for (id in listOf(R.id.widget_task, R.id.widget_task_eta)) {
             assertReadable(view.findViewById(id), case)
             assertTextInset(view, view.findViewById(id), case)
         }
-        val header = rect(view, view.findViewById(R.id.widget_header))
         val title = rect(view, view.findViewById(R.id.widget_task))
         val eta = rect(view, view.findViewById(R.id.widget_task_eta))
-        assertTrue("Status must remain below the header", title.top >= header.bottom)
         assertTrue("Status labels cannot overlap", eta.top >= title.bottom)
         val label = view.findViewById<TextView>(R.id.widget_progress_label)
         if (label.visibility == View.VISIBLE) {
@@ -642,6 +577,12 @@ class LaundryWidgetRenderingTest {
             assertReadable(label, "$size status progress")
             assertTrue("Status must remain above progress", eta.bottom <= rect(view, label).top)
         }
+    }
+    private fun assertNoRefreshControls(view: View) {
+        assertNull(view.findViewById<View>(R.id.widget_refresh))
+        assertNull(view.findViewById<View>(R.id.widget_updated))
+        assertFalse(view.contentDescription.toString().contains("更新于"))
+        assertFalse(view.contentDescription.toString().contains("Updated "))
     }
     private fun allText(view: View): String = when (view) {
         is TextView -> view.text.toString()

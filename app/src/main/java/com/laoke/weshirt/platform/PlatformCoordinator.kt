@@ -53,6 +53,7 @@ class PlatformCoordinator(
         PushRuntime.useInstallationId(app, session.installationId)
         configurePush()
         if (session.read() != null) PushRuntime.onSessionAvailable(app) else PushRuntime.clearLocalSession(app)
+        LaundryWidgetRefresh.reconcile(app)
     }
 
     private fun configurePush(): PushRoute = PushRuntime.initialize(app, configuration(app, session.read() != null), sink) { onPush() }
@@ -75,6 +76,7 @@ class PlatformCoordinator(
         clearLocal()
         configurePush()
         if (session.read() != null) PushRuntime.onSessionAvailable(app) else clearLocal()
+        LaundryWidgetRefresh.reconcile(app)
     }
 
     /** Runs after a successful board refresh. No extra network calls or polling timer. */
@@ -115,11 +117,15 @@ class PlatformCoordinator(
         // Keep the matching widget snapshot, without promoting it to fresh data.
         if (!state.authReady || state.profile == null || state.profile.id != scope.userId || state.endpoint.trimEnd('/') != scope.origin) return false
         // Home-screen widgets are an account feature, independent of notification consent.
-        if (state.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) == false)
+        val mayViewTasks = state.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) != false
+        if (!mayViewTasks)
             LaundryWidgetStore.redactTask(app, scope)
-        val widget = projectLaundryWidget(state)
-        if (widget != null && LaundryWidgetStore.update(app, widget, scope)) LaundryWidgetRefresh.scheduleTicks(app)
-        else if (state.building.isBlank()) LaundryWidgetStore.clear(app)
+        if (state.building.isBlank()) LaundryWidgetStore.clear(app)
+        else if (!mayViewTasks || state.tasksUpdatedAt != null) {
+            val widget = projectLaundryWidget(state)
+            if (widget != null && LaundryWidgetStore.update(app, widget, scope)) LaundryWidgetRefresh.scheduleTicks(app)
+        }
+        LaundryWidgetRefresh.reconcile(app)
         return true
     }
 

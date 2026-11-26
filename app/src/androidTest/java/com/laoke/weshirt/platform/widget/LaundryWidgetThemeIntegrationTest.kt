@@ -139,11 +139,9 @@ class LaundryWidgetThemeIntegrationTest {
 
     private fun assertTheme(view: View, colors: WidgetArtworkPalette) {
         assertEquals(colors.primaryText, view.findViewById<TextView>(R.id.widget_task).currentTextColor)
-        assertEquals(colors.secondaryText, view.findViewById<TextView>(R.id.widget_updated).currentTextColor)
         assertEquals(colors.secondaryText, view.findViewById<TextView>(R.id.widget_task_eta).currentTextColor)
         assertBitmap(LaundryWidgetArtwork.background(colors, 320, 140), bitmap(view, R.id.widget_backdrop))
         assertBitmap(LaundryWidgetArtwork.shell(colors), bitmap(view, R.id.widget_machine_shell))
-        assertBitmap(LaundryWidgetArtwork.refresh(colors), bitmap(view, R.id.widget_refresh))
         val flipper = view.findViewById<ViewFlipper>(R.id.widget_drum_active)
         assertNotNull(flipper)
         assertEquals(3, flipper.childCount)
@@ -171,7 +169,7 @@ class LaundryWidgetThemeIntegrationTest {
         val height = (heightDp * density + .5f).toInt()
         view.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY))
         view.layout(0, 0, width, height)
-        for (id in listOf(R.id.widget_task, R.id.widget_task_eta, R.id.widget_updated)) {
+        for (id in listOf(R.id.widget_task, R.id.widget_task_eta)) {
             val label = view.findViewById<TextView>(id)
             assertTrue(label.layout.height <= label.height - label.compoundPaddingTop - label.compoundPaddingBottom)
             for (line in 0 until label.layout.lineCount) assertEquals(0, label.layout.getEllipsisCount(line))

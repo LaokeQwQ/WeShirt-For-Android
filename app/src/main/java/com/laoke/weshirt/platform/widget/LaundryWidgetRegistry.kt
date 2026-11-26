@@ -28,7 +28,7 @@ internal object LaundryWidgetRegistry {
     fun refresh(context: Context, manager: AppWidgetManager = AppWidgetManager.getInstance(context)) {
         entries.forEach { entry ->
             val ids = manager.getAppWidgetIds(ComponentName(context, entry.providerClass))
-            if (ids.isNotEmpty()) entry.create().onUpdate(context, manager, ids)
+            if (ids.isNotEmpty()) entry.create().redraw(context, manager, ids)
         }
     }
 }

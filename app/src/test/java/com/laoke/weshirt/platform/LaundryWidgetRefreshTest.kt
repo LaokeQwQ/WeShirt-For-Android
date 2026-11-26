@@ -112,6 +112,28 @@ class LaundryWidgetRefreshTest {
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(snapshot, now + 600_001))
     }
 
+    @Test fun automaticNetworkRefreshRequiresAnUnfinishedRegistrationWithinItsFollowUpWindow() {
+        val active = LaundryWidgetSnapshot("测试楼", 2, 1, 0, now, "1号", now + 120_000, taskId = "pending")
+        assertEquals("pending", WidgetRefreshPolicy.activeTask(active, now))
+        assertEquals("pending", WidgetRefreshPolicy.activeTask(active, now + 180_000))
+        assertEquals("pending", WidgetRefreshPolicy.activeTask(active.copy(taskUnverified = true), now + 660_000))
+        assertNull(WidgetRefreshPolicy.activeTask(active, now + 3_600_000))
+        assertNull(WidgetRefreshPolicy.activeTask(active.copy(taskCompletionConfirmed = true), now))
+        assertNull(WidgetRefreshPolicy.activeTask(active.copy(taskId = null), now))
+        assertNull(WidgetRefreshPolicy.activeTask(active.copy(taskMachineName = null), now))
+        assertNull(WidgetRefreshPolicy.activeTask(active.copy(taskEstimatedFinishAtMillis = null), now))
+        assertEquals("pending", WidgetRefreshPolicy.activeTask(active.copy(
+            taskEstimatedFinishAtMillis = null, taskRefreshUntilMillis = now + 1_000), now))
+        assertNull(WidgetRefreshPolicy.activeTask(null, now))
+    }
+
+    @Test fun followUpStopsAfterAnHourFromTheLastConfirmationOrEstimatedEnd() {
+        assertEquals(now + 3_600_000, WidgetRefreshPolicy.followUntil(now, now + 60_000))
+        assertEquals(now + 3_540_000, WidgetRefreshPolicy.followUntil(now, now - 60_000))
+        assertNull(WidgetRefreshPolicy.followUntil(null, now))
+        assertNull(WidgetRefreshPolicy.followUntil(now, null))
+    }
+
     @Test fun persistedRefreshErrorKeepsStatusAndTraceWithoutProviderTextOrSecrets() {
         val error=ApiException(503,"unavailable","evt_012345678901234567890123","private response body ".repeat(30))
         val label=widgetRefreshError(error)

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -32,11 +33,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.*
+import com.laoke.weshirt.platform.update.AppUpdateViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@Composable fun WeShirtApp(vm: AppViewModel, onLogin: () -> Unit, onRequestNotifications: () -> Unit, onRequestBackground: () -> Unit = {}) {
+@Composable internal fun WeShirtApp(
+    vm: AppViewModel,
+    onLogin: () -> Unit,
+    onRequestNotifications: () -> Unit,
+    onRequestBackground: () -> Unit = {},
+    appUpdates: AppUpdateViewModel? = null,
+    onInstallUpdate: () -> Unit = {},
+) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val availableVersion = appUpdates?.takeIf { it.enabled }?.state?.collectAsStateWithLifecycle()?.value?.release?.versionCode
     val latest by rememberUpdatedState(state)
     WeShirtTheme(state.appearance, state.palette) {
         val snackbar = remember { SnackbarHostState() }
@@ -46,10 +56,18 @@ import kotlinx.coroutines.launch
         var backgroundSettings by remember { mutableStateOf(false) }
         var display by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
         var queueInbox by remember(state.endpoint, state.profile?.id) { mutableStateOf(false) }
+        var updateDialog by rememberSaveable { mutableStateOf(false) }
+        var offeredVersion by rememberSaveable { mutableStateOf<Long?>(null) }
         val seenQueueNotices = remember(state.endpoint, state.profile?.id) { mutableSetOf<String>() }
         LaunchedEffect(state.endpoint, state.profile?.id, state.building) { selected = null }
         LaunchedEffect(lifecycle) { lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while(true) { vm.refresh().join(); delay(30_000) } } }
         LaunchedEffect(state.error, state.info) { (state.error ?: state.info)?.let { snackbar.showSnackbar(it, withDismissAction = true); vm.clearFeedback() } }
+        LaunchedEffect(availableVersion, state.tab) {
+            if (availableVersion == null || offeredVersion == availableVersion || state.tab == 3) return@LaunchedEffect
+            val result = snackbar.showSnackbar("WeShirt 有新版本", "查看", withDismissAction = true, duration = SnackbarDuration.Long)
+            offeredVersion = availableVersion
+            if (result == SnackbarResult.ActionPerformed) updateDialog = true
+        }
         LaunchedEffect(state.endpoint, state.profile?.id, state.queueNotices) {
             val fresh = state.queueNotices.filter { it.optBoolean("active") && it.str("readAt").isBlank() && it.str("id") !in seenQueueNotices }
             fresh.forEach { seenQueueNotices.add(it.str("id")) }
@@ -77,7 +95,8 @@ import kotlinx.coroutines.launch
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
                         4 -> AssistantScreen(state, vm, onLogin)
-                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications, { buildingPicker = true }, { backgroundSettings = true })
+                        else -> SettingsScreen(state, vm, onLogin, onRequestNotifications,
+                            { buildingPicker = true }, { backgroundSettings = true }, appUpdates, onInstallUpdate)
                     }
                 }
             }
@@ -86,6 +105,11 @@ import kotlinx.coroutines.launch
         // its read-only details behind the private-feature gate.
         selected?.let { machine -> key(state.endpoint, state.profile?.id, state.building, machine.id) { MachineSheet(state.machines.find { it.id == machine.id } ?: machine, state, vm, { selected = null }, onLogin) } }
         if (display) DisplayScreen(state) { display = false }
+        if (updateDialog && appUpdates?.enabled == true) {
+            AlertDialog(onDismissRequest = { updateDialog = false }, title = { Text("应用更新") },
+                text = { AppUpdatePanel(appUpdates, onInstallUpdate) },
+                confirmButton = { TextButton(onClick = { updateDialog = false }) { Text("关闭") } })
+        }
         if (!state.authReady) return@WeShirtTheme
         if(buildingPicker) AlertDialog(onDismissRequest = { buildingPicker = false }, title = { Text("选择住宿楼") }, text = {
             Column { if(state.buildings.isEmpty()) Text("暂无可用楼栋，请稍后刷新")

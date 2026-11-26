@@ -1,16 +1,12 @@
 package com.laoke.weshirt.platform.widget
 
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
-import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.Icon
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.LruCache
@@ -26,35 +22,26 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
     internal open val widgetSize: WidgetSize = WidgetSize.WIDE
 
     override fun onUpdate(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
+        redraw(context, manager, appWidgetIds)
+        LaundryWidgetRefresh.scheduleTicks(context)
+        val operation = LaundryWidgetRefresh.reconcile(context) ?: return
+        val pending = goAsync()
+        operation.result.addListener({ pending?.finish() }, Runnable::run)
+    }
+
+    internal fun redraw(context: Context, manager: AppWidgetManager, appWidgetIds: IntArray) {
         LaundryWidgetTheme.observe(context)
         val snapshot = LaundryWidgetStore.read(context)
         for (id in appWidgetIds) {
             manager.updateAppWidget(id, render(context, id, snapshot, widgetSize, System.currentTimeMillis()))
         }
-        // A host redraw and a local minute tick never fetch account data.
-        if (appWidgetIds.isNotEmpty()) LaundryWidgetRefresh.scheduleTicks(context)
     }
 
-    override fun onEnabled(context: Context) { LaundryWidgetRefresh.scheduleTicks(context) }
     override fun onDisabled(context: Context) {
         if (LaundryWidgetRegistry.remainingIds(context).isEmpty()) LaundryWidgetRefresh.cancel(context)
     }
     override fun onDeleted(context: Context, appWidgetIds: IntArray) {
         if (LaundryWidgetRegistry.remainingIds(context, appWidgetIds).isEmpty()) LaundryWidgetRefresh.cancel(context)
-    }
-
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == ACTION_REFRESH) {
-            val installed = AppWidgetManager.getInstance(context)
-                .getAppWidgetIds(ComponentName(context, javaClass))
-            val id = acceptedRefreshId(context, intent, installed) ?: return
-            val queued = LaundryWidgetRefresh.enqueue(context, id) ?: return
-            // Keep the broadcast alive until WorkManager has persisted the job.
-            val pending = goAsync()
-            queued.getResult().addListener({ pending?.finish() }, Runnable::run)
-            return
-        }
-        super.onReceive(context, intent)
     }
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, appWidgetId: Int, newOptions: Bundle) {
@@ -77,10 +64,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val progress = LaundryWidgetState.progressPercent(snapshot, now)
         val building = snapshot?.buildingName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
             ?: context.getString(if (snapshot == null) R.string.widget_brand else R.string.widget_current_building)
-        val time = snapshot?.updatedAtMillis?.takeIf { freshness == WidgetFreshness.RECENT || freshness == WidgetFreshness.OUTDATED }
-            ?.let { widgetTime(context, it) }
-        val updated = if (time == null) context.getString(R.string.widget_update_unknown)
-            else context.getString(R.string.widget_last_sync, time)
         val machine = snapshot?.taskMachineName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
         val title = machine?.let { widgetTaskName(snapshot?.buildingName, it) } ?: context.getString(when {
             snapshot == null && !hasSession -> R.string.widget_sign_in
@@ -90,7 +73,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val taskStatus = when (taskState) {
             WidgetTaskState.NONE -> context.getString(when {
                 refreshError != null -> R.string.widget_refresh_failed
-                snapshot == null && hasSession -> R.string.widget_tap_refresh
+                snapshot == null && hasSession -> R.string.widget_waiting_for_sync
                 snapshot == null -> R.string.widget_sign_in_detail
                 else -> R.string.widget_no_task
             })
@@ -106,8 +89,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val task = NativeNavigation.pendingIntent(context, "MY_LAUNDRY", "widget:$id:task")
         views.setTextViewText(R.id.widget_building, building)
         views.setViewVisibility(R.id.widget_building, View.GONE)
-        views.setTextViewText(R.id.widget_updated, time?.let { context.getString(R.string.widget_updated_compact, it) }
-            ?: context.getString(R.string.widget_update_unknown))
         val visibleTitle = if (size != WidgetSize.MINI) title else when {
             machine != null -> title
             snapshot == null && !hasSession -> context.getString(R.string.widget_mini_sign_in)
@@ -123,13 +104,10 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.setTextViewText(R.id.widget_task_eta, visibleStatus)
         val accessibleProgress = context.getString(R.string.widget_progress_percent, progress ?: 0)
             .takeIf { progress != null } ?: context.getString(R.string.widget_progress_unknown)
-        views.setContentDescription(R.id.widget_root, "$building. $updated. $description. $accessibleProgress" + refreshError?.let { ". $it" }.orEmpty())
-        views.setContentDescription(R.id.widget_updated, if (freshness == WidgetFreshness.OUTDATED)
-            context.getString(R.string.widget_old_data, time) else updated)
+        views.setContentDescription(R.id.widget_root, "$building. $description. $accessibleProgress" + refreshError?.let { ". $it" }.orEmpty())
         views.setOnClickPendingIntent(R.id.widget_building, board)
         views.setOnClickPendingIntent(R.id.widget_root, if (machine == null) board else task)
         views.setOnClickPendingIntent(R.id.widget_task_section, task)
-        views.setOnClickPendingIntent(R.id.widget_refresh, refreshPendingIntent(context, id))
         views.setViewVisibility(R.id.widget_drum_static, if (running || size == WidgetSize.MINI) View.GONE else View.VISIBLE)
         // Remove the animated subtree on idle/stale redraws. A hidden auto-start
         // ViewFlipper would otherwise keep its timer alive in some launchers.
@@ -172,7 +150,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         WidgetTaskState.UNVERIFIED -> context.getString(R.string.widget_mini_unverified)
         WidgetTaskState.NONE -> context.getString(when {
             snapshot == null && !hasSession -> R.string.widget_mini_sign_in_detail
-            snapshot == null -> R.string.widget_mini_unverified
+            snapshot == null -> R.string.widget_waiting_for_sync
             else -> R.string.widget_mini_no_task
         })
     }
@@ -224,10 +202,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         }
         // Bitmaps and text colors override host-qualified resources, including an explicitly forced app theme.
         views.setInt(R.id.widget_root, "setBackgroundColor", Color.TRANSPARENT)
-        views.setInt(R.id.widget_refresh, "setBackgroundColor", Color.TRANSPARENT)
         actions.image(R.id.widget_backdrop, "background:${dimensions.first}:${dimensions.second}") { LaundryWidgetArtwork.background(it, dimensions.first, dimensions.second) }
-        val quietRefresh = size != WidgetSize.WIDE
-        actions.image(R.id.widget_refresh, "refresh:$quietRefresh") { LaundryWidgetArtwork.refresh(it, quietRefresh) }
         if (size == WidgetSize.MINI) {
             views.setViewVisibility(R.id.widget_machine_shell, View.GONE)
             actions.image(R.id.widget_machine_ring, "dial:$progress") { LaundryWidgetArtwork.dial(it, progress) }
@@ -236,7 +211,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
             actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
-        actions.text(R.id.widget_updated) { it.secondaryText }
         actions.text(R.id.widget_task) { it.primaryText }
         actions.text(R.id.widget_task_eta) { it.secondaryText }
         actions.text(R.id.widget_progress_label) { it.secondaryText }
@@ -248,24 +222,7 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         } else actions.image(R.id.widget_progress_track, "track:$progress") { LaundryWidgetArtwork.track(it, progress) }
     }
 
-    internal fun refreshPendingIntent(context: Context, id: Int): PendingIntent = PendingIntent.getBroadcast(
-        context, id, refreshIntent(context, id),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-
-    internal fun refreshIntent(context: Context, id: Int): Intent = Intent(context, javaClass).setAction(ACTION_REFRESH)
-            .setData(refreshUri(id))
-            .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
-
-    private fun refreshUri(id: Int) = Uri.parse("weshirt-widget://refresh/$id")
-
-    internal fun acceptedRefreshId(context: Context, intent: Intent, installed: IntArray): Int? {
-        if (intent.action != ACTION_REFRESH || intent.component != ComponentName(context, javaClass)) return null
-        val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
-        return id.takeIf { it in installed && it != AppWidgetManager.INVALID_APPWIDGET_ID && intent.data == refreshUri(it) }
-    }
-
     companion object {
-        internal const val ACTION_REFRESH = "com.laoke.weshirt.action.REFRESH_WIDGET"
         private data class ArtworkKey(val name: String, val palette: WidgetArtworkPalette)
         private val artwork = object : LruCache<ArtworkKey, Bitmap>(4 * 1024 * 1024) {
             override fun sizeOf(key: ArtworkKey, value: Bitmap) = value.allocationByteCount

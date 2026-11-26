@@ -21,7 +21,14 @@ internal object LaundryWidgetState {
 
     fun taskState(snapshot: LaundryWidgetSnapshot?, now: Long): WidgetTaskState {
         if (snapshot == null) return WidgetTaskState.NONE
-        if (snapshot.taskUnverified || freshness(snapshot, now) != WidgetFreshness.RECENT) return WidgetTaskState.UNVERIFIED
+        if (snapshot.taskUnverified) return WidgetTaskState.UNVERIFIED
+        // A verified terminal result has no timer to age out. Scheduled reads
+        // stop here, and the next registration supplies a new task snapshot.
+        if (snapshot.taskObservedAtMillis?.let { it > 0 && it <= now } == true) {
+            if (snapshot.taskMachineName.isNullOrBlank()) return WidgetTaskState.NONE
+            if (snapshot.taskCompletionConfirmed) return WidgetTaskState.READY_FOR_PICKUP
+        }
+        if (freshness(snapshot, now) != WidgetFreshness.RECENT) return WidgetTaskState.UNVERIFIED
         if (snapshot.taskMachineName.isNullOrBlank()) return WidgetTaskState.NONE
         if (snapshot.taskCompletionConfirmed) return WidgetTaskState.READY_FOR_PICKUP
         val finish = snapshot.taskEstimatedFinishAtMillis?.takeIf { it > 0L } ?: return WidgetTaskState.UNVERIFIED

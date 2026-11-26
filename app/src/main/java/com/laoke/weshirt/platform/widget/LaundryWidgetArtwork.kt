@@ -232,30 +232,6 @@ internal object LaundryWidgetArtwork {
         canvas.restore()
     }
 
-    fun refresh(palette: WidgetArtworkPalette, quiet: Boolean = false): Bitmap = bitmap(64, 64) { canvas, paint ->
-        if (!quiet) {
-            paint.color = alpha(palette.outline, if (palette.dark) 166 else 122)
-            canvas.drawCircle(32f, 32f, 30f, paint)
-        }
-        paint.color = if (quiet) palette.secondaryText else palette.primaryText
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 4.1f
-        paint.strokeCap = Paint.Cap.ROUND
-        canvas.drawArc(RectF(15f, 15f, 49f, 49f), 45f, 290f, false, paint)
-        paint.style = Paint.Style.FILL
-        val angle = Math.toRadians(335.0)
-        val endX = 32f + cos(angle).toFloat() * 17f
-        val endY = 32f + sin(angle).toFloat() * 17f
-        val tangentX = -sin(angle).toFloat()
-        val tangentY = cos(angle).toFloat()
-        canvas.drawPath(Path().apply {
-            moveTo(endX + tangentX * 5.5f, endY + tangentY * 5.5f)
-            lineTo(endX - tangentX * 4f - tangentY * 5f, endY - tangentY * 4f + tangentX * 5f)
-            lineTo(endX - tangentX * 4f + tangentY * 5f, endY - tangentY * 4f - tangentX * 5f)
-            close()
-        }, paint)
-    }
-
     /** Static form for idle, unverified and completed tasks. */
     fun dial(palette: WidgetArtworkPalette, progress: Int?): Bitmap = water(palette, progress, 0)
 
