@@ -157,16 +157,33 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 onSuccess = { registration = null }, onFailure = { registrationError = it })
         }
     }
-    confirm?.let { ask -> AlertDialog(onDismissRequest = { confirm = null }, title = { Text(if (ask.delete) "删除登记？" else "确认已取衣？") }, text = { Text(ask.task.name + if (ask.delete) "\n删除这条记录并释放登记占用，机器远端状态不会随登记删除改变。" else "\n请确认已经取走自己的衣物。确认后会结束这条登记并释放登记占用。") }, dismissButton = { TextButton(onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
-        TextButton(enabled = !busy, onClick = {
-            session.run(refresh = true) {
-                val currentTask = vm.state.value.tasks.find { it.id == ask.task.id } ?: throw IllegalStateException("登记状态已变化，请刷新后重试")
-                if (!ask.delete && currentTask.done) throw IllegalStateException("此登记已经确认取衣，请刷新查看")
-                request("/api/tasks/${vm.api.encoded(ask.task.id)}" + if (ask.delete) "" else "/take", if (ask.delete) "DELETE" else "POST")
-                confirm = null; vm.message(if (ask.delete) "登记已删除" else "已确认取衣")
-            }
-        }) { Text(if (ask.delete) "确认删除" else "已取走衣物") }
-    }) }
+    confirm?.let { ask ->
+        if (ask.delete) {
+            AlertDialog(onDismissRequest = { if (!session.busy) confirm = null }, title = { Text("删除登记？") }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("${ask.task.name}\n删除这条记录并释放登记占用，机器远端状态不会随登记删除改变。")
+                    FeatureError(session)
+                }
+            }, dismissButton = { TextButton(enabled = !session.busy, onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    session.run(refresh = true) {
+                        if (vm.state.value.tasks.none { it.id == ask.task.id }) throw IllegalStateException("登记状态已变化，请刷新后重试")
+                        request("/api/tasks/${vm.api.encoded(ask.task.id)}", "DELETE")
+                        confirm = null; vm.message("登记已删除")
+                    }
+                }) { Text(if (session.busy) "正在删除…" else "确认删除") }
+            })
+        } else key(ask.task.id) {
+            TaskTakeDialog(
+                title = "确认已取衣？",
+                detail = "${ask.task.name}\n请确认已经取走自己的衣物。确认后会结束这条登记并释放登记占用。",
+                cancelLabel = "取消",
+                confirmLabel = "已取走衣物",
+                busy = busy,
+                close = { confirm = null },
+            ) { succeeded, failed -> vm.take(ask.task.id, onSuccess = succeeded, onFailure = failed) }
+        }
+    }
     if (social || pickupTaskId != null) SocialDialog(state, vm, { social = false; pickupTaskId = null }, pickupTaskId)
     if (inspections) InspectionScreen(state, vm) { inspections = false }
     if (queueNotices) QueueNoticeDialog(state, vm) { queueNotices = false }

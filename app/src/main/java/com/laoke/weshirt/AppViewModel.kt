@@ -302,19 +302,23 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             val permissions = access.optJSONObject("permissions")
             val mayReadTasks = permissions?.optJSONObject("tasks")?.optBoolean("view", true) != false
             val mayReadQueue = target.isNotBlank() && permissions?.optJSONObject("queue")?.optBoolean("view", true) != false
-            val taskReadRevision = taskRegistrationRevision
+            val taskReadRevision = taskRevision
             val results = coroutineScope {
                 val tasks = async {
                     val result = optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) }
                     if (version == generation.get() && _state.value.authReady) {
                         if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
-                        else if (taskReadRevision == taskRegistrationRevision) {
+                        else if (taskReadRevision == taskRevision) {
                             result.onSuccess { response ->
                                 val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
                                 val items = response.optJSONArray("tasks")?.objects().orEmpty().map { row ->
                                     LaundryTask.parse(row).copy(clockOffsetMs = offset)
                                 }
-                                _state.update { it.copy(tasks = items, tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
+                                _state.update { state ->
+                                    val taken = state.tasks.asSequence().filter { it.done }.map { it.id }.toSet()
+                                    state.copy(tasks = items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
+                                        tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false)
+                                }
                             }.onFailure { _state.update { it.copy(tasksRefreshFailed = true) } }
                         }
                     }
@@ -400,7 +404,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         catch(e: CancellationException) { throw e } catch(e: Exception) { _state.update { it.copy(error = e.message ?: "操作未完成") } }
         finally { _state.update { it.copy(busy = false) }; mutationMutex.unlock() }
     }
-    private var taskRegistrationRevision = 0L
+    private var taskRevision = 0L
     fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
                  useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = viewModelScope.launch {
         val start = _state.value
@@ -426,7 +430,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             val task = response.optJSONObject("task")?.let(LaundryTask::parse)
                 ?.takeIf { it.id.isNotBlank() && it.machineId == machine.id }
             if (task != null && _state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) != false) {
-                taskRegistrationRevision++
+                taskRevision++
                 _state.update { now ->
                     val timed = task.copy(clockOffsetMs = now.tasks.firstOrNull()?.clockOffsetMs ?: latest.clockOffsetMs)
                     now.copy(tasks = listOf(timed) + now.tasks.filterNot { it.id == timed.id },
@@ -458,7 +462,62 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         message(mobileTestNotificationMessage(result))
     }
     fun queue(machine: Machine) = mutate("已加入队列；提醒以设备实际状态为准") { api.call("/api/queue", "POST", JSONObject().put("machineId", machine.id).put("dorm", _state.value.building).put("durationMin", if(machine.kind == "dryer") 60 else 30)) }
-    fun take(task: LaundryTask) = mutate("已确认取衣") { api.call("/api/tasks/${api.encoded(task.id)}/take", "POST") }
+    fun take(taskId: String, requireElapsed: Boolean = false, onSuccess: () -> Unit,
+             onFailure: (String) -> Unit): Job = viewModelScope.launch {
+        val initial = _state.value
+        val owner = initial.profile?.id ?: return@launch
+        val version = generation.get()
+        val fence = api.sessionFence()
+        fun currentAccount() = version == generation.get() && api.sessionFence() == fence &&
+            _state.value.let { it.profile?.id == owner && it.endpoint == initial.endpoint }
+        fun failure(status: Int, code: String, message: String) = ApiException(status, code, "client_${UUID.randomUUID()}", message)
+        if (!initial.authReady) {
+            onFailure(failure(409, "account_restoring", "账号正在恢复，请稍后确认取衣").message.orEmpty())
+            return@launch
+        }
+        if (!mutationMutex.tryLock()) {
+            onFailure(failure(409, "another_operation", "其他操作正在处理，请稍后确认取衣").message.orEmpty())
+            return@launch
+        }
+        _state.update { it.copy(busy = true) }
+        try {
+            if (_state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("operate", true) == false) {
+                throw failure(403, "forbidden", "当前账号没有取衣操作权限")
+            }
+            val task = _state.value.tasks.find { it.id == taskId }
+                ?: throw failure(409, "task_changed", "登记状态已变化，请刷新后重试")
+            if (!task.done) {
+                if (requireElapsed && !task.completionConfirmed &&
+                    task.endAt?.let { it <= System.currentTimeMillis() + task.clockOffsetMs } != true) {
+                    throw failure(409, "task_changed", "登记计时已变化，请先核对机器")
+                }
+                val response = api.call("/api/tasks/${api.encoded(taskId)}/take", "POST")
+                if (!currentAccount()) return@launch
+                val saved = response.optJSONObject("task")
+                if (!response.optBoolean("ok") || saved == null || saved.str("id") != taskId ||
+                    saved.str("machineId") != task.machineId || !saved.optBoolean("done")) {
+                    throw failure(502, "take_receipt_invalid", "暂未收到取衣确认，请刷新查看后重试")
+                }
+                // The write acknowledges completion before the public board or task list can catch up.
+                taskRevision++
+                _state.update { state -> state.copy(tasks = state.tasks.map {
+                    if (it.id == taskId) it.copy(done = true, takeState = "taken") else it
+                }, tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
+            }
+            message("已确认取衣")
+            onSuccess()
+            viewModelScope.launch {
+                if (currentAccount()) platform.synchronize(_state.value)
+            }
+            refresh(afterCurrent = true)
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) {
+            if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "确认取衣未完成，请重试"))
+        } finally {
+            _state.update { it.copy(busy = false) }
+            mutationMutex.unlock()
+        }
+    }
     fun cancelQueue(machineId: String) = mutate("已取消排队") { api.call("/api/queue?machineId=${api.encoded(machineId)}", "DELETE") }
     fun nick(value: String) = mutate { api.call("/api/user/profile", "POST", JSONObject().put("nick", value)) }
     fun randomNick(callback: (String) -> Unit) = mutate(null) { val j=api.call("/api/user/random?field=nick"); callback(j.str("nick", j.str("value"))) }
