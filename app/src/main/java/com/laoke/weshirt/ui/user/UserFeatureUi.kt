@@ -48,6 +48,17 @@ internal class UserFeatureSession(private val vm: AppViewModel, private val scop
         currentCoroutineContext().ensureActive()
         return response
     }
+    suspend fun streamAssistant(body: JSONObject, onReset: () -> Unit = {}, onDelta: (String) -> Unit): JSONObject {
+        current()
+        val result = vm.api.streamAssistant(body, onReset = {
+            withContext(Dispatchers.Main.immediate) { current(); currentCoroutineContext().ensureActive(); onReset() }
+        }) { delta ->
+            withContext(Dispatchers.Main.immediate) { current(); currentCoroutineContext().ensureActive(); onDelta(delta) }
+        }
+        current(); currentCoroutineContext().ensureActive()
+        return result
+    }
+    fun cancel() { job?.cancel() }
     fun run(refresh: Boolean = false, silent: Boolean = false, block: suspend UserFeatureSession.() -> Unit): Boolean {
         if (!active || busy) return false
         busy = true

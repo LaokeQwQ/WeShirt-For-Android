@@ -16,6 +16,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.AppState
 import com.laoke.weshirt.data.Machine
+import com.laoke.weshirt.data.HISTORICAL_BOARD_LOADING_MESSAGE
 import com.laoke.weshirt.room.RoomMachine
 import com.laoke.weshirt.room.RoomMachineState
 import org.junit.Assert.*
@@ -48,7 +49,8 @@ class RoomControlsLayoutTest {
                         var room by remember { mutableStateOf(true) }
                         var selected by remember { mutableStateOf<String?>(null) }
                         RoomViewModeSwitch(room, true, { room = true }, { room = false })
-                        RoomMachineShortcuts(slots, selected, false, {}, { chosen = it.id; selected = it.id }, {})
+                        RoomToolsToolbar(false, {}, {})
+                        RoomMachineShortcuts(slots, selected, { chosen = it.id; selected = it.id })
                     }
                 }
             }
@@ -71,6 +73,7 @@ class RoomControlsLayoutTest {
         val common = compose.onNodeWithTag("room-favorites").getUnclippedBoundsInRoot()
         val facility = compose.onNodeWithTag("room-facilities").getUnclippedBoundsInRoot()
         assertTrue("Common machines and information must not overlap", common.right <= facility.left || common.bottom <= facility.top)
+        assertTrue("Room tools stay above physical slot buttons", common.bottom <= compose.onNodeWithTag("room-slot:1").getUnclippedBoundsInRoot().top)
         saveScreenshot("native-narrow-shortcuts")
     }
 
@@ -125,6 +128,26 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("settings-sections").performScrollToNode(hasText("显示与性能"))
         compose.onNodeWithText("显示与性能").assertIsDisplayed()
         saveScreenshot("native-settings-performance")
+    }
+
+    @Test fun historicalBannerExistsOnlyForCacheAndClearsWhenFreshDataArrives() {
+        var cached by mutableStateOf(true)
+        var warning by mutableStateOf<String?>(HISTORICAL_BOARD_LOADING_MESSAGE)
+        compose.setContent { WeShirtTheme("light", "blue") {
+            Column(Modifier.width(320.dp)) { RoomDataNotice(cached, warning) }
+        } }
+        compose.onNodeWithTag("board-history-loading").assertIsDisplayed()
+        compose.onNodeWithText(HISTORICAL_BOARD_LOADING_MESSAGE).assertIsDisplayed()
+        compose.onNodeWithTag("board-freshness-warning").assertDoesNotExist()
+        compose.runOnIdle { cached = false; warning = null }
+        compose.onNodeWithTag("board-history-loading").assertDoesNotExist()
+        compose.onNodeWithTag("board-freshness-warning").assertDoesNotExist()
+        compose.runOnIdle { warning = "最近一次同步失败，请稍后重试" }
+        compose.onNodeWithTag("board-freshness-warning").assertIsDisplayed()
+        compose.onNodeWithTag("board-history-loading").assertDoesNotExist()
+        compose.runOnIdle { cached = true }
+        compose.onNodeWithTag("board-history-loading").assertIsDisplayed()
+        compose.onNodeWithTag("board-freshness-warning").assertIsDisplayed()
     }
 
     @Test fun shortLargeTextRoomRetainsActualSceneAndReachableShortcuts() {

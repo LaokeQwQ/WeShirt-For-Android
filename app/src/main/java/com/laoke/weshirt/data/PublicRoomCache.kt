@@ -5,6 +5,8 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
+const val HISTORICAL_BOARD_LOADING_MESSAGE = "正在显示历史数据,正在加载新数据中..."
+
 /** Public room previews contain no credentials, identities or private laundry records. */
 class PublicRoomCache(
     private val directory: File,
@@ -30,8 +32,7 @@ class PublicRoomCache(
             if (archived) machine.copy(state = "unknown", finishAt = null, suspectedUncollected = false, estimated = false) else machine
         }
         if (machines.any { it.id.isBlank() } || machines.map { it.id }.distinct().size != machines.size) return null
-        BoardSnapshot(machines, value.optLong("updatedAt").takeIf { !archived && it > 0 },
-            if (archived) "已打开上次的洗衣房，正在更新机器状态。" else "当前显示上次保存的公开状态，正在后台刷新，请以机器现场为准。")
+        BoardSnapshot(machines, value.optLong("updatedAt").takeIf { !archived && it > 0 }, HISTORICAL_BOARD_LOADING_MESSAGE)
     }.getOrNull()
     fun save(origin: String, building: String, board: BoardSnapshot) { runCatching {
         if (origin.isBlank() || building.isBlank()) return

@@ -16,7 +16,7 @@ class PublicRoomCacheTest {
             cache.save("https://room.invalid", "building-a", BoardSnapshot(listOf(machine), 50L))
             val preview = cache.read("https://room.invalid", "building-a")!!
             assertEquals("m1", preview.machines.single().id); assertEquals(50L, preview.updatedAt)
-            assertTrue(preview.warning!!.contains("上次")); assertEquals("", preview.machines.single().occupantId); assertEquals("", preview.machines.single().note)
+            assertEquals(HISTORICAL_BOARD_LOADING_MESSAGE, preview.warning); assertEquals("", preview.machines.single().occupantId); assertEquals("", preview.machines.single().note)
             assertFalse(directory.listFiles()!!.single().readText().contains("private fixture"))
             assertNull(cache.read("https://other.invalid", "building-a")); assertNull(cache.read("https://room.invalid", "building-b"))
             now += 86_400_000

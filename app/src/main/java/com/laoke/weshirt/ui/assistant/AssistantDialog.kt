@@ -82,6 +82,11 @@ private data class AssistantConfirmation(val title: String, val message: String,
     var importLink by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
     var shared by remember(session) { mutableStateOf<Pair<String, String>?>(null) }
     var confirmation by remember(session) { mutableStateOf<AssistantConfirmation?>(null) }
+    var streaming by remember(session) { mutableStateOf(false) }
+    var draftQuestion by remember(session) { mutableStateOf<String?>(null) }
+    var draftReply by remember(session) { mutableStateOf("") }
+    var streamInterrupted by remember(session) { mutableStateOf(false) }
+    val streamBuffer = remember(session) { StringBuilder() }
     val usage = status?.optJSONObject("usage")
     val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0
     val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 && input.isNotBlank() && input.length <= 1000 && !session.busy
@@ -137,7 +142,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, modifier = Modifier.testTag("assistant-tab:$index"), label = { Text(label) }) }
             }
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            LazyColumn(Modifier.fillMaxSize().testTag("assistant-conversation"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 item { FeatureError(session) }
                 item { AssistantPanelFeedback("status", panels["status"], "助手状态") { vm.preloadAssistant(force = true, names = setOf("status")) } }
                 status?.let { info -> item {
@@ -168,32 +173,59 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 }
                             }
                         }
-                        item {
+                        draftQuestion?.let { question ->
+                            item("stream-question") { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text("你 · 本次提问", style = MaterialTheme.typography.labelSmall); Text(question) }
+                            } }
+                            item("stream-answer") { Card(Modifier.fillMaxWidth().testTag("assistant-stream-answer"), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("洗衣助手", style = MaterialTheme.typography.labelSmall)
+                                    if (draftReply.isNotBlank()) NativeMarkdown(draftReply) else Text(if (streaming) "正在思考…" else "本次回答未完成")
+                                    Text(if (streamInterrupted) "回答已中断，以上内容尚未确认保存；可刷新聊天记录确认。" else "正在生成回答…", style = MaterialTheme.typography.bodySmall)
+                                    if (streaming) TextButton(onClick = {
+                                        session.cancel(); draftReply = streamBuffer.toString(); streaming = false; streamInterrupted = true
+                                        updated("status", acceptLocal = false)
+                                    }, modifier = Modifier.testTag("assistant-stop-stream")) { Text("停止生成") }
+                                    else if (draftReply.isNotBlank()) TextButton(onClick = { copyFeatureText(context, draftReply); vm.message("已复制部分回答") }) { Text("复制部分回答") }
+                                }
+                            } }
+                        }
+                        item("assistant-composer") {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(input, { input = it.take(1000) }, label = { Text("想问什么？") }, enabled = !session.busy, supportingText = { Text("${input.length}/1000") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 6)
+                                OutlinedTextField(input, { input = it.take(1000) }, label = { Text("想问什么？") }, enabled = !session.busy, supportingText = { Text("${input.length}/1000") }, modifier = Modifier.fillMaxWidth().testTag("assistant-chat-input"), minLines = 2, maxLines = 6)
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     TextButton(enabled = !session.busy && messages.isNotEmpty(), onClick = {
                                         confirmation = AssistantConfirmation("清空对话？", "会删除当前账号保存的聊天记录，个人记忆单独管理。") {
                                             session.run { request("/api/assistant/history", "DELETE"); messages = emptyList(); updated("history") }
                                         }
                                     }) { Text("清空对话") }
-                                    Button(enabled = canSend, onClick = {
+                                    Button(enabled = canSend, onClick = send@ {
+                                        if (session.busy) return@send
                                         val submitted = input.trim()
                                         val body = JSONObject().put("input", submitted)
+                                        val partial = streamBuffer.apply { clear() }
+                                        var renderedAt = 0L
+                                        draftQuestion = submitted; draftReply = ""; streamInterrupted = false; streaming = true
                                         session.run {
                                             try {
-                                                val data = request("/api/assistant/chat", "POST", body)
+                                                val data = streamAssistant(body, onReset = { partial.clear(); draftReply = ""; renderedAt = 0L }) { delta ->
+                                                    partial.append(delta)
+                                                    val now = android.os.SystemClock.elapsedRealtime()
+                                                    if (renderedAt == 0L || now - renderedAt >= 50) { draftReply = partial.toString(); renderedAt = now }
+                                                }
                                                 messages = data.optJSONArray("messages")?.objects().orEmpty(); contextInfo = data.optJSONObject("context")
                                                 status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
+                                                draftQuestion = null; draftReply = ""; streamInterrupted = false
                                                 updated("history", "status")
                                                 if (input.trim() == submitted) input = ""
                                             } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
+                                                draftReply = partial.toString(); streamInterrupted = true
                                                 // Reconcile spent quota after provider failure; keep the typed question intact.
                                                 updated("status", acceptLocal = false)
                                                 throw failure
-                                            }
+                                            } finally { streaming = false }
                                         }
-                                    }) { Text(if (session.busy) "请稍候…" else "发送") }
+                                    }, modifier = Modifier.testTag("assistant-chat-send")) { Text(if (streaming) "生成中…" else if (session.busy) "请稍候…" else "发送") }
                                 }
                             }
                         }

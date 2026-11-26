@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -71,14 +72,11 @@ import kotlinx.coroutines.delay
     val compact = roomHeight < 480.dp
     val compactScroll = rememberScrollState()
     Column(Modifier.fillMaxSize().let { if (showing3D && compact) it.verticalScroll(compactScroll) else it }, verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp)) {
-        state.boardWarning?.let { warning ->
-            Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("board-freshness-warning"), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
-                Text(warning, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
-            }
-        }
+        RoomDataNotice(state.boardFromCache, state.boardWarning)
         if(allow3D) RoomViewModeSwitch(showing3D, projection.hasBoundMachines,
             showRoom = { rendererUnavailable = false; threeD = true }, showList = { threeD = false })
         if(showing3D) {
+            RoomToolsToolbar(onlyFavorites, { onlyFavorites = !onlyFavorites }, { facility = RoomFacility.BOILER })
             Box(Modifier.fillMaxWidth().let { if (compact) it.height((roomHeight - 188.dp).coerceAtLeast(180.dp)) else it.weight(1f) }.padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).testTag("native-room-scene")) {
                 AndroidView(factory = { context -> LaundryRoomView(context).also { view ->
                     renderer = view
@@ -113,14 +111,11 @@ import kotlinx.coroutines.delay
             RoomMachineShortcuts(
                 machines = if (onlyFavorites) projection.machines.filter { it.id in state.favorites } else projection.machines,
                 selectedId = selectedMachineId,
-                onlyFavorites = onlyFavorites,
-                onFavorites = { onlyFavorites = !onlyFavorites },
                 onSelect = { target -> currentMachines.find { it.id == target.id }?.let { machine ->
                     selectedMachineId = machine.id
                     renderer?.focusMachine(machine.id)
                     onMachine(machine)
                 } },
-                onFacilities = { facility = RoomFacility.BOILER },
                 compact = compact
             )
             if (!compact) Text("拖动环视 · 双指缩放 · 双击全景", Modifier.padding(horizontal = 24.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -155,13 +150,50 @@ import kotlinx.coroutines.delay
             RoomFacility.DRYER_NOTICE -> listOf("衣物先脱水，再放进烘干机", "到时及时取出，避免回潮", "滤网有毛絮就清掉", "烘干中途开门，先等滚筒停稳")
         }
         AlertDialog(onDismissRequest = { facility = null }, title = { Text(when(selected) { RoomFacility.BOILER -> "开水机使用须知"; RoomFacility.WASHER_NOTICE -> "洗衣机使用须知"; RoomFacility.DRYER_NOTICE -> "烘干机使用须知" }) }, text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     RoomFacility.entries.forEach { option -> FilterChip(selected == option, { facility = option }, label = { Text(when(option) { RoomFacility.BOILER -> "开水机"; RoomFacility.WASHER_NOTICE -> "洗衣机"; RoomFacility.DRYER_NOTICE -> "烘干机" }, maxLines = 1) }) }
                 }
                 rules.forEachIndexed { index, line -> Text("${index + 1}. $line", style = MaterialTheme.typography.bodyMedium) }
             }
         }, confirmButton = { TextButton(onClick = { facility = null }) { Text("知道了") } })
+    }
+}
+
+/** Cache origin, rather than a slow upstream timestamp, owns the historical-data banner. */
+@Composable
+internal fun RoomDataNotice(boardFromCache: Boolean, warning: String?) {
+    if (boardFromCache) {
+        val dark = MaterialTheme.colorScheme.surface.luminance() < .35f
+        Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("board-history-loading"),
+            shape = RoundedCornerShape(12.dp), color = if (dark) Color(0xFF534119) else Color(0xFFFFE7A3),
+            contentColor = if (dark) Color(0xFFFFE7A3) else Color(0xFF534119)) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.History, null, Modifier.size(18.dp))
+                Text(HISTORICAL_BOARD_LOADING_MESSAGE, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+    if (!warning.isNullOrBlank() && warning != HISTORICAL_BOARD_LOADING_MESSAGE) {
+        Surface(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("board-freshness-warning"),
+            shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.errorContainer) {
+            Text(warning, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer,
+                style = MaterialTheme.typography.bodySmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+/** Room-wide tools sit above the scene, separate from the physical slot strip below it. */
+@Composable
+internal fun RoomToolsToolbar(onlyFavorites: Boolean, onFavorites: () -> Unit, onFacilities: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("room-tools"), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(onlyFavorites, onFavorites, label = { Text("常用机器", maxLines = 2) },
+            shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("room-favorites"),
+            leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
+        OutlinedButton(onClick = onFacilities, modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("room-facilities"),
+            shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
+            Icon(Icons.Outlined.Info, "设施须知", Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("设施信息", maxLines = 2)
+        }
     }
 }
 
@@ -180,18 +212,10 @@ internal fun RoomViewModeSwitch(showing3D: Boolean, roomAvailable: Boolean, show
 
 /** Mirrors the Web room's fixed physical slot order, rather than sorting buttons by changing availability. */
 @Composable
-internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: String?, onlyFavorites: Boolean, onFavorites: () -> Unit, onSelect: (RoomMachine) -> Unit, onFacilities: () -> Unit, compact: Boolean = false) {
+internal fun RoomMachineShortcuts(machines: List<RoomMachine>, selectedId: String?, onSelect: (RoomMachine) -> Unit, compact: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-        // Keep common machines out of the horizontally scrolling slot strip.
-        // FlowRow wraps at narrow widths and large font scales instead of squeezing its label.
-        FlowRow(Modifier.fillMaxWidth().padding(horizontal = 20.dp).testTag("room-shortcut-actions"),
-            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
-            itemVerticalAlignment = Alignment.CenterVertically) {
-            if (!compact) Text("机位快捷选择", style = MaterialTheme.typography.labelLarge)
-            FilterChip(onlyFavorites, onFavorites, label = { Text("常用机器", maxLines = 1) }, modifier = Modifier.heightIn(min = 48.dp).testTag("room-favorites"), leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
-            IconButton(onClick = onFacilities, modifier = Modifier.size(48.dp).testTag("room-facilities")) { Icon(Icons.Outlined.Info, "设施须知") }
-        }
-        LazyRow(Modifier.fillMaxWidth().testTag("room-machine-shortcuts"), contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!compact) Text("机位快捷选择", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyRow(Modifier.fillMaxWidth().testTag("room-machine-shortcuts"), contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(machines, key = { it.id }) { machine ->
                 val bound = !machine.id.startsWith("unbound:")
                 val status = when (machine.state) {
