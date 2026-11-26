@@ -104,7 +104,8 @@ fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()
         taskStartedAtMillis = task?.startAt?.takeIf { it > 0 }?.minus(task.clockOffsetMs),
         taskId = task?.id,
         taskKind = task?.kind,
-        taskUnverified = !mayReadTasks || state.tasksRefreshFailed || verifiedAt == null,
+        taskUnverified = !mayReadTasks || state.tasksRefreshFailed || verifiedAt == null ||
+            (acknowledgedTaskId == null && (state.boardFromCache || state.boardWarning != null)),
         taskCompletionConfirmed = task?.completionConfirmed == true,
         taskRefreshUntilMillis = task?.takeUnless { it.completionConfirmed }?.let { pending ->
             val reference = (pending.endAt ?: pending.startAt ?: pending.createdAt)?.minus(pending.clockOffsetMs)

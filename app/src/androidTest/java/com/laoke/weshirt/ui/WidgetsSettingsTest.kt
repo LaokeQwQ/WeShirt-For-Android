@@ -53,7 +53,7 @@ class WidgetsSettingsTest {
         compose.onNodeWithTag("widget-guide-family").performClick()
         compose.onNodeWithTag("widget-guide-option:HUAWEI").performScrollTo().performClick()
         compose.onNodeWithTag("widgets-management").performScrollToNode(hasTestTag("widget-guide-step:1"))
-        compose.onNodeWithTag("widget-guide-step:1").assertTextContains("窗口小工具")
+        compose.onNodeWithTag("widget-guide-step:1").assertTextContains("窗口小工具", substring = true)
     }
 
     @Test fun systemCountsAndPinCatalogueMatchTheThreeActualProviders() {

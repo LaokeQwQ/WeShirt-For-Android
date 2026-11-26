@@ -28,7 +28,9 @@ internal data class MiniWidgetLayout(
             val cardHeight = height - 2 * verticalInset
             val horizontalPadding = if (cardWidth < 145) 7 else 9
             val verticalPadding = if (cardHeight < 58) 4 else 7
-            val labelInset = ((cardHeight - 2 * verticalPadding - 49) / 2).coerceIn(0, 10)
+            // In a short cell, a full-height glyph can begin at the title row's
+            // boundary. Reserve its own inset without shrinking the dial.
+            val labelInset = ((cardHeight - 2 * verticalPadding - 49) / 2).coerceIn(4, 10)
             return MiniWidgetLayout(cardWidth, cardHeight, horizontalInset, verticalInset,
                 horizontalPadding, verticalPadding, labelInset)
         }

@@ -250,13 +250,15 @@ class LaundryWidgetRenderingTest {
         assertEquals(backdrop.paddingTop, backdrop.paddingBottom)
         if (name == "tall" || name == "legacy") assertTrue(backdrop.paddingTop >= dp(view.context, 10))
         if (name == "flat") assertTrue(backdrop.paddingLeft >= dp(view.context, 10))
+        val card = Rect(backdrop.paddingLeft, backdrop.paddingTop,
+            view.width - backdrop.paddingRight, view.height - backdrop.paddingBottom)
         val machine = rect(view, view.findViewById(R.id.widget_machine))
         val title = view.findViewById<TextView>(R.id.widget_task)
         val eta = view.findViewById<TextView>(R.id.widget_task_eta)
         for (text in listOf(title, eta)) {
             assertInside(view, text)
             assertReadable(text, label)
-            assertTextInset(view, text, label)
+            assertTextInset(view, text, label, card)
         }
         assertTrue("The dial stays to the left of both labels ($label)", machine.right <= rect(view, title).left)
         assertTrue("Labels must stay on separate rows ($label)", rect(view, title).bottom <= rect(view, eta).top)
@@ -598,7 +600,8 @@ class LaundryWidgetRenderingTest {
             assertEquals("$name must remain readable ($case)", 0, layout.getEllipsisCount(line))
         }
     }
-    private fun assertTextInset(root: View, label: TextView, case: String) {
+    private fun assertTextInset(root: View, label: TextView, case: String,
+        card: Rect = Rect(0, 0, root.width, root.height)) {
         val layout = requireNotNull(label.layout)
         val box = rect(root, label)
         val availableHeight = label.height - label.compoundPaddingTop - label.compoundPaddingBottom
@@ -612,8 +615,8 @@ class LaundryWidgetRenderingTest {
         val top = box.top + label.compoundPaddingTop + vertical
         val bottom = top + layout.height
         val safe = dp(root.context, 6)
-        assertTrue("Visible text must keep safe space from every rounded card edge ($case, text=${label.text}, glyph=[$left,$top,$right,$bottom], root=${root.width}x${root.height})",
-            left >= safe && top >= safe && right <= root.width - safe && bottom <= root.height - safe)
+        assertTrue("Visible text must keep safe space from every rounded card edge ($case, text=${label.text}, glyph=[$left,$top,$right,$bottom], card=$card)",
+            left >= card.left + safe && top >= card.top + safe && right <= card.right - safe && bottom <= card.bottom - safe)
     }
     private fun artworkBounds(root: View, image: ImageView): RectF {
         val drawable = requireNotNull(image.drawable)
