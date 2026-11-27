@@ -106,7 +106,7 @@ class SessionRecoveryIntegrationTest {
                 }
                 "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true},"tasks":{"view":$mayViewLaundry}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
-                "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else "{}"
+                "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else """{"tasks":[]}"""
                 "/api/tasks/washer-task/take" -> {
                     check(request.method == "POST" && withLaundryTask)
                     if (takeAttempts.incrementAndGet() == 1) {

@@ -172,6 +172,7 @@ class DingTalkCallbackTest {
                             assertEquals("Bearer fixture-access", httpRequest.header("Authorization"))
                             "{\"adminVisible\":true,\"permissions\":{\"tasks\":{\"view\":true,\"operate\":true}}}"
                         }
+                        "/api/tasks" -> """{"tasks":[]}"""
                         else -> "{}"
                     }
                     Response.Builder().request(httpRequest).protocol(Protocol.HTTP_1_1).code(200).message("OK")
