@@ -153,7 +153,9 @@ class MainActivity : ComponentActivity() {
             vm.api.beginNativeLogin(origin)
             val exchange = vm.api.sessionFence()
             vm.clearFeedback()
-            val j = vm.api.call("/api/mobile/auth/exchange", "POST", JSONObject().put("challengeId", reply.challengeId).put("state", reply.state).put("codeVerifier", reply.codeVerifier).put("authCode", reply.authCode), auth = false)
+            val j = try {
+                vm.api.call("/api/mobile/auth/exchange", "POST", JSONObject().put("challengeId", reply.challengeId).put("state", reply.state).put("codeVerifier", reply.codeVerifier).put("authCode", reply.authCode), auth = false)
+            } catch (problem: com.laoke.weshirt.data.ApiException) { throw nativeLoginExchangeFailure(problem) }
             withContext(Dispatchers.IO) { vm.api.saveSession(j, origin, exchange) }
             vm.platformSessionChanged()
         }

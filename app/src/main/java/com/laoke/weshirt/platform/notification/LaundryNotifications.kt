@@ -10,6 +10,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.Bundle
 import com.laoke.weshirt.R
@@ -21,19 +23,6 @@ import com.laoke.weshirt.platform.push.PushRuntime
 import com.laoke.weshirt.platform.push.TaskNoticeCoalescing
 import com.laoke.weshirt.platform.push.TaskNoticeReceipt
 import org.json.JSONObject
-
-data class TaskProgress(
-    val taskId: String,
-    val revision: Long,
-    val machineName: String,
-    val startedAtMillis: Long,
-    val estimatedFinishAtMillis: Long,
-    val active: Boolean = true,
-    /** Promotion requires the user's explicit choice to monitor this particular active task. */
-    val userRequestedTracking: Boolean = false,
-    /** Zero keeps the finish reminder while disabling the advance reminder. */
-    val leadMinutes: Int = 3,
-)
 
 data class NotificationCapabilities(val permissionGranted: Boolean, val notificationsEnabled: Boolean, val liveUpdatesAllowed: Boolean)
 
@@ -111,32 +100,49 @@ class LaundryNotifications(context: Context) {
         val previousRevision = prefs.getLong("progressRevision:${progress.taskId}", -1L)
         if (progress.revision < previousRevision) return false
         createChannels()
-        val now = System.currentTimeMillis()
-        val duration = (progress.estimatedFinishAtMillis - progress.startedAtMillis).coerceAtLeast(1)
-        val elapsed = (now - progress.startedAtMillis).coerceIn(0L, duration)
-        val expectedEnded = now >= progress.estimatedFinishAtMillis
-        val builder = Notification.Builder(app, PROGRESS_CHANNEL)
-            .setSmallIcon(R.drawable.notification_laundry)
-            .setContentTitle(progress.machineName.take(100))
-            .setContentText(if (expectedEnded) "即将完成，等待设备确认" else "正在洗衣 · 以最新平台时间为准")
-            .setOngoing(!expectedEnded).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
-            .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setProgress(if (progress.startedAtMillis > 0) 1000 else 0,
-                if (progress.startedAtMillis > 0) ((elapsed * 1000) / duration).toInt() else 0, progress.startedAtMillis <= 0)
-            .setContentIntent(NativeNavigation.pendingIntent(app, "MY_LAUNDRY", progress.taskId))
-            .setDeleteIntent(PendingIntent.getBroadcast(app, progress.taskId.hashCode(),
-                Intent(app, NotificationDismissReceiver::class.java).setAction("dismiss:${progress.taskId}")
-                    .putExtra("taskId", progress.taskId), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-        if (!expectedEnded) builder.setWhen(progress.estimatedFinishAtMillis).setUsesChronometer(true).setChronometerCountDown(true)
-        if (Build.VERSION.SDK_INT >= 36 && capability.liveUpdatesAllowed && progress.userRequestedTracking && !expectedEnded) {
-            // This is the same public extras contract used by NotificationCompat on API 36.
-            builder.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
-        }
+        if (manager.getNotificationChannel(PROGRESS_CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE) return false
+        val notification = buildProgressNotification(progress, capability, System.currentTimeMillis())
         try {
-            manager.notify(tag, 0, builder.build())
+            manager.notify(tag, 0, notification)
             prefs.edit().putLong("progressRevision:${progress.taskId}", progress.revision).apply()
             true
         } catch (_: SecurityException) { false }
+    }
+
+    internal fun buildProgressNotification(progress: TaskProgress, capability: NotificationCapabilities, now: Long): Notification {
+        val display = progress.presentation(now)
+        val open = NativeNavigation.pendingIntent(app, "MY_LAUNDRY", progress.taskId)
+        val dismiss = PendingIntent.getBroadcast(app, progress.taskId.hashCode(),
+            Intent(app, NotificationDismissReceiver::class.java).setAction("dismiss:${progress.taskId}")
+                .putExtra("taskId", progress.taskId), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val builder = Notification.Builder(app, PROGRESS_CHANNEL)
+            .setSmallIcon(R.drawable.notification_laundry)
+            .setContentTitle(display.title).setContentText(display.text).setSubText("预计进度")
+            .setOngoing(!display.expectedEnded && display.hasStarted).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(Notification.Builder(app, PROGRESS_CHANNEL).setSmallIcon(R.drawable.notification_laundry)
+                .setContentTitle("WeShirt").setContentText("解锁查看洗衣进度").build())
+            .setContentIntent(open).setDeleteIntent(dismiss)
+            .addAction(Notification.Action.Builder(null, "查看洗衣", open).build())
+            .addAction(Notification.Action.Builder(null, "隐藏进度", dismiss).build())
+        if (!display.expectedEnded) builder.setWhen(progress.estimatedFinishAtMillis).setShowWhen(true)
+            .setUsesChronometer(true).setChronometerCountDown(true)
+        else builder.setShowWhen(false)
+        if (Build.VERSION.SDK_INT >= 36) {
+            builder.setStyle(Notification.ProgressStyle()
+                .setProgressSegments(listOf(Notification.ProgressStyle.Segment(1000).setColor(Color.rgb(55, 124, 107))))
+                .setProgress(display.progress).setProgressIndeterminate(display.indeterminate)
+                .setProgressTrackerIcon(Icon.createWithResource(app, R.drawable.notification_laundry)))
+            // Short critical text overrides the system timer. Leave it null so the chip counts down
+            // while the app sleeps, instead of freezing a string such as "20 minutes" until refresh.
+            builder.setShortCriticalText(if (display.expectedEnded) "待确认" else null)
+        } else builder.setProgress(1000, display.progress, display.indeterminate)
+        if (Build.VERSION.SDK_INT >= 36 && capability.liveUpdatesAllowed && progress.userRequestedTracking &&
+            !display.expectedEnded && display.hasStarted) {
+            // This is the same public extras contract used by NotificationCompat on API 36.
+            builder.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
+        }
+        return builder.build()
     }
 
     fun cancelProgress(taskId: String) { manager.cancel("progress:$taskId", 0) }
@@ -173,5 +179,6 @@ class NotificationDismissReceiver : BroadcastReceiver() {
         val taskId = intent.getStringExtra("taskId")?.takeIf { it.isNotBlank() && it.length <= 160 } ?: return
         context.getSharedPreferences(LaundryNotifications.PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean("dismissed:$taskId", true).apply()
+        LaundryNotifications(context).cancelProgress(taskId)
     }
 }

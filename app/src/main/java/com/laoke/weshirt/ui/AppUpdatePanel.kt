@@ -8,6 +8,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -21,12 +22,15 @@ import kotlin.math.roundToInt
 internal fun AppUpdatePanel(updates: AppUpdateViewModel, install: () -> Unit) {
     val state by updates.state.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("当前版本 v${BuildConfig.VERSION_NAME}（构建 ${BuildConfig.VERSION_CODE}）",
+        Text("当前版本 v${BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.bodyMedium)
         val release = state.release
         if (release != null) {
-            Text("可更新至 v${release.versionName}（构建 ${release.versionCode}）",
+            Text("可更新至 v${release.versionName}${if (state.ignored) " · 已忽略" else ""}",
                 style = MaterialTheme.typography.bodyMedium)
+        }
+        if (release != null && !state.ignored && !state.checking && state.progress == null) {
+            TextButton(onClick = updates::ignoreCurrentRelease) { Text("忽略此版本") }
         }
         state.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         state.status?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }

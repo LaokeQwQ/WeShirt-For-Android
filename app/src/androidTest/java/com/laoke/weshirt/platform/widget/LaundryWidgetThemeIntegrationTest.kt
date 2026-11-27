@@ -11,7 +11,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.ProgressBar
 import android.widget.TextView
-import android.widget.ViewFlipper
 import androidx.compose.ui.graphics.toArgb
 import androidx.test.core.graphics.writeToTestStorage
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -142,18 +141,11 @@ class LaundryWidgetThemeIntegrationTest {
         assertEquals(colors.secondaryText, view.findViewById<TextView>(R.id.widget_task_eta).currentTextColor)
         assertBitmap(LaundryWidgetArtwork.background(colors, 320, 140), bitmap(view, R.id.widget_backdrop))
         assertBitmap(LaundryWidgetArtwork.shell(colors), bitmap(view, R.id.widget_machine_shell))
-        val flipper = view.findViewById<ViewFlipper>(R.id.widget_drum_active)
-        assertNotNull(flipper)
-        assertEquals(3, flipper.childCount)
-        for ((frame, id) in listOf(R.id.widget_drum_frame_0, R.id.widget_drum_frame_1, R.id.widget_drum_frame_2).withIndex()) {
-            assertBitmap(LaundryWidgetArtwork.drum(colors, frame), bitmap(view, id))
-        }
-        assertNull("Ordinary task cards must not install a water animation", view.findViewById<ViewFlipper>(R.id.widget_water_active))
-        assertNull("Ordinary task cards must not reserve space for a mini water ball", view.findViewById<View>(R.id.widget_water_holder))
+        assertBitmap(LaundryWidgetArtwork.drum(colors), bitmap(view, R.id.widget_drum_static))
+        assertNull("Ordinary task cards have no mini water ball", view.findViewById<View>(R.id.widget_machine_ring))
         if (Build.VERSION.SDK_INT >= 31) {
             assertEquals(colors.accent, view.findViewById<ProgressBar>(R.id.widget_progress).progressTintList?.defaultColor)
             assertEquals(colors.outline, view.findViewById<ProgressBar>(R.id.widget_progress).progressBackgroundTintList?.defaultColor)
-            assertEquals(colors.accent, view.findViewById<ProgressBar>(R.id.widget_activity).indeterminateTintList?.defaultColor)
             assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress_track).visibility)
         } else {
             assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress).visibility)

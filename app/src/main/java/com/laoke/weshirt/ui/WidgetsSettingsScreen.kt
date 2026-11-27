@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -111,19 +112,34 @@ internal class AndroidWidgetsManager(private val context: Context) {
     val family = WidgetDesktopFamily.entries.firstOrNull { it.name == familyName } ?: state.detected
     var chooseFamily by remember { mutableStateOf(false) }
     LazyColumn(modifier.fillMaxSize().testTag("widgets-management"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item {
-            Text("把洗衣进度放到桌面", style = MaterialTheme.typography.headlineSmall)
-            Text("添加后可直接查看本人的洗衣任务。外观跟随应用；取衣后自动更新。", style = MaterialTheme.typography.bodyMedium)
-        }
+        item { Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+            Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Widgets, null, Modifier.size(30.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("桌面上的洗衣进度", style = MaterialTheme.typography.titleLarge)
+                    Text("外观跟随应用，洗衣时自动更新。", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } }
         if (info != null) item { Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) { Text(info, Modifier.padding(14.dp).testTag("widget-management-feedback")) } }
         items(state.entries, key = { it.key }) { entry ->
-            Card(Modifier.fillMaxWidth().testTag("widget-size:${entry.columns}x${entry.rows}")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(entry.sizeLabel, style = MaterialTheme.typography.titleLarge)
-                    Text(entry.description)
-                    Text("已添加 ${entry.installed} 个", style = MaterialTheme.typography.labelLarge)
-                    Button(onClick = { onAdd(entry) }, enabled = state.pinSupported, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("widget-add:${entry.columns}x${entry.rows}")) {
-                        Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("添加到桌面")
+            OutlinedCard(Modifier.fillMaxWidth().testTag("widget-size:${entry.columns}x${entry.rows}"), shape = RoundedCornerShape(20.dp)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(width = 64.dp, height = 58.dp), contentAlignment = Alignment.Center) {
+                        Surface(Modifier.size(width = if (entry.columns == 4) 62.dp else 44.dp,
+                            height = if (entry.rows == 1) 25.dp else 44.dp), shape = RoundedCornerShape(9.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer) {
+                            Box(contentAlignment = Alignment.Center) { Icon(Icons.Outlined.LocalLaundryService, null, Modifier.size(18.dp)) }
+                        }
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(entry.sizeLabel, style = MaterialTheme.typography.titleMedium)
+                        Text(entry.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (entry.installed > 0) Text("已添加 ${entry.installed} 个", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    FilledTonalIconButton(onClick = { onAdd(entry) }, enabled = state.pinSupported,
+                        modifier = Modifier.size(48.dp).testTag("widget-add:${entry.columns}x${entry.rows}")) {
+                        Icon(Icons.Outlined.Add, "添加 ${entry.sizeLabel} 小组件")
                     }
                 }
             }

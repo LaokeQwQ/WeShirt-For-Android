@@ -46,7 +46,8 @@ import kotlinx.coroutines.launch
     onInstallUpdate: () -> Unit = {},
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val availableVersion = appUpdates?.takeIf { it.enabled }?.state?.collectAsStateWithLifecycle()?.value?.release?.versionCode
+    val availableVersion = appUpdates?.takeIf { it.enabled }?.state?.collectAsStateWithLifecycle()?.value
+        ?.takeUnless { it.ignored }?.release?.versionCode
     val latest by rememberUpdatedState(state)
     WeShirtTheme(state.appearance, state.palette) {
         val snackbar = remember { SnackbarHostState() }

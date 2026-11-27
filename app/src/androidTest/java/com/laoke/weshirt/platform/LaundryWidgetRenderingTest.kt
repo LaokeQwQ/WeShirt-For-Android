@@ -10,8 +10,6 @@ import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.drawable.Animatable
-import android.graphics.drawable.Drawable
-import android.graphics.drawable.LayerDrawable
 import android.os.Build
 import android.os.Bundle
 import android.util.SizeF
@@ -46,7 +44,7 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 
-/** Exercises actual RemoteViews actions, native layout measurement and attached host animation. */
+/** Exercises actual RemoteViews actions, native layout measurement and attached host redraws. */
 @RunWith(AndroidJUnit4::class)
 class LaundryWidgetRenderingTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -147,26 +145,16 @@ class LaundryWidgetRenderingTest {
                                 case.snapshot?.taskMachineName?.let { fullName ->
                                     assertTrue("The full machine name remains accessible ($label)", description.contains(fullName))
                                 }
-                                assertNull("The mini dial must not install a washer animation ($label)", view.findViewById<ViewFlipper>(R.id.widget_drum_active))
-                                val waterRunning = case.name in listOf("running", "ten-percent")
-                                assertWaterState(view, waterRunning, label)
-                                assertEquals(View.GONE, view.findViewById<View>(R.id.widget_drum_holder).visibility)
                                 val dial = view.findViewById<ImageView>(R.id.widget_machine_ring)
-                                assertEquals(if (waterRunning) View.GONE else View.VISIBLE, dial.visibility)
+                                assertEquals(View.VISIBLE, dial.visibility)
                                 assertNotNull("Mini cards must render their progress dial ($label)", dial.drawable)
-                                val visibleDial = if (waterRunning) view.findViewById<View>(R.id.widget_water_holder) else dial
-                                assertInside(view, visibleDial)
+                                assertInside(view, dial)
                                 val minimumDial = dp(context, if (width == 150) 40 else 50)
                                 assertTrue("Mini progress must be recognizable at each host size ($label)",
-                                    minOf(visibleDial.width, visibleDial.height) >= minimumDial)
-                                val progress = view.findViewById<ProgressBar>(R.id.widget_progress)
-                                assertEquals("The mini dial must not duplicate a determinate progress bar ($label)", View.GONE, progress.visibility)
-                                if (case.progress != null) assertEquals(case.progress, progress.progress)
-                                assertEquals(View.GONE, view.findViewById<View>(R.id.widget_progress_track).visibility)
-                                val activity = view.findViewById<View>(R.id.widget_activity)
-                                assertEquals("Mini activity supplies movement only when the running task has no estimate ($label)",
-                                    if (case.name == "missing-start") View.VISIBLE else View.GONE, activity.visibility)
-                                if (activity.visibility == View.VISIBLE) assertInside(view, activity)
+                                    minOf(dial.width, dial.height) >= minimumDial)
+                                assertNull("The mini dial must not duplicate a progress bar ($label)", view.findViewById<ProgressBar>(R.id.widget_progress))
+                                case.progress?.let { percent -> assertTrue(description.contains(context.getString(R.string.widget_progress_percent, percent))) }
+                                assertTrue("The launcher must not run a render loop ($label)", hasOnlyStaticArtwork(view))
                                 assertFalse("Mini cards must not use a host countdown ($label)", containsChronometer(view))
                                 assertFalse("Mini cards cannot show a zero or negative estimate ($label)",
                                     eta.text.toString().contains("0 分钟") || eta.text.toString().contains("0 min") || eta.text.toString().contains("-1"))
@@ -264,7 +252,7 @@ class LaundryWidgetRenderingTest {
         assertTrue("Labels must stay on separate rows ($label)", rect(view, title).bottom <= rect(view, eta).top)
         assertTrue("The dial must remain readable ($label)", minOf(machine.width(), machine.height()) >= dp(view.context, 34))
         assertNoRefreshControls(view)
-        assertWaterState(view, true, label)
+        assertNotNull("The mini dial must remain visible ($label)", view.findViewById<ImageView>(R.id.widget_machine_ring).drawable)
     }
 
     @Test fun responsiveTaskCardsApplyInBothThemesLanguagesAndLargeFontsWithoutCountSummary() {
@@ -391,14 +379,13 @@ class LaundryWidgetRenderingTest {
             for (size in fullCardSizes) {
                 val idle = provider.render(app, 901, LaundryWidgetSnapshot("示例楼", 9, 0, 0, now), size, now).apply(app, FrameLayout(app))
                 assertEquals(app.getString(R.string.widget_idle), idle.findViewById<TextView>(R.id.widget_task).text.toString())
-                assertNull(idle.findViewById<ViewFlipper>(R.id.widget_drum_active))
-                assertEquals(View.GONE, idle.findViewById<View>(R.id.widget_activity).visibility)
+                assertTrue(hasOnlyStaticArtwork(idle))
                 assertEquals(View.GONE, idle.findViewById<View>(R.id.widget_progress_label).visibility)
                 val expired = task(now).copy(taskEstimatedFinishAtMillis = now)
                 for (offset in listOf(0L, 60_000L)) {
                     val view = provider.render(app, 901, expired, size, now + offset).apply(app, FrameLayout(app))
                     assertEquals(app.getString(R.string.widget_awaiting), view.findViewById<TextView>(R.id.widget_task_eta).text.toString())
-                    assertNull(view.findViewById<ViewFlipper>(R.id.widget_drum_active))
+                    assertTrue(hasOnlyStaticArtwork(view))
                     assertFalse(allText(view).contains("0 分钟") || allText(view).contains("0 min") || allText(view).contains("-1"))
                 }
                 val confirmed = provider.render(app, 901, expired.copy(taskCompletionConfirmed = true), size, now).apply(app, FrameLayout(app))
@@ -406,7 +393,7 @@ class LaundryWidgetRenderingTest {
                 assertEquals(100, confirmed.findViewById<ProgressBar>(R.id.widget_progress).progress)
                 val stale = provider.render(app, 901, task(now).copy(updatedAtMillis = now - 600_001), size, now).apply(app, FrameLayout(app))
                 assertEquals(app.getString(R.string.widget_unverified), stale.findViewById<TextView>(R.id.widget_task_eta).text.toString())
-                assertNull(stale.findViewById<ViewFlipper>(R.id.widget_drum_active))
+                assertTrue(hasOnlyStaticArtwork(stale))
                 assertEquals(View.GONE, stale.findViewById<View>(R.id.widget_progress).visibility)
                 val missingStart = provider.render(app, 901, task(now).copy(taskStartedAtMillis = null), size, now).apply(app, FrameLayout(app))
                 assertEquals(View.GONE, missingStart.findViewById<View>(R.id.widget_progress).visibility)
@@ -447,129 +434,43 @@ class LaundryWidgetRenderingTest {
         }
     }
 
-    @Test fun attachedHostActuallyFlipsOnlyRunningDrum() {
-        // CI disables animator duration globally. Opt this animation test in,
-        // then restore the emulator's setting even when an assertion fails.
-        val durationScale = shell("settings get global animator_duration_scale")
-        try {
-            shell("settings put global animator_duration_scale 1")
-            val scaleDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
-            while (!android.animation.ValueAnimator.areAnimatorsEnabled() && android.os.SystemClock.elapsedRealtime() < scaleDeadline)
-                Thread.sleep(50)
-            assertTrue("This test must opt into system animations before attaching the host", android.animation.ValueAnimator.areAnimatorsEnabled())
-            ActivityScenario.launch(MainActivity::class.java).use { scenario ->
-                val provider = LaundryWidgetProvider()
-                val now = System.currentTimeMillis()
-                lateinit var root: View
-                var firstFrame = -1
-                scenario.onActivity { activity ->
-                    val host = FrameLayout(activity)
-                    activity.setContentView(host)
-                    root = provider.render(activity, 902, task(now), WidgetSize.WIDE, now).apply(activity, host)
-                    host.addView(root, FrameLayout.LayoutParams(dp(activity, 320), dp(activity, 140)))
-                }
-                instrumentation.waitForIdleSync()
-                // ProgressBar starts its Animatable in drawTrack(), after attachment.
-                // An idle message queue alone does not guarantee that the first host
-                // frame has been laid out and drawn.
-                val firstFrameDeadline = android.os.SystemClock.elapsedRealtime() + 5_000
-                var hostDrawn = false
-                while (!hostDrawn && android.os.SystemClock.elapsedRealtime() < firstFrameDeadline) {
-                    scenario.onActivity {
-                        val overlay = root.findViewById<ProgressBar>(R.id.widget_activity)
-                        hostDrawn = root.isLaidOut && root.width > 0 && root.height > 0 &&
-                            overlay.isShown && isRunning(overlay.indeterminateDrawable)
-                    }
-                    if (!hostDrawn) Thread.sleep(100)
-                }
-                assertTrue("The host must draw its first running activity frame", hostDrawn)
-                scenario.onActivity {
-                    val flipper = root.findViewById<ViewFlipper>(R.id.widget_drum_active)
-                    assertTrue(flipper.isShown)
-                    assertTrue(flipper.isFlipping)
-                    firstFrame = flipper.displayedChild
-                    val activity = root.findViewById<ProgressBar>(R.id.widget_activity)
-                    assertTrue(activity.isShown)
-                    assertTrue("The host must animate the activity overlay", isRunning(activity.indeterminateDrawable))
-                    val known = root.findViewById<ProgressBar>(R.id.widget_progress)
-                    assertEquals(50, known.progress)
-                    assertEquals("Activity is an overlay on the same progress track", rect(root, known), rect(root, activity))
-                }
-                // A real ViewFlipper timer, not a test-driven showNext(), advances the drum.
-                val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
-                var advanced = false
-                while (!advanced && android.os.SystemClock.elapsedRealtime() < deadline) {
-                    Thread.sleep(100)
-                    scenario.onActivity { advanced = root.findViewById<ViewFlipper>(R.id.widget_drum_active).displayedChild != firstFrame }
-                }
-                assertTrue("The attached host must advance the drum on its own", advanced)
-                scenario.onActivity {
-                    assertNoRefreshControls(root)
-                    captureView(root, "native-widget-attached-running")
-                }
-                scenario.onActivity { activity ->
-                    provider.render(activity, 902, LaundryWidgetSnapshot("示例楼", 9, 0, 0, now), WidgetSize.WIDE, now).reapply(activity, root)
-                    assertNull("Idle redraw detaches the timer rather than hiding a live flipper", root.findViewById<ViewFlipper>(R.id.widget_drum_active))
-                    assertEquals(View.VISIBLE, root.findViewById<View>(R.id.widget_drum_static).visibility)
-                    assertEquals(View.GONE, root.findViewById<View>(R.id.widget_activity).visibility)
-                    captureView(root, "native-widget-attached-idle")
-                }
-            }
-        } finally {
-            if (durationScale == "null") shell("settings delete global animator_duration_scale")
-            else {
-                require(durationScale.matches(Regex("[0-9]+(?:\\.[0-9]+)?")))
-                shell("settings put global animator_duration_scale $durationScale")
-            }
-        }
-    }
-
-    @Test fun attachedAnimationsAdvanceAndOnlyMiniUsesWater() {
+    @Test fun attachedHostRedrawUpdatesProgressWithoutStartingALauncherLoop() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             val provider = LaundryWidgetProvider()
+            val now = System.currentTimeMillis()
             for (size in WidgetSize.entries) {
-                val now = System.currentTimeMillis()
-                lateinit var root: View
                 scenario.onActivity { activity ->
                     val host = FrameLayout(activity)
                     activity.setContentView(host)
-                    root = provider.render(activity, 906, task(now), size, now).apply(activity, host)
+                    val snapshot = task(now)
+                    val root = provider.render(activity, 906, snapshot, size, now).apply(activity, host)
                     val (width, height) = when (size) {
                         WidgetSize.MINI -> 180 to 80
                         WidgetSize.COMPACT -> 180 to 180
                         WidgetSize.WIDE -> 320 to 140
                     }
                     host.addView(root, FrameLayout.LayoutParams(dp(activity, width), dp(activity, height)))
-                }
-                instrumentation.waitForIdleSync()
-                var first = -1
-                scenario.onActivity {
-                    val animation = root.findViewById<ViewFlipper>(if (size == WidgetSize.MINI) R.id.widget_water_active else R.id.widget_drum_active)
-                    assertTrue("The $size host must run its native task timer", animation.isFlipping)
-                    assertEquals(3, animation.childCount)
-                    if (size != WidgetSize.MINI) assertNoWater(root, "$size attached running")
-                    first = animation.displayedChild
-                }
-                val deadline = android.os.SystemClock.elapsedRealtime() + 5_000
-                var advanced = false
-                while (!advanced && android.os.SystemClock.elapsedRealtime() < deadline) {
-                    Thread.sleep(100)
-                    scenario.onActivity { advanced = root.findViewById<ViewFlipper>(if (size == WidgetSize.MINI) R.id.widget_water_active else R.id.widget_drum_active).displayedChild != first }
-                }
-                assertTrue("The $size host must advance a real task frame without test-driven showNext", advanced)
-                scenario.onActivity { activity ->
-                    provider.render(activity, 906, task(now).copy(taskEstimatedFinishAtMillis = now), size, now)
-                        .reapply(activity, root)
-                    if (size == WidgetSize.MINI) assertWaterState(root, false, "$size awaiting device confirmation")
-                    else {
-                        assertNoWater(root, "$size awaiting device confirmation")
-                        assertNull(root.findViewById<ViewFlipper>(R.id.widget_drum_active))
-                    }
-                    assertEquals(100, root.findViewById<ProgressBar>(R.id.widget_progress).progress)
-                    provider.render(activity, 906, task(now).copy(taskStartedAtMillis = null), size, now)
-                        .reapply(activity, root)
-                    if (size == WidgetSize.MINI) assertWaterState(root, false, "$size unknown percentage")
-                    else assertNoWater(root, "$size unknown percentage")
+                    measure(root, width, height)
+                    assertTrue("The active $size card must use static artwork", hasOnlyStaticArtwork(root))
+                    val dial = root.findViewById<ImageView>(R.id.widget_machine_ring)
+                    val dialBefore = dial?.drawable
+                    if (size == WidgetSize.MINI) assertNotNull(dialBefore)
+                    else assertEquals(50, root.findViewById<ProgressBar>(R.id.widget_progress).progress)
+                    if (size == WidgetSize.WIDE) captureView(root, "native-widget-attached-running")
+
+                    provider.render(activity, 906, snapshot, size, now + 120_000).reapply(activity, root)
+                    assertTrue(hasOnlyStaticArtwork(root))
+                    assertTrue(root.contentDescription.toString().contains(activity.getString(R.string.widget_progress_percent, 60)))
+                    if (size == WidgetSize.MINI) assertNotSame(dialBefore, requireNotNull(dial).drawable)
+                    else assertEquals(60, root.findViewById<ProgressBar>(R.id.widget_progress).progress)
+
+                    val idle = LaundryWidgetSnapshot("示例楼", 9, 0, 0, now)
+                    provider.render(activity, 906, idle, size, now).reapply(activity, root)
+                    assertTrue(hasOnlyStaticArtwork(root))
+                    assertEquals(activity.getString(R.string.widget_idle), root.findViewById<TextView>(R.id.widget_task).text.toString())
+                    if (size != WidgetSize.MINI)
+                        assertEquals(View.GONE, root.findViewById<ProgressBar>(R.id.widget_progress).visibility)
+                    if (size == WidgetSize.WIDE) captureView(root, "native-widget-attached-idle")
                 }
             }
         }
@@ -627,30 +528,17 @@ class LaundryWidgetRenderingTest {
         content.intersect(RectF(box))
         return content
     }
-    private fun assertNoWater(view: View, case: String) {
-        for (id in listOf(R.id.widget_water_holder, R.id.widget_water_active, R.id.widget_water_frame_0,
-            R.id.widget_water_frame_1, R.id.widget_water_frame_2)) {
-            assertNull("Only the 2×1 mini can install water artwork or reserve its space ($case, id=$id)", view.findViewById<View>(id))
-        }
+    private fun assertNoWater(view: View, case: String) =
+        assertNull("Only the 2×1 card contains a water dial ($case)", view.findViewById<ImageView>(R.id.widget_machine_ring))
+
+    private fun hasOnlyStaticArtwork(view: View): Boolean = when (view) {
+        is ViewFlipper, is Chronometer -> false
+        is ProgressBar -> !view.isIndeterminate
+        is ImageView -> view.drawable !is Animatable
+        is ViewGroup -> (0 until view.childCount).all { hasOnlyStaticArtwork(view.getChildAt(it)) }
+        else -> true
     }
-    private fun assertWaterState(view: View, animated: Boolean, case: String) {
-        val holder = view.findViewById<ViewGroup>(R.id.widget_water_holder)
-        val flipper = view.findViewById<ViewFlipper>(R.id.widget_water_active)
-        val static = view.findViewById<ImageView>(R.id.widget_machine_ring)
-        assertNotNull("Static water artwork must be ready for a later host reapply ($case)", static.drawable)
-        assertEquals(if (animated) View.GONE else View.VISIBLE, static.visibility)
-        assertEquals(if (animated) View.VISIBLE else View.GONE, holder.visibility)
-        if (animated) {
-            assertNotNull("A trustworthy running task must have a water animation ($case)", flipper)
-            assertEquals("The water animation must have three native frames ($case)", 3, flipper.childCount)
-            for (id in listOf(R.id.widget_water_frame_0, R.id.widget_water_frame_1, R.id.widget_water_frame_2)) {
-                assertNotNull("Every water frame must contain artwork ($case)", view.findViewById<ImageView>(id).drawable)
-            }
-        } else {
-            assertNull("Non-running or unknown progress must detach the water timer ($case)", flipper)
-            assertEquals("An idle holder must not retain an auto-start child ($case)", 0, holder.childCount)
-        }
-    }
+
     private fun assertStatusFitsMinimum(view: View, size: WidgetSize) {
         val (width, height) = when (size) {
             WidgetSize.MINI -> error("Mini cards have a dedicated layout matrix")
@@ -688,16 +576,8 @@ class LaundryWidgetRenderingTest {
     }
     private fun containsChronometer(view: View): Boolean = view is Chronometer ||
         view is ViewGroup && (0 until view.childCount).any { containsChronometer(view.getChildAt(it)) }
-    private fun isRunning(drawable: Drawable?): Boolean = when (drawable) {
-        is Animatable -> drawable.isRunning
-        is LayerDrawable -> (0 until drawable.numberOfLayers).any { isRunning(drawable.getDrawable(it)) }
-        else -> drawable?.current?.takeIf { it !== drawable }?.let(::isRunning) ?: false
-    }
     private fun captureView(view: View, name: String) {
         val image = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
         try { view.draw(Canvas(image)); image.writeToTestStorage(name) } finally { image.recycle() }
-    }
-    private fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use {
-        android.os.ParcelFileDescriptor.AutoCloseInputStream(it).bufferedReader().readText().trim()
     }
 }

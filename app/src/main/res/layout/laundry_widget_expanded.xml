@@ -21,7 +21,6 @@
             <ImageView android:id="@+id/widget_machine_shell" android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_machine_shell" android:importantForAccessibility="no" />
             <ImageView android:id="@+id/widget_machine_ring" android:layout_width="match_parent" android:layout_height="match_parent" android:importantForAccessibility="no" />
             <ImageView android:id="@+id/widget_drum_static" android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/widget_drum_0" android:importantForAccessibility="no" />
-            <FrameLayout android:id="@+id/widget_drum_holder" android:layout_width="match_parent" android:layout_height="match_parent" android:visibility="gone" android:importantForAccessibility="no" />
         </FrameLayout>
         <TextView android:id="@+id/widget_task" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="@string/widget_idle" android:textColor="@color/widget_text_primary" android:textSize="18sp" android:textStyle="bold" android:maxLines="2" android:ellipsize="end" android:includeFontPadding="false" />
         <TextView android:id="@+id/widget_task_eta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:layout_marginBottom="6dp" android:gravity="center" android:text="@string/widget_no_task" android:textColor="@color/widget_accent" android:textSize="15sp" android:maxLines="2" android:ellipsize="end" android:includeFontPadding="false" />
@@ -31,7 +30,6 @@
         <FrameLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="6dp">
             <ImageView android:id="@+id/widget_progress_track" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitXY" android:visibility="gone" android:importantForAccessibility="no" />
             <ProgressBar android:id="@+id/widget_progress" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="match_parent" android:max="100" android:progressDrawable="@drawable/widget_progress" android:indeterminate="false" android:visibility="gone" android:importantForAccessibility="no" />
-            <ProgressBar android:id="@+id/widget_activity" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="match_parent" android:indeterminate="true" android:indeterminateTint="#A0A0A0" android:alpha="0.35" android:visibility="gone" android:importantForAccessibility="no" />
         </FrameLayout>
         <TextView android:id="@+id/widget_progress_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="8dp" android:textColor="@color/widget_text_secondary" android:textSize="11sp" android:maxLines="1" android:ellipsize="end" android:visibility="gone" android:includeFontPadding="false" />
     </LinearLayout>

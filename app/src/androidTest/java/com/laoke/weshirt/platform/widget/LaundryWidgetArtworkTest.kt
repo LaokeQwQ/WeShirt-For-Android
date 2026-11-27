@@ -17,8 +17,8 @@ class LaundryWidgetArtworkTest {
     @Test fun waterAmountIsMonotonicAndUnknownProgressHasNoInventedLiquid() {
         for (dark in listOf(false, true)) {
             val palette = LaundryWidgetTheme.resolve(context, forceDark = dark)
-            val images = listOf(0, 10, 50, 100).map { LaundryWidgetArtwork.water(palette, it, 0) }
-            val unknown = LaundryWidgetArtwork.water(palette, null, 0)
+            val images = listOf(0, 10, 50, 100).map { LaundryWidgetArtwork.dial(palette, it) }
+            val unknown = LaundryWidgetArtwork.dial(palette, null)
             try {
                 val filled = images.map { image -> count(image) { x, y, color ->
                     inside(x, y, 44) && near(color, palette.accent, 40)
@@ -48,21 +48,9 @@ class LaundryWidgetArtworkTest {
         }
     }
 
-    @Test fun waveFramesMoveOnlyKnownIntermediateProgressAndBackgroundIsTranslucent() {
+    @Test fun waveArtworkAndBackgroundHaveStableOpacity() {
         for (dark in listOf(false, true)) {
             val palette = LaundryWidgetTheme.resolve(context, forceDark = dark)
-            for (progress in listOf(null, 0, 50, 100)) {
-                val frames = (0..2).map { LaundryWidgetArtwork.water(palette, progress, it) }
-                try {
-                    if (progress == 50) {
-                        assertFalse("Running water must visibly move between native frames", frames[0].sameAs(frames[1]))
-                        assertFalse(frames[1].sameAs(frames[2]))
-                    } else {
-                        assertTrue("Unknown, empty and full water levels must remain stationary", frames[0].sameAs(frames[1]))
-                        assertTrue(frames[1].sameAs(frames[2]))
-                    }
-                } finally { frames.forEach(Bitmap::recycle) }
-            }
             val background = LaundryWidgetArtwork.background(palette, 320, 140)
             val shell = LaundryWidgetArtwork.shell(palette)
             try {
