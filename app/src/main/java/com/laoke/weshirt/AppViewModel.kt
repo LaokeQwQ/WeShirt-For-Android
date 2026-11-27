@@ -40,6 +40,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private var refreshGeneration = -1
     private var refreshPending = false
     private val mutationMutex = Mutex()
+    private val laundryCacheMutex = Mutex()
+    private val laundryCacheRevision = java.util.concurrent.atomic.AtomicLong()
     private val generation = java.util.concurrent.atomic.AtomicInteger(0)
     private val notificationIntent = java.util.concurrent.atomic.AtomicLong(0)
     private val announcementIntent = java.util.concurrent.atomic.AtomicLong(0)
@@ -65,7 +67,9 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         if (saved != null && saved.str("origin") != api.baseUrl) session.compareAndSetCredentials(saved, null)
         val restoring = saved != null && saved.str("origin") == api.baseUrl
         val cachedProfile = cachedSessionProfile(saved, api.baseUrl)?.let(Profile::parse)
-        _state.update { it.copy(profile = cachedProfile, building = cachedProfile?.building?.takeIf(String::isNotBlank) ?: it.building, authReady = !restoring, sessionRestoring = restoring) }
+        val cachedLaundry = if (restoring && cachedProfile != null) session.readLaundry(api.baseUrl) else null
+        _state.update { it.copy(profile = cachedProfile, building = cachedProfile?.building?.takeIf(String::isNotBlank) ?: it.building,
+            authReady = !restoring, sessionRestoring = restoring, savedLaundryTasks = cachedLaundry?.tasks.orEmpty(), savedLaundrySyncedAt = cachedLaundry?.syncedAt) }
         api.onMetric = { path, duration, status -> viewModelScope.launch {
             if(_state.value.telemetryOn) {
                 val safePath = when { path.matches(Regex("/api/tasks/[^/]+/take")) -> "/api/tasks/:id/take"; path.matches(Regex("/api/tasks/[^/]+")) -> "/api/tasks/:id"; path in setOf("/api/machines","/api/tasks","/api/auth/me","/api/messages","/api/queue","/api/occupancy","/api/user/profile","/api/user/notify") -> path; else -> "/api/other" }
@@ -83,7 +87,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
                 platform.clearLocal()
                 coil.Coil.imageLoader(app).memoryCache?.clear()
-                _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+                _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+                    savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
                 refresh()
             }
         }
@@ -94,9 +99,12 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     fun platformSessionChanged() {
         generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); assistantPreloader.clear(); platform.sessionChanged()
         val restoring = session.read() != null
-        _state.update { it.copy(profile = api.cachedProfile(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false,
+        val cachedProfile = api.cachedProfile()
+        val cachedLaundry = if (restoring && cachedProfile != null) session.readLaundry(api.baseUrl) else null
+        _state.update { it.copy(profile = cachedProfile, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false,
             tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(),
-            authReady = !restoring, sessionRestoring = restoring, authError = null) }
+            authReady = !restoring, sessionRestoring = restoring, authError = null,
+            savedLaundryTasks = cachedLaundry?.tasks.orEmpty(), savedLaundrySyncedAt = cachedLaundry?.syncedAt) }
         _state.update { it.copy(notificationsOn = platform.notificationsEnabled) }
         // Apply only an explicit, still-enabled guest request once. An older
         // device preference must not overwrite another account's server choice.
@@ -269,45 +277,67 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         val signedIn = session.read() != null
         val previouslyVerified = _state.value.authReady && signedIn
         if (!signedIn) {
-            if (version == generation.get()) { _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
+            if (version == generation.get()) { _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+                savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
             return
         }
         _state.update { it.copy(sessionRestoring = !it.authReady, authError = null) }
         try {
             val (user, access) = coroutineScope {
-                val permissions = async { optionalRefresh { api.call("/api/user/permissions") } }
+                val permissions = async { optionalRefresh {
+                    api.call("/api/user/permissions").also { response ->
+                        if (response.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("view", true) == false &&
+                            version == generation.get()) {
+                            _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null,
+                                savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null) }
+                            persistLaundry(null, allowRestoring = true)
+                        }
+                    }
+                } }
                 val identity = api.call("/api/auth/me").optJSONObject("user")
                     ?: throw ApiException(502, "profile_missing", "client_" + UUID.randomUUID(), "账号资料暂未返回，请重试")
                 if (identity.str("id").isBlank())
                     throw ApiException(502, "profile_invalid", "client_" + UUID.randomUUID(), "账号资料暂不可用，请重试")
                 // Permission verification can finish later; the verified
                 // display identity is immediately available.
-                if (version == generation.get()) _state.update { it.copy(profile = Profile.parse(identity)) }
+                if (version == generation.get()) _state.update { before ->
+                    val sameOwner = before.profile?.id == identity.str("id")
+                    before.copy(profile = Profile.parse(identity), savedLaundryTasks = before.savedLaundryTasks.takeIf { sameOwner }.orEmpty(),
+                        savedLaundrySyncedAt = before.savedLaundrySyncedAt.takeIf { sameOwner })
+                }
                 identity to permissions.await().getOrThrow()
             }
             if (version != generation.get()) return
             withContext(Dispatchers.IO) { api.cacheProfile(user) }
             if (version != generation.get()) return
             val profile = Profile.parse(user)
+            val permissions = access.optJSONObject("permissions")
+                ?: throw ApiException(502, "permissions_missing", "client_${UUID.randomUUID()}", "账号权限暂未返回，请重试")
+            val mayReadTasks = permissions.optJSONObject("tasks")?.optBoolean("view", true) != false
             val target = profile.building.takeIf { it.isNotBlank() && (_state.value.buildings.isEmpty() || _state.value.buildings.any { row -> row.code == it }) } ?: _state.value.building
             val changed = target != _state.value.building
             _state.update { it.copy(profile = profile, authReady = true, sessionRestoring = false, authError = null, access = access,
                 building = target, machines = if (changed) emptyList() else it.machines,
                 updatedAt = if (changed) null else it.updatedAt,
                 boardWarning = if (changed) null else it.boardWarning,
-                boardFromCache = !changed && it.boardFromCache) }
+                boardFromCache = !changed && it.boardFromCache,
+                tasks = it.tasks.takeIf { mayReadTasks }.orEmpty(), tasksUpdatedAt = it.tasksUpdatedAt.takeIf { mayReadTasks },
+                savedLaundryTasks = it.savedLaundryTasks.takeIf { mayReadTasks }.orEmpty(), savedLaundrySyncedAt = it.savedLaundrySyncedAt.takeIf { mayReadTasks }) }
             if (target.isNotBlank()) prefs.edit().putString("building", target).apply()
             if (prefs.getBoolean("pendingGuestNotifyEnable", false) && platform.notificationsEnabled) toggleNotify(true)
             if (changed && target.isNotBlank()) viewModelScope.launch { refreshPublicBoard(version, target) }
             if (_state.value.tab == 2) refreshChannels()
             preloadAssistant()
-            val permissions = access.optJSONObject("permissions")
-            val mayReadTasks = permissions?.optJSONObject("tasks")?.optBoolean("view", true) != false
-            val mayReadQueue = target.isNotBlank() && permissions?.optJSONObject("queue")?.optBoolean("view", true) != false
+            val mayReadQueue = target.isNotBlank() && permissions.optJSONObject("queue")?.optBoolean("view", true) != false
             val taskReadRevision = taskRevision
             val results = coroutineScope {
                 val tasks = async {
-                    val result = optionalRefresh { if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray()) }
+                    val result = optionalRefresh {
+                        val response = if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray())
+                        if (response.optJSONArray("tasks") == null)
+                            throw ApiException(502, "tasks_missing", "client_${UUID.randomUUID()}", "暂无可核对的洗衣记录，请稍后重试")
+                        response
+                    }
                     if (version == generation.get() && _state.value.authReady) {
                         if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
                         else if (taskReadRevision == taskRevision) {
@@ -330,9 +360,16 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                                         it.value.generation != version || now - it.value.at !in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
                                     }
                                     state.copy(tasks = acknowledged + items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
-                                        tasksUpdatedAt = now, tasksRefreshFailed = false)
+                                        tasksUpdatedAt = now, tasksRefreshFailed = false, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null)
                                 }
-                            }.onFailure { _state.update { it.copy(tasksRefreshFailed = true) } }
+                                persistCurrentLaundry()
+                            }.onFailure { problem ->
+                                if (problem is ApiException && problem.status in setOf(401, 403)) {
+                                    _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null) }
+                                    persistLaundry(null)
+                                }
+                                _state.update { it.copy(tasksRefreshFailed = true) }
+                            }
                         }
                     }
                     result
@@ -360,9 +397,14 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             if (version == generation.get() && problem != null) _state.update { it.copy(error = "部分账号信息暂未刷新。\n" + problem.message.orEmpty()) }
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) {
-            if (version == generation.get() && session.read() != null) _state.update { it.copy(profile = it.profile ?: api.cachedProfile(),
-                authReady = previouslyVerified, sessionRestoring = false,
-                authError = "账号恢复暂未完成，已保留本机登录状态。洗衣房可继续查看，请稍后重试。\n" + problem.message.orEmpty()) }
+            if (version == generation.get() && session.read() != null) {
+                if (problem is ApiException && problem.status in setOf(401, 403)) {
+                    _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null) }
+                    persistLaundry(null, allowRestoring = true)
+                }
+                _state.update { it.copy(profile = it.profile ?: api.cachedProfile(), authReady = previouslyVerified, sessionRestoring = false,
+                    authError = "账号恢复暂未完成，已保留本机登录状态。洗衣房可继续查看，请稍后重试。\n" + problem.message.orEmpty()) }
+            }
         }
     }
     private suspend fun refreshAnnouncements(version: Int, settings: JSONObject?) {
@@ -420,6 +462,25 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private var taskRevision = 0L
     private data class TaskRegistrationReceipt(val generation: Int, val at: Long)
     private val taskRegistrationReceipts = mutableMapOf<String, TaskRegistrationReceipt>()
+    private fun persistCurrentLaundry() {
+        val current = _state.value
+        val syncedAt = current.tasksUpdatedAt ?: return
+        persistLaundry(SavedLaundry(current.tasks, syncedAt))
+    }
+
+    private fun persistLaundry(value: SavedLaundry?, allowRestoring: Boolean = false) {
+        val current = _state.value
+        val owner = current.profile?.id ?: return
+        if ((!current.authReady && !allowRestoring) || current.endpoint != api.baseUrl) return
+        val fence = api.sessionFence()
+        val revision = laundryCacheRevision.incrementAndGet()
+        viewModelScope.launch(Dispatchers.IO) {
+            laundryCacheMutex.withLock {
+                if (revision == laundryCacheRevision.get()) runCatching { api.cacheLaundry(fence, owner, value) }
+            }
+        }
+    }
+
     fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
                  useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = viewModelScope.launch {
         val start = _state.value
@@ -454,6 +515,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                         tasksUpdatedAt = acknowledgedAt, tasksRefreshFailed = false)
                 }
                 platform.synchronizeWidget(_state.value, acknowledgedTaskId = task.id)
+                persistCurrentLaundry()
             }
             message("登记成功")
             onSuccess()
@@ -518,6 +580,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 _state.update { state -> state.copy(tasks = state.tasks.map {
                     if (it.id == taskId) it.copy(done = true, takeState = "taken") else it
                 }, tasksUpdatedAt = System.currentTimeMillis(), tasksRefreshFailed = false) }
+                persistCurrentLaundry()
             }
             message("已确认取衣")
             onSuccess()
@@ -688,7 +751,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+            _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+                savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
         }
     }
 }

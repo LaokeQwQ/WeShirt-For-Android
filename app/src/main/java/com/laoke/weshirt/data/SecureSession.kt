@@ -69,19 +69,53 @@ class SecureSession(context: Context) : SessionStore {
     private fun readLocked(): JSONObject? = runCatching {
         val raw = prefs.getString("sealed", null) ?: return null
         if (cachedOwner === prefs && raw == cachedSeal) return cachedJson?.let(::JSONObject)
-        val pieces = raw.split(":")
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(pieces[0], Base64.NO_WRAP)))
-        val decoded = String(cipher.doFinal(Base64.decode(pieces[1], Base64.NO_WRAP)), Charsets.UTF_8)
+        val decoded = unseal(raw)
         JSONObject(decoded).also { cacheLocked(raw, decoded) }
     }.getOrNull()
     override fun save(value: JSONObject) = synchronized(processGuard) { saveLocked(value) }
     private fun saveLocked(value: JSONObject) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        val previous = readLocked()
         val decoded = value.toString()
-        val sealed = Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(cipher.doFinal(decoded.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
-        check(prefs.edit().putString("sealed", sealed).commit())
+        val sealed = seal(decoded)
+        val edit = prefs.edit().putString("sealed", sealed)
+        if (savedLaundrySessionId(previous) != savedLaundrySessionId(value) ||
+            previous?.str("origin") != value.str("origin") ||
+            cachedSessionProfile(previous, value.str("origin"))?.str("id") != cachedSessionProfile(value, value.str("origin"))?.str("id")) {
+            edit.remove(SAVED_LAUNDRY_KEY)
+        }
+        check(edit.commit())
         cacheLocked(sealed, decoded)
+    }
+    private fun seal(decoded: String): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key()) }
+        return Base64.encodeToString(cipher.iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(cipher.doFinal(decoded.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+    }
+    private fun unseal(raw: String): String {
+        val pieces = raw.split(":", limit = 2)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(pieces[0], Base64.NO_WRAP)))
+        return String(cipher.doFinal(Base64.decode(pieces[1], Base64.NO_WRAP)), Charsets.UTF_8)
+    }
+
+    internal fun readLaundry(origin: String, now: Long = System.currentTimeMillis()): SavedLaundry? = synchronized(processGuard) {
+        val encrypted = prefs.getString(SAVED_LAUNDRY_KEY, null) ?: return@synchronized null
+        runCatching { decodeSavedLaundry(JSONObject(unseal(encrypted)), readLocked(), origin, now) }.getOrNull()
+    }
+
+    /** A late result cannot store or erase the snapshot of another login. */
+    internal fun saveLaundry(origin: String, owner: String, nativeSessionId: String, value: SavedLaundry?) = synchronized(processGuard) {
+        val current = readLocked()
+        if (savedLaundrySessionId(current) != nativeSessionId || cachedSessionProfile(current, origin)?.str("id") != owner) return@synchronized
+        if (value == null) {
+            prefs.edit().remove(SAVED_LAUNDRY_KEY).apply()
+        } else {
+            val data = encodeSavedLaundry(origin, owner, nativeSessionId, value)
+            val previous = prefs.getString(SAVED_LAUNDRY_KEY, null)?.let { runCatching { JSONObject(unseal(it)) }.getOrNull() }
+            if (previous != null && previous.optLong("syncedAt") > value.syncedAt) return@synchronized
+            if (previous != null && value.syncedAt - previous.optLong("syncedAt") < 300_000L &&
+                previous.optJSONArray("tasks")?.toString() == data.getJSONArray("tasks").toString()) return@synchronized
+            prefs.edit().putString(SAVED_LAUNDRY_KEY, seal(data.toString())).apply()
+        }
     }
     private fun cacheLocked(sealed: String?, decoded: String?) {
         cachedOwner = prefs
@@ -90,7 +124,9 @@ class SecureSession(context: Context) : SessionStore {
     }
     private fun clearLocked() {
         cacheLocked(null, null)
-        if (prefs.contains("sealed")) check(prefs.edit().remove("sealed").commit())
+        if (prefs.contains("sealed") || prefs.contains(SAVED_LAUNDRY_KEY)) {
+            check(prefs.edit().remove("sealed").remove(SAVED_LAUNDRY_KEY).commit())
+        }
     }
     override fun clear() = synchronized(processGuard) { clearLocked() }
 

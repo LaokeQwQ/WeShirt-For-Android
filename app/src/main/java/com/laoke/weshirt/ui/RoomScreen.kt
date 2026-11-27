@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
@@ -187,9 +188,14 @@ internal fun RoomDataNotice(boardFromCache: Boolean, warning: String?) {
 @Composable
 internal fun RoomToolsToolbar(onlyFavorites: Boolean, onFavorites: () -> Unit, onFacilities: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).testTag("room-tools"), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-        FilterChip(onlyFavorites, onFavorites, label = { Text("常用机器", maxLines = 2) },
-            shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("room-favorites"),
-            leadingIcon = { Icon(Icons.Outlined.StarOutline, null, Modifier.size(18.dp)) })
+        OutlinedButton(onClick = onFavorites,
+            modifier = Modifier.weight(1f).heightIn(min = 48.dp).semantics { selected = onlyFavorites }.testTag("room-favorites"),
+            shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = if (onlyFavorites) MaterialTheme.colorScheme.secondaryContainer else androidx.compose.ui.graphics.Color.Transparent)) {
+            Icon(if (onlyFavorites) Icons.Outlined.Star else Icons.Outlined.StarOutline, null, Modifier.size(18.dp).testTag("room-favorites-icon"))
+            Spacer(Modifier.width(8.dp))
+            Text("常用机器", maxLines = 2)
+        }
         OutlinedButton(onClick = onFacilities, modifier = Modifier.weight(1f).heightIn(min = 48.dp).testTag("room-facilities"),
             shape = RoundedCornerShape(14.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
             Icon(Icons.Outlined.Info, "设施须知", Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("设施信息", maxLines = 2)

@@ -87,5 +87,7 @@ data class AppState(
     val authReady: Boolean = true, val sessionRestoring: Boolean = false, val authError: String? = null,
     val boardFromCache: Boolean = false, val assistant: AssistantSnapshot = AssistantSnapshot(),
     /** Local receipt time of a successful authenticated task refresh, separate from the public board. */
-    val tasksUpdatedAt: Long? = null, val tasksRefreshFailed: Boolean = false
+    val tasksUpdatedAt: Long? = null, val tasksRefreshFailed: Boolean = false,
+    /** UI-only copy of the last known account data. Never feeds widget/reminder scheduling. */
+    val savedLaundryTasks: List<LaundryTask> = emptyList(), val savedLaundrySyncedAt: Long? = null,
 )

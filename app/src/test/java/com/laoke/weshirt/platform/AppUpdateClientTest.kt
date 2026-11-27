@@ -2,6 +2,7 @@ package com.laoke.weshirt.platform
 
 import com.laoke.weshirt.platform.update.AppUpdateClient
 import com.laoke.weshirt.platform.update.AppUpdateException
+import com.laoke.weshirt.platform.update.UpdateDownloadCancellation
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -17,6 +18,10 @@ import java.net.InetAddress
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.CancellationException
 
 class AppUpdateClientTest {
     private lateinit var pages: MockWebServer
@@ -143,6 +148,25 @@ class AppUpdateClientTest {
         assertArrayEquals(apk, client.download(release, updates) {}.readBytes())
         assertEquals(listOf(installed), updates.listFiles()!!.toList())
         assertEquals(5, pages.requestCount)
+    }
+
+    @Test fun cancellationInterruptsBlockedHttpReadAndRemovesThePartialPackage() {
+        enqueue(manifest())
+        val release = client.check(15)!!
+        pages.enqueue(MockResponse().setBody(Buffer().write(apk)).throttleBody(1024, 2, TimeUnit.SECONDS))
+        val control = UpdateDownloadCancellation()
+        val received = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val result = executor.submit<java.io.File> {
+                client.downloadCancelable(release, updates, control) { if (it > 0) received.countDown() }
+            }
+            assertTrue("The transfer must receive actual HTTPS bytes before cancellation", received.await(3, TimeUnit.SECONDS))
+            control.cancel()
+            val failure = assertThrows(ExecutionException::class.java) { result.get(2, TimeUnit.SECONDS) }
+            assertTrue(failure.cause is CancellationException)
+            assertTrue("Cancellation must not retain a final or partially downloaded package", updates.listFiles()!!.isEmpty())
+        } finally { control.cancel(); executor.shutdownNow() }
     }
 
     private fun manifest() = JSONObject().put("versionCode", 16).put("versionName", "0.1.1")

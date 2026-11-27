@@ -9,6 +9,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -18,6 +20,9 @@ import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.laoke.weshirt.AppViewModel
+import com.laoke.weshirt.data.LaundryTask
+import com.laoke.weshirt.data.SAVED_LAUNDRY_KEY
+import com.laoke.weshirt.data.SavedLaundry
 import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.str
 import com.laoke.weshirt.platform.push.PushRuntime
@@ -64,6 +69,7 @@ class SessionRecoveryIntegrationTest {
     @Volatile private var blockReplacementBoard = false
     @Volatile private var blockReplacementIdentity = false
     @Volatile private var withLaundryTask = false
+    @Volatile private var mayViewLaundry = true
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
     private val origin = "https://recovery.invalid"
@@ -85,7 +91,7 @@ class SessionRecoveryIntegrationTest {
                         if (blockReplacementIdentity) { replacementIdentityStarted.countDown(); check(replacementIdentityRelease.await(20, TimeUnit.SECONDS)) }
                         """{"user":{"id":"replacement-user","nick":"替换账号","dormBuilding":"test"}}"""
                     } else {
-                        check(request.header("Authorization") == "Bearer saved-access")
+                        check(request.header("Authorization") in setOf("Bearer saved-access", "Bearer ma1.saved-session.old"))
                         check(release.await(20, TimeUnit.SECONDS))
                         status = profileStatus
                         if (status == 200) """{"user":{"id":"saved-user","nick":"最新昵称","dormBuilding":"test"}}"""
@@ -98,7 +104,7 @@ class SessionRecoveryIntegrationTest {
                     if (blockReplacementBoard) { replacementBoardStarted.countDown(); check(replacementBoardRelease.await(20, TimeUnit.SECONDS)) }
                     """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
                 }
-                "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true}}}"""
+                "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true},"tasks":{"view":$mayViewLaundry}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
                 "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else "{}"
                 "/api/tasks/washer-task/take" -> {
@@ -129,8 +135,8 @@ class SessionRecoveryIntegrationTest {
         } } }.commit()
     }
 
-    private fun saved(cached: Boolean) {
-        val session = JSONObject().put("origin", origin).put("accessToken", "saved-access")
+    private fun saved(cached: Boolean, native: Boolean = false) {
+        val session = JSONObject().put("origin", origin).put("accessToken", if (native) "ma1.saved-session.old" else "saved-access")
             .put("refreshToken", "saved-refresh").put("expiresAt", System.currentTimeMillis() + 600_000)
         if (cached) session.put("profile", JSONObject().put("id", "saved-user").put("nick", "缓存昵称").put("dormBuilding", "test"))
         SecureSession(app).save(session)
@@ -245,6 +251,34 @@ class SessionRecoveryIntegrationTest {
         compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["history"]?.data != null }
         assertEquals("saved-user", vm.state.value.assistant.scope?.userId)
         assertNotNull(SecureSession(app).read())
+    }
+
+    @Test fun coldStartShowsOnlyTheSavedOwnersReadOnlyLaundryAndClearsItWhenAccessIsDenied() {
+        saved(cached = true, native = true)
+        val secure = SecureSession(app)
+        val now = System.currentTimeMillis()
+        val task = LaundryTask("saved-washer", "saved-machine", "上次同步的测试机器", "washer", now + 600_000,
+            false, "不得缓存的备注", false, false, false, createdAt = now - 60_000)
+        secure.saveLaundry(origin, "saved-user", "saved-session", SavedLaundry(listOf(task), now))
+        assertEquals("", secure.readLaundry(origin)?.tasks?.single()?.note)
+        val encrypted = requireNotNull(app.getSharedPreferences("native_session", 0).getString(SAVED_LAUNDRY_KEY, null))
+        assertFalse(encrypted.contains(task.name))
+        assertFalse(encrypted.contains(task.note))
+        val vm = model()
+        compose.setContent { WeShirtApp(vm, {}, {}) }
+        compose.onNodeWithTag("navigation:1").performClick()
+        compose.onNodeWithText("上次同步", substring = true).assertIsDisplayed()
+        compose.onNodeWithTag("laundry-page").performScrollToNode(hasTestTag("laundry-task:saved-washer"))
+        compose.onNodeWithTag("laundry-task:saved-washer").assertIsDisplayed()
+        compose.onNodeWithTag("laundry-take:saved-washer").assertDoesNotExist()
+        compose.onNodeWithText("朋友与代取").assertDoesNotExist()
+        assertTrue(vm.state.value.tasks.isEmpty())
+
+        mayViewLaundry = false
+        profileStatus = 200
+        release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.savedLaundrySyncedAt == null && secure.readLaundry(origin) == null }
+        compose.onNodeWithTag("laundry-task:saved-washer").assertDoesNotExist()
     }
 
     @Test fun replacementSessionRestoresBeforeOldIdentityReturnsAndOldFinallyCannotClearNewLoading() {

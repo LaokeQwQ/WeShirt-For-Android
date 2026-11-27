@@ -72,6 +72,14 @@ class RoomControlsLayoutTest {
         compose.onNodeWithTag("room-favorites").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
         val common = compose.onNodeWithTag("room-favorites").getUnclippedBoundsInRoot()
         val facility = compose.onNodeWithTag("room-facilities").getUnclippedBoundsInRoot()
+        val favoriteIcon = compose.onNodeWithTag("room-favorites-icon", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val favoriteLabel = compose.onNodeWithText("常用机器", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        val contentCenterX = (favoriteIcon.left.value + favoriteLabel.right.value) / 2
+        val buttonCenterX = (common.left.value + common.right.value) / 2
+        val iconCenterY = (favoriteIcon.top.value + favoriteIcon.bottom.value) / 2
+        val labelCenterY = (favoriteLabel.top.value + favoriteLabel.bottom.value) / 2
+        assertTrue("The icon and label must be centered together", kotlin.math.abs(contentCenterX - buttonCenterX) <= 2f)
+        assertTrue("The icon must align vertically with the label", kotlin.math.abs(iconCenterY - labelCenterY) <= 2f)
         assertTrue("Common machines and information must not overlap", common.right <= facility.left || common.bottom <= facility.top)
         assertTrue("Room tools stay above physical slot buttons", common.bottom <= compose.onNodeWithTag("room-slot:1").getUnclippedBoundsInRoot().top)
         saveScreenshot("native-narrow-shortcuts")

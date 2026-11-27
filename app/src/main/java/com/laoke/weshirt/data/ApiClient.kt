@@ -165,6 +165,13 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         session.compareAndSet(saved, JSONObject(saved.toString()).put("profile", JSONObject(profile.toString())))
         Unit
     }
+    /** Serialize cache writes with login replacement, while token refresh can rotate inside the same session. */
+    internal fun cacheLaundry(expected: ApiSessionFence, owner: String, value: SavedLaundry?) = synchronized(guard) {
+        if (expected != ApiSessionFence(baseUrl, generation)) return@synchronized
+        val storage = session as? SecureSession ?: return@synchronized
+        val nativeSessionId = savedLaundrySessionId(storage.read()) ?: return@synchronized
+        storage.saveLaundry(baseUrl, owner, nativeSessionId, value)
+    }
     private fun sessionValue(value: JSONObject, origin: String, previous: JSONObject? = null) =
         sessionWithProfile(value, origin, previous).put("expiresAt", System.currentTimeMillis() + value.optLong("expiresIn", 900) * 1000)
     private fun storeSession(value: JSONObject, origin: String, previous: JSONObject? = null) {
