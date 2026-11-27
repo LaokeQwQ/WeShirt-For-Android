@@ -119,6 +119,8 @@ class NativePreferencePrivacyTest {
                 val body = when (request.url.encodedPath) {
                     "/api/site" -> "{\"buildings\":[]}"
                     "/api/auth/me" -> "{\"user\":{\"id\":\"notification-fixture\",\"nick\":\"测试用户\"}}"
+                    "/api/user/permissions" -> "{\"permissions\":{}}"
+                    "/api/tasks" -> "{\"tasks\":[]}"
                     else -> "{}"
                 }
                 Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
@@ -224,6 +226,7 @@ class NativePreferencePrivacyTest {
                     val body = when (request.url.encodedPath) {
                         "/api/site" -> "{\"buildings\":[{\"code\":\"test\",\"name\":\"测试楼\"}]}"
                         "/api/auth/me" -> "{\"user\":{\"id\":\"privacy-test\",\"nick\":\"测试用户\",\"dormBuilding\":\"test\"}}"
+                        "/api/user/permissions" -> "{\"permissions\":{}}"
                         "/api/machines" -> "{\"board\":{\"dormBuilding\":\"test\",\"updatedAt\":\"2030-01-01T00:00:00Z\",\"floors\":[]},\"freshness\":{\"syncFailed\":false,\"stale\":false}}"
                         "/api/tasks" -> "{\"tasks\":[],\"activeTasks\":[],\"history\":[]}"
                         "/api/occupancy" -> "{\"occupancy\":{}}"

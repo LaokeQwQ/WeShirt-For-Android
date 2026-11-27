@@ -257,7 +257,7 @@ class SessionRecoveryIntegrationTest {
         saved(cached = true, native = true)
         val secure = SecureSession(app)
         val now = System.currentTimeMillis()
-        val task = LaundryTask("saved-washer", "saved-machine", "上次同步的测试机器", "washer", now + 600_000,
+        val task = LaundryTask("saved-washer", "saved-machine", "测试洗衣机（离线记录）", "washer", now + 600_000,
             false, "不得缓存的备注", false, false, false, createdAt = now - 60_000)
         secure.saveLaundry(origin, "saved-user", "saved-session", SavedLaundry(listOf(task), now))
         assertEquals("", secure.readLaundry(origin)?.tasks?.single()?.note)
@@ -267,7 +267,7 @@ class SessionRecoveryIntegrationTest {
         val vm = model()
         compose.setContent { WeShirtApp(vm, {}, {}) }
         compose.onNodeWithTag("navigation:1").performClick()
-        compose.onNodeWithText("上次同步", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("上次同步 · ", substring = true).assertIsDisplayed()
         compose.onNodeWithTag("laundry-page").performScrollToNode(hasTestTag("laundry-task:saved-washer"))
         compose.onNodeWithTag("laundry-task:saved-washer").assertIsDisplayed()
         compose.onNodeWithTag("laundry-take:saved-washer").assertDoesNotExist()
