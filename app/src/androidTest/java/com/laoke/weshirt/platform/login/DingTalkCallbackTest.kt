@@ -211,8 +211,13 @@ class DingTalkCallbackTest {
         }
     }
 
-    @Test fun exchangeFailureReturnsToTheAppWithStatusAndEventInsteadOfCreatingASession() {
+    @Test fun exchangeFailureReturnsToTheAppWithStatusAndEventInsteadOfCreatingASession() = assertExchangeFailureVisible(502)
+
+    @Test fun exchange503RequiresNewAuthorizationAndNeverReplaysTheConsumedCode() = assertExchangeFailureVisible(503)
+
+    private fun assertExchangeFailureVisible(failureStatus: Int) {
         val exchanged = CountDownLatch(1)
+        val exchangeCalls = AtomicInteger()
         val model = AtomicReference<AppViewModel>()
         val origin = "https://login-fixture.invalid"
         val request = pendingRequest()
@@ -225,9 +230,9 @@ class DingTalkCallbackTest {
                 val client = OkHttpClient.Builder().addInterceptor { chain ->
                     val httpRequest = chain.request()
                     val isExchange = httpRequest.url.encodedPath == "/api/mobile/auth/exchange"
-                    if (isExchange) exchanged.countDown()
+                    if (isExchange) { exchangeCalls.incrementAndGet(); exchanged.countDown() }
                     Response.Builder().request(httpRequest).protocol(Protocol.HTTP_1_1)
-                        .code(if (isExchange) 502 else 200).message(if (isExchange) "Bad Gateway" else "OK")
+                        .code(if (isExchange) failureStatus else 200).message(if (isExchange) "Service unavailable" else "OK")
                         .body((if (isExchange) "{\"error\":{\"code\":\"provider_unavailable\",\"message\":\"登录服务暂不可用，请重试\",\"eventId\":\"fixture_exchange_failure\"}}" else "{\"buildings\":[]}")
                             .toResponseBody("application/json".toMediaType())).build()
                 }.build()
@@ -239,11 +244,15 @@ class DingTalkCallbackTest {
             while (model.get().state.value.error == null && System.nanoTime() < deadline) Thread.sleep(30)
             val error = model.get().state.value.error.orEmpty()
             assertTrue("The app must expose the actionable provider failure", error.contains("登录服务暂不可用"))
-            assertTrue(error.contains("状态码 502"))
+            assertTrue(error.contains("状态码 $failureStatus"))
             assertTrue(error.contains("事件 fixture_exchange_failure"))
+            if (failureStatus == 503) assertTrue("The recovery action must require a new provider authorization", error.contains("完成一次新的授权"))
             assertNull(model.get().session.read())
             assertNull(model.get().state.value.profile)
             assertTrue("A failed exchange must still consume the one-time callback locally", pending.all.isEmpty())
+            scenario.onActivity { it.startActivity(callbackIntent(request.state)) }
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+            assertEquals("A duplicate callback must not replay the failed one-time exchange", 1, exchangeCalls.get())
         }
     }
 

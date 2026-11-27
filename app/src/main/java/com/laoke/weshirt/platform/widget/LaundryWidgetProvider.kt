@@ -97,7 +97,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val refreshError = if (hasSession) LaundryWidgetStore.refreshError(context) else null
         val running = LaundryWidgetState.isRunning(snapshot, now)
         val progress = LaundryWidgetState.progressPercent(snapshot, now)
-        val showActivity = running && (size != WidgetSize.MINI || progress == null)
         val building = snapshot?.buildingName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
             ?: context.getString(if (snapshot == null) R.string.widget_brand else R.string.widget_current_building)
         val machine = snapshot?.taskMachineName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)
@@ -144,28 +143,12 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.setOnClickPendingIntent(R.id.widget_building, board)
         views.setOnClickPendingIntent(R.id.widget_root, if (machine == null) board else task)
         views.setOnClickPendingIntent(R.id.widget_task_section, task)
-        views.setViewVisibility(R.id.widget_drum_static, if (running || size == WidgetSize.MINI) View.GONE else View.VISIBLE)
-        // Remove the animated subtree on idle/stale redraws. A hidden auto-start
-        // ViewFlipper would otherwise keep its timer alive in some launchers.
-        views.removeAllViews(R.id.widget_drum_holder)
-        if (running && size != WidgetSize.MINI) views.addView(R.id.widget_drum_holder, themedDrum(context))
-        views.setViewVisibility(R.id.widget_drum_holder, if (running && size != WidgetSize.MINI) View.VISIBLE else View.GONE)
-        // Only the horizontal mini card uses a liquid gauge. Larger cards keep
-        // that space for the washer and a single, inset progress track.
-        if (size == WidgetSize.MINI) {
-            val movingWater = running && progress != null
-            views.removeAllViews(R.id.widget_water_holder)
-            if (movingWater) views.addView(R.id.widget_water_holder, themedWater(context, progress!!))
-            views.setViewVisibility(R.id.widget_water_holder, if (movingWater) View.VISIBLE else View.GONE)
-            views.setViewVisibility(R.id.widget_machine_ring, if (movingWater) View.GONE else View.VISIBLE)
+        if (size != WidgetSize.MINI) {
+            views.setViewVisibility(R.id.widget_progress, if (progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
+            views.setViewVisibility(R.id.widget_progress_track, if (progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
+            views.setProgressBar(R.id.widget_progress, 100, progress ?: 0, false)
         }
-        if (size == WidgetSize.MINI)
-            views.setViewVisibility(R.id.widget_mini_activity_holder, if (showActivity) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_activity, if (showActivity) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT >= 31) View.VISIBLE else View.GONE)
-        views.setViewVisibility(R.id.widget_progress_track, if (size != WidgetSize.MINI && progress != null && Build.VERSION.SDK_INT < 31) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.widget_progress_label, View.GONE)
-        views.setProgressBar(R.id.widget_progress, 100, progress ?: 0, false)
         views.setTextViewText(R.id.widget_progress_label, progress?.let { context.getString(R.string.widget_progress_percent, it) }
             ?: context.getString(R.string.widget_progress_unknown))
         views.setContentDescription(R.id.widget_machine, context.getString(if (running) R.string.widget_machine_running else R.string.widget_machine_still))
@@ -217,20 +200,6 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         }
     }
 
-    private fun themedDrum(context: Context): RemoteViews = RemoteViews(context.packageName, R.layout.laundry_widget_drum).also { frames ->
-        val actions = ThemeActions(context, frames)
-        actions.image(R.id.widget_drum_frame_0, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
-        actions.image(R.id.widget_drum_frame_1, "drum:1") { LaundryWidgetArtwork.drum(it, 1) }
-        actions.image(R.id.widget_drum_frame_2, "drum:2") { LaundryWidgetArtwork.drum(it, 2) }
-    }
-
-    private fun themedWater(context: Context, progress: Int): RemoteViews = RemoteViews(context.packageName, R.layout.laundry_widget_water).also { frames ->
-        val actions = ThemeActions(context, frames)
-        listOf(R.id.widget_water_frame_0, R.id.widget_water_frame_1, R.id.widget_water_frame_2).forEachIndexed { index, id ->
-            actions.image(id, "water:$progress:$index") { LaundryWidgetArtwork.water(it, progress, index) }
-        }
-    }
-
     private fun applyMiniLayout(context: Context, views: RemoteViews, layout: MiniWidgetLayout) {
         fun px(dp: Int) = (dp * context.resources.displayMetrics.density).roundToInt()
         val outsideY = px(layout.verticalInset)
@@ -254,22 +223,20 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         views.setInt(R.id.widget_root, "setBackgroundColor", Color.TRANSPARENT)
         actions.image(R.id.widget_backdrop, "background:${dimensions.first}:${dimensions.second}") { LaundryWidgetArtwork.background(it, dimensions.first, dimensions.second) }
         if (size == WidgetSize.MINI) {
-            views.setViewVisibility(R.id.widget_machine_shell, View.GONE)
             actions.image(R.id.widget_machine_ring, "dial:$progress") { LaundryWidgetArtwork.dial(it, progress) }
         } else {
             actions.image(R.id.widget_machine_shell, draw = LaundryWidgetArtwork::shell)
-            actions.image(R.id.widget_drum_static, "drum:0") { LaundryWidgetArtwork.drum(it, 0) }
+            actions.image(R.id.widget_drum_static, draw = LaundryWidgetArtwork::drum)
+            if (Build.VERSION.SDK_INT >= 31) {
+                actions.tint(R.id.widget_progress, "setProgressTintList") { it.accent }
+                actions.tint(R.id.widget_progress, "setProgressBackgroundTintList") { it.outline }
+            } else actions.image(R.id.widget_progress_track, "track:$progress") { LaundryWidgetArtwork.track(it, progress) }
         }
         actions.text(R.id.widget_building) { it.primaryText }
         actions.text(R.id.widget_task) { it.primaryText }
         actions.text(R.id.widget_task_eta) { it.secondaryText }
         actions.text(R.id.widget_progress_label) { it.secondaryText }
         actions.text(R.id.widget_task_note) { it.secondaryText }
-        if (Build.VERSION.SDK_INT >= 31) {
-            actions.tint(R.id.widget_progress, "setProgressTintList") { it.accent }
-            actions.tint(R.id.widget_progress, "setProgressBackgroundTintList") { it.outline }
-            actions.tint(R.id.widget_activity, "setIndeterminateTintList") { it.accent }
-        } else actions.image(R.id.widget_progress_track, "track:$progress") { LaundryWidgetArtwork.track(it, progress) }
     }
 
     companion object {

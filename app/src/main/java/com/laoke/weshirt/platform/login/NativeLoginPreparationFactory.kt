@@ -12,7 +12,7 @@ import org.json.JSONObject
 
 internal fun nativeLoginPreparation(scope: CoroutineScope, context: Context, api: ApiClient, session: SessionStore) =
     NativeLoginPreparation(scope, load = { origin ->
-        withContext(Dispatchers.IO) {
+        recoverNativeLoginChallenge(origin, { api.baseUrl }) { withContext(Dispatchers.IO) {
             if (api.baseUrl != origin || !DingTalkLoginBridge.canPrepare(context)) throw CancellationException("Login changed before preparation")
             DingTalkLoginBridge.availability(context)?.let { throw IllegalStateException(it.message) }
             val request = DingTalkLoginBridge.createRequest(context, session.installationId)
@@ -28,7 +28,7 @@ internal fun nativeLoginPreparation(scope: CoroutineScope, context: Context, api
             val provider = reply.optJSONObject("provider") ?: JSONObject()
             NativeLoginChallenge(reply.str("challengeId"), reply.str("state"), provider.str("clientId"), provider.str("redirectUri"),
                 started + reply.optLong("expiresIn", 180).coerceIn(1, 300) * 1000, provider.str("scope", "openid"))
-        }
+        } }
     }, valid = { prepared ->
         withContext(Dispatchers.IO) {
             if (api.baseUrl != prepared.origin) throw CancellationException("Login service changed")

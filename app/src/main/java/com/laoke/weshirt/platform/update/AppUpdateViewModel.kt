@@ -26,6 +26,7 @@ import java.util.UUID
 
 internal data class AppUpdateState(
     val release: AppRelease? = null,
+    val ignored: Boolean = false,
     val checking: Boolean = false,
     val progress: Float? = null,
     val ready: Boolean = false,
@@ -72,6 +73,7 @@ internal class AppUpdateViewModel(private val app: Application) : AndroidViewMod
                     if (!sameRelease) verifiedApk = null
                     mutableState.update {
                         it.copy(release = release, ready = sameRelease && it.ready,
+                            ignored = release?.versionCode == preferences.getLong("ignored_release", -1L),
                             status = if (!automatic && release == null) "当前已是最新版本" else null, error = null)
                     }
                 }
@@ -84,6 +86,14 @@ internal class AppUpdateViewModel(private val app: Application) : AndroidViewMod
                 mutableState.update { it.copy(checking = false) }
             }
         }
+    }
+
+    fun ignoreCurrentRelease() {
+        val current = mutableState.value
+        val release = current.release ?: return
+        if (current.progress != null) return
+        preferences.edit().putLong("ignored_release", release.versionCode).apply()
+        mutableState.update { it.copy(ignored = true, status = "已忽略此版本，可在这里手动安装。") }
     }
 
     fun download() {

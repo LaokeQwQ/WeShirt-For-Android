@@ -17,8 +17,9 @@ android {
         applicationId = "com.laoke.weshirt"
         minSdk = 29
         targetSdk = 36
-        versionCode = 19
-        versionName = "0.1.1"
+        versionCode = 20
+        // Build 19 was the final fixed-name release at 0.1.1.
+        versionName = "0.1.${versionCode!! - 18}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["timeout_msec"] = "90000"
         manifestPlaceholders["weshirtShareHost"] = runCatching { URI(config("WESHIRT_API_BASE_URL")).host }.getOrNull() ?: "share.invalid"

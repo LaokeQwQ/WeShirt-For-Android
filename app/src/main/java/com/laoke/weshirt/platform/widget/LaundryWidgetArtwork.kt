@@ -171,12 +171,10 @@ internal object LaundryWidgetArtwork {
     }
 
     /** Only fabric and a fixed glass reflection; the case remains completely static. */
-    fun drum(palette: WidgetArtworkPalette, frame: Int): Bitmap = washer { canvas, paint ->
+    fun drum(palette: WidgetArtworkPalette): Bitmap = washer { canvas, paint ->
         val glassClip = Path().apply { addCircle(DOOR_X, DOOR_Y, 23.9f, Path.Direction.CW) }
         canvas.save()
         canvas.clipPath(glassClip)
-        canvas.save()
-        canvas.rotate(((frame % 3 + 3) % 3) * 120f, DOOR_X, DOOR_Y)
         val towel = Path().apply {
             moveTo(29f, 78f); cubicTo(37f, 72f, 47f, 76f, 56f, 74f)
             cubicTo(64f, 73f, 68f, 81f, 65f, 87f)
@@ -218,9 +216,7 @@ internal object LaundryWidgetArtwork {
         paint.color = alpha(Color.WHITE, palette.dark.then(42, 100))
         paint.strokeWidth = .75f
         canvas.drawPath(Path().apply { moveTo(42f, 57f); quadTo(40.5f, 65f, 42f, 73f) }, paint)
-        canvas.restore()
-
-        // Reflections remain fixed while the fabric tumbles underneath them.
+        // Glass reflections over the clothing.
         paint.style = Paint.Style.STROKE
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeWidth = 1.7f
@@ -232,22 +228,18 @@ internal object LaundryWidgetArtwork {
         canvas.restore()
     }
 
-    /** Static form for idle, unverified and completed tasks. */
-    fun dial(palette: WidgetArtworkPalette, progress: Int?): Bitmap = water(palette, progress, 0)
-
-    /** Three phases move only the surface; the actual percentage never changes between frames. */
-    fun water(palette: WidgetArtworkPalette, progress: Int?, frame: Int): Bitmap = bitmap(112, 112) { canvas, paint ->
+    /** Liquid level reflects progress at the latest widget redraw. */
+    fun dial(palette: WidgetArtworkPalette, progress: Int?): Bitmap = bitmap(112, 112) { canvas, paint ->
         val value = progress?.coerceIn(0, 100)
         val circle = Path().apply { addCircle(56f, 56f, 48f, Path.Direction.CW) }
-        val phase = ((frame % 3 + 3) % 3) * (2.0 * PI / 3.0)
         val level = 104f - (value ?: 0) * .96f
         // Fade the wave at the endpoints, so 0% stays empty and 100% stays full.
         val amplitude = value?.let { 3.2f * sin(PI * it / 100.0).toFloat() } ?: 0f
         val water = Path().apply {
             moveTo(8f, 106f)
-            lineTo(8f, level + amplitude * sin(phase).toFloat())
+            lineTo(8f, level)
             for (x in 10..104 step 2) {
-                val wave = sin((x - 8) / 96.0 * 2.0 * PI + phase).toFloat()
+                val wave = sin((x - 8) / 96.0 * 2.0 * PI).toFloat()
                 lineTo(x.toFloat(), level + amplitude * wave)
             }
             lineTo(104f, 106f)
@@ -274,7 +266,7 @@ internal object LaundryWidgetArtwork {
         val metrics = paint.fontMetrics
         val baseline = 56f - (metrics.ascent + metrics.descent) / 2f
         // Paint exactly the same glyphs on each side of the actual wave path.
-        // Clipping also handles letters crossed by the moving surface.
+        // Clipping also handles letters crossed by the water surface.
         canvas.save()
         if (value != null) canvas.clipOutPath(water)
         paint.color = if (value == null) palette.secondaryText else palette.primaryText

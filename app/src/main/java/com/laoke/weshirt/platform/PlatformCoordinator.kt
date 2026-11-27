@@ -91,15 +91,17 @@ class PlatformCoordinator(
         val permissions = state.access.optJSONObject("permissions")
         state.tasks.filter { !it.done && !it.isArchived(System.currentTimeMillis()) && !it.isExpired(System.currentTimeMillis()) && it.endAt != null && !LaundryReminders.isConfirmedFinished(app, it.id) }.forEach { task ->
             if (permissions?.optJSONObject("tasks")?.optBoolean("view", true) == false) return@forEach
+            if (task.completionConfirmed) { LaundryReminders.confirmFinished(app, task.id); return@forEach }
             val finish = (task.endAt ?: return@forEach) - task.clockOffsetMs
-            active[task.id] = tracked(task.id, task.name, finish, (task.startAt ?: 0L).let { if(it > 0) it - task.clockOffsetMs else 0L }, profile.notifyLeadMin)
+            active[task.id] = tracked(task.id, task.name, finish, (task.startAt ?: 0L).let { if(it > 0) it - task.clockOffsetMs else 0L }, profile.notifyLeadMin,
+                kind = task.kind, program = task.program, durationMinutes = task.minutes)
         }
         state.queues.filter { it.optBoolean("mine") && it.optInt("position") == 1 && !it.optBoolean("uncertain") }.forEach { queue ->
             if (permissions?.optJSONObject("queue")?.optBoolean("view", true) == false) return@forEach
             val machine = state.machines.find { it.id == queue.str("machineId") }
             val finish = machine?.finishAt?.minus(machine.clockOffsetMs) ?: epoch(queue.str("eta")) ?: return@forEach
             val id = "queue:${queue.str("id")}"
-            active[id] = tracked(id, "等候 · ${machine?.name ?: "预约机器"}", finish, 0L, 3)
+            active[id] = tracked(id, machine?.name ?: "预约机器", finish, 0L, 3, kind = machine?.kind ?: "washer")
         }
         val previous = taskPrefs.getString("activeIds", "")!!.split('|').filter { it.isNotBlank() }.toSet()
         (previous - active.keys).forEach { LaundryReminders.cancel(app, it); LaundryNotifications(app).cancelProgress(it); taskPrefs.edit().remove(it).apply() }
@@ -129,12 +131,14 @@ class PlatformCoordinator(
         return true
     }
 
-    private fun tracked(id: String, machine: String, finish: Long, start: Long, leadMinutes: Int): TaskProgress {
+    private fun tracked(id: String, machine: String, finish: Long, start: Long, leadMinutes: Int,
+                        kind: String = "washer", program: String = "", durationMinutes: Int? = null): TaskProgress {
         val previous = runCatching { JSONObject(taskPrefs.getString(id, "{}")!!) }.getOrDefault(JSONObject())
         val changed = previous.optLong("finish", -1) != finish
         val revision = previous.optLong("revision", 0) + if (changed) 1 else 0
         taskPrefs.edit().putString(id, JSONObject().put("finish", finish).put("revision", revision).toString()).apply()
-        return TaskProgress(id, revision, machine, start, finish, userRequestedTracking = true, leadMinutes = leadMinutes)
+        return TaskProgress(id, revision, machine, start, finish, userRequestedTracking = true, leadMinutes = leadMinutes,
+            kind = kind, program = program, durationMinutes = durationMinutes)
     }
 
     suspend fun beforeSessionCleared() { LaundryWidgetRefresh.cancel(app); PushRuntime.logout(app); taskPrefs.edit().clear().commit(); lastState = null }

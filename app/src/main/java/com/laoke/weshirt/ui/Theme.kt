@@ -6,12 +6,20 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 
 @Composable fun WeShirtTheme(appearance: String, palette: String, content: @Composable () -> Unit) {
-    val scheme = resolveWeShirtColorScheme(LocalContext.current, appearance, palette, isSystemInDarkTheme())
-    MaterialTheme(colorScheme = scheme, typography = Typography(), content = content)
+    val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val systemDark = isSystemInDarkTheme()
+    val scheme = remember(context, configuration, appearance, palette, systemDark) {
+        resolveWeShirtColorScheme(context, appearance, palette, systemDark)
+    }
+    MaterialTheme(colorScheme = scheme, content = content)
 }
 
 internal fun normalizeAppearance(value: String?) = value?.takeIf { it in setOf("system", "light", "dark") } ?: "system"
@@ -32,7 +40,21 @@ internal fun resolveWeShirtColorScheme(
     val dark = isWeShirtDark(appearance, systemDark)
     val selected = normalizePalette(palette)
     val seed = when(selected) { "green" -> Color(0xFF28765D); "purple" -> Color(0xFF7452B0); else -> Color(0xFF2965D9) }
-    return if(selected == "dynamic" && Build.VERSION.SDK_INT >= 31) { if(dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context) }
-        else if(dark) darkColorScheme(primary = seed.copy(red = (seed.red + 0.4f).coerceAtMost(1f), green = (seed.green + 0.3f).coerceAtMost(1f), blue = (seed.blue + 0.2f).coerceAtMost(1f)), background = Color(0xFF10141C), surface = Color(0xFF171D29))
-        else lightColorScheme(primary = seed, background = Color(0xFFF6F8FD), surface = Color(0xFFFDFBFF), secondaryContainer = Color(0xFFE3ECFF), onSecondaryContainer = Color(0xFF18437F))
+    return if (selected == "dynamic" && Build.VERSION.SDK_INT >= 31) {
+        if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    } else if (dark) {
+        val primary = lerp(seed, Color.White, .55f)
+        val container = lerp(Color(0xFF10141C), seed, .42f)
+        darkColorScheme(primary = primary, onPrimary = lerp(Color.Black, seed, .20f),
+            primaryContainer = container, onPrimaryContainer = lerp(primary, Color.White, .38f),
+            secondaryContainer = lerp(Color(0xFF171D29), seed, .25f), onSecondaryContainer = Color(0xFFEDF1F9),
+            background = Color(0xFF10141C), surface = Color(0xFF171D29))
+    } else {
+        val tinted = lerp(seed, Color.White, .85f)
+        val ink = lerp(seed, Color.Black, .55f)
+        lightColorScheme(primary = seed, onPrimary = Color.White,
+            primaryContainer = tinted, onPrimaryContainer = ink,
+            secondaryContainer = lerp(seed, Color.White, .90f), onSecondaryContainer = ink,
+            background = Color(0xFFF6F8FD), surface = Color(0xFFFDFBFF))
+    }
 }

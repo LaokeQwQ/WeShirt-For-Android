@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -111,7 +113,7 @@ import java.io.ByteArrayOutputStream
             Text("外观", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("system" to "跟随系统", "light" to "浅色", "dark" to "深色").forEach { (key,label) -> FilterChip(state.appearance == key, { vm.preference("appearance", key) }, label = { Text(label) }) } }
             Text("配色", style = MaterialTheme.typography.labelLarge)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("blue" to "蓝", "green" to "绿", "purple" to "紫", "dynamic" to "系统").forEach { (key,label) -> FilterChip(state.palette == key, { vm.preference("palette", key) }, label = { Text(label) }) } }
+            PalettePicker(state.appearance, state.palette) { vm.preference("palette", it) }
             Text("3D 画质与帧率", style = MaterialTheme.typography.labelLarge)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("AUTO" to "自动", "HIGH" to "清晰", "SMOOTH" to "流畅", "BATTERY" to "省电").forEach { (key,label) -> FilterChip(state.quality == key, { vm.preference("quality", key) }, label = { Text(label) }) } }
             Text("自动模式保持清晰，持续掉帧或温度较高时才调整；回到后台停止渲染。", style = MaterialTheme.typography.bodySmall)
@@ -141,6 +143,24 @@ import java.io.ByteArrayOutputStream
         TextButton(onClick = { avatarOwner = owner; avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)); avatarMenu = false }) { Text("自定义头像") }
     } }, confirmButton = { TextButton(onClick = { avatarMenu = false }) { Text("取消") } })
     if(logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("退出当前账号？") }, text = { Text("会清理本机账号数据和洗衣通知。") }, confirmButton = { TextButton(onClick = { vm.logout(); logout = false }) { Text("退出登录") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("取消") } })
+}
+
+@Composable private fun PalettePicker(appearance: String, selected: String, select: (String) -> Unit) {
+    val context = LocalContext.current
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        listOf("blue" to "蓝色", "green" to "绿色", "purple" to "紫色", "dynamic" to "系统配色").forEach { (key, label) ->
+            val scheme = remember(context, appearance, key, systemDark) {
+                resolveWeShirtColorScheme(context, appearance, key, systemDark)
+            }
+            FilterChip(selected = selected == key, onClick = { select(key) }, label = { Text(label) },
+                leadingIcon = {
+                    Box(Modifier.size(19.dp).background(scheme.primary, CircleShape)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape))
+                }, trailingIcon = if (selected == key) ({ Icon(Icons.Outlined.Check, null, Modifier.size(16.dp)) }) else null,
+                modifier = Modifier.heightIn(min = 48.dp))
+        }
+    }
 }
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary); content() } } }
 @Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, change: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked, change) } }
