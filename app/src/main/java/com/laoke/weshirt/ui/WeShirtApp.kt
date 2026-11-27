@@ -88,7 +88,11 @@ import kotlinx.coroutines.launch
 
         }) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if (!state.authReady && (state.tab != 0 || state.building.isBlank())) SessionRestoringPanel(state, { vm.refresh() })
+                if (!state.authReady && when (state.tab) {
+                        0 -> state.building.isBlank()
+                        1 -> state.profile == null || state.savedLaundrySyncedAt == null
+                        else -> true
+                    }) SessionRestoringPanel(state, { vm.refresh() })
                 else if(state.building.isBlank() && state.tab == 0) EmptyPanel("住在哪一栋？", "选好后，下次打开直接进入。登录后会同步账号绑定的住宿楼。", Icons.Outlined.Apartment, "选择住宿楼") { buildingPicker = true }
                 else AnimatedContent(targetState = state.tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(100)) }, label = "page") { tab ->
                     when(tab) {

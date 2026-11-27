@@ -2,6 +2,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -32,6 +34,7 @@
         <activity android:name=".ddauth.DDAuthActivity" android:exported="true" android:excludeFromRecents="true" />
         <activity android:name="com.android.dingtalk.openauth.web.AuthWebviewActivity" tools:node="remove" />
         <service android:name=".platform.push.WeShirtMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT" /></intent-filter></service>
+        <service android:name=".platform.update.AppUpdateDownloadService" android:exported="false" android:foregroundServiceType="dataSync" android:stopWithTask="false" />
         <receiver android:name=".platform.widget.LaundryWidgetMiniProvider" android:label="@string/widget_name_2x1" android:exported="false">
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/laundry_widget_mini_info" />

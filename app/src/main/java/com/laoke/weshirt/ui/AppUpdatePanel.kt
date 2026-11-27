@@ -37,8 +37,12 @@ internal fun AppUpdatePanel(updates: AppUpdateViewModel, install: () -> Unit) {
         val progress = state.progress
         when {
             progress != null -> {
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                Text("正在下载并校验更新 ${(progress * 100).roundToInt()}%", style = MaterialTheme.typography.bodySmall)
+                if (state.verifying) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                else LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+                Text(if (state.verifying) "正在核对版本与应用签名…" else "正在下载更新 ${(progress * 100).roundToInt()}%", style = MaterialTheme.typography.bodySmall)
+                if (!state.verifying) state.downloadDetails?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                Text("可切到后台继续下载；安装前仍需你的确认。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = updates::cancelDownload) { Text("取消下载") }
             }
             state.ready -> Button(onClick = install, enabled = !state.checking) { Text("安装更新") }
             release != null && !state.checking -> Button(onClick = updates::download) { Text("下载更新") }

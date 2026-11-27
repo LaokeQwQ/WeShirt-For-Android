@@ -13,6 +13,19 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+/** Cancels a blocked HTTP read as well as disk/hash work; it does not leave a partial APK. */
+internal class UpdateDownloadCancellation {
+    private val cancelled = AtomicBoolean(false)
+    private val activeCall = AtomicReference<okhttp3.Call?>()
+    fun cancel() { cancelled.set(true); activeCall.get()?.cancel() }
+    fun check() { if (cancelled.get()) throw CancellationException("Update download cancelled") }
+    fun attach(call: okhttp3.Call) { activeCall.set(call); if (cancelled.get()) call.cancel() }
+    fun detach(call: okhttp3.Call) { activeCall.compareAndSet(call, null) }
+}
 
 internal data class AppRelease(
     val versionCode: Long,
@@ -56,33 +69,58 @@ internal class AppUpdateClient(
     }
 
     fun download(release: AppRelease, directory: File, progress: (Float) -> Unit): File {
+        var previous = 0
+        return downloadCancelable(release, directory, UpdateDownloadCancellation()) { bytes ->
+            val percent = (bytes * 100 / release.size).toInt()
+            if (percent > previous && percent < 100) { progress(percent / 100f); previous = percent }
+        }
+    }
+
+    fun downloadCancelable(release: AppRelease, directory: File, cancellation: UpdateDownloadCancellation,
+                           transferred: (Long) -> Unit): File {
+        cancellation.check()
         if (apkUrl(release.apk.toString()) != release.apk || !SHA256.matches(release.sha256) ||
             release.size !in 1..MAX_APK_BYTES || release.versionCode !in 1..MAX_VERSION_CODE) invalidManifest()
         if (!directory.isDirectory && !directory.mkdirs()) {
             throw AppUpdateException("STORAGE_UNAVAILABLE", "更新目录暂不可用")
         }
         val target = File(directory, "${release.versionCode}-${release.sha256}.apk")
-        if (target.isFile && runCatching { target.source().buffer().use { transfer(it, release, null, progress) } }.isSuccess) {
-            return target
+        if (target.isFile) {
+            try {
+                target.source().buffer().use { transfer(it, release, null, cancellation, transferred) }
+                cancellation.check()
+                return target
+            } catch (error: CancellationException) { throw error }
+            catch (_: IOException) { /* A corrupt cache is replaced using the same verified manifest. */ }
         }
+        cancellation.check()
         target.delete()
         val temporary = File.createTempFile("download-", ".part", directory)
         try {
             val request = Request.Builder().url(release.apk).header("Accept-Encoding", "identity").build()
-            client.newCall(request).execute().use { reply ->
+            val call = client.newCall(request)
+            call.timeout().timeout(30, TimeUnit.MINUTES)
+            cancellation.attach(call)
+            try { call.execute().use { reply ->
                 if (!reply.isSuccessful) throw AppUpdateException("APK_HTTP_${reply.code}", "暂时无法下载安装包")
                 val body = reply.body ?: invalidSize()
                 val length = body.contentLength()
                 if (length >= 0L && length != release.size) invalidSize()
                 body.source().use { source ->
                     temporary.outputStream().buffered().use { destination ->
-                        transfer(source, release, destination, progress)
+                        transfer(source, release, destination, cancellation, transferred)
                     }
                 }
-            }
+            } } catch (error: IOException) { cancellation.check(); throw error }
+            finally { cancellation.detach(call) }
+            cancellation.check()
             if (!temporary.renameTo(target)) throw AppUpdateException("STORAGE_UNAVAILABLE", "无法保存已校验的安装包")
+            cancellation.check()
             directory.listFiles()?.filter { it != target && it.name.endsWith(".apk") }?.forEach { it.delete() }
             return target
+        } catch (error: CancellationException) {
+            target.delete()
+            throw error
         } finally {
             temporary.delete()
         }
@@ -116,25 +154,23 @@ internal class AppUpdateClient(
         source: BufferedSource,
         release: AppRelease,
         destination: java.io.OutputStream?,
-        progress: (Float) -> Unit,
+        cancellation: UpdateDownloadCancellation,
+        transferred: (Long) -> Unit,
     ) {
         val digest = MessageDigest.getInstance("SHA-256")
         val chunk = ByteArray(32 * 1024)
         var bytes = 0L
-        var lastPercent = 0
         while (true) {
+            cancellation.check()
             val read = source.read(chunk, 0, chunk.size)
             if (read == -1) break
             bytes += read.toLong()
             if (bytes > release.size) invalidSize()
             digest.update(chunk, 0, read)
             destination?.write(chunk, 0, read)
-            val percent = (bytes * 100 / release.size).toInt()
-            if (percent > lastPercent && percent < 100) {
-                progress(percent / 100f)
-                lastPercent = percent
-            }
+            transferred(bytes)
         }
+        cancellation.check()
         if (bytes != release.size) invalidSize()
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         if (hash != release.sha256) throw AppUpdateException("APK_SHA256_MISMATCH", "安装包校验失败，请重试")

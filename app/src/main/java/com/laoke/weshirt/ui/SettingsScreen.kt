@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -119,7 +120,6 @@ import java.io.ByteArrayOutputStream
             Text("自动模式保持清晰，持续掉帧或温度较高时才调整；回到后台停止渲染。", style = MaterialTheme.typography.bodySmall)
         } }
         item { SettingsCard("隐私") { ToggleRow("匿名性能数据", "不包含聊天、备注、手机号与账号标识", state.telemetryOn, vm::telemetry) } }
-        item { SettingsCard("朋友与代取") { Text("扫描个人二维码添加朋友后，可在「我的洗衣」中发送代取请求。"); FilledTonalButton(onClick = { vm.tab(1) }) { Text("查看朋友与代取") } } }
         if (state.access.optBoolean("adminVisible")) item { SettingsCard("管理") {
             FilledTonalButton(onClick = { admin = true }, modifier = Modifier.fillMaxWidth()) { Text("管理员后台") }
         } }
@@ -145,22 +145,37 @@ import java.io.ByteArrayOutputStream
     if(logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("退出当前账号？") }, text = { Text("会清理本机账号数据和洗衣通知。") }, confirmButton = { TextButton(onClick = { vm.logout(); logout = false }) { Text("退出登录") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("取消") } })
 }
 
-@Composable private fun PalettePicker(appearance: String, selected: String, select: (String) -> Unit) {
+@Composable internal fun PalettePicker(appearance: String, selected: String, select: (String) -> Unit) {
     val context = LocalContext.current
     val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        listOf("blue" to "蓝色", "green" to "绿色", "purple" to "紫色", "dynamic" to "系统配色").forEach { (key, label) ->
-            val scheme = remember(context, appearance, key, systemDark) {
-                resolveWeShirtColorScheme(context, appearance, key, systemDark)
+    val palette = normalizePalette(selected)
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val labels = remember { linkedMapOf("blue" to "蓝色", "green" to "绿色", "purple" to "紫色", "dynamic" to "系统配色") }
+    val schemes = remember(context, appearance, systemDark) {
+        labels.keys.associateWith { resolveWeShirtColorScheme(context, appearance, it, systemDark) }
+    }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("palette-dropdown")) {
+            PaletteSwatch(schemes.getValue(palette).primary)
+            Spacer(Modifier.width(10.dp))
+            Text(labels.getValue(palette), Modifier.weight(1f))
+            Icon(Icons.Outlined.ArrowDropDown, "展开配色选择")
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            labels.forEach { (key, label) ->
+                DropdownMenuItem(text = { Text(label) }, onClick = {
+                    expanded = false
+                    select(key)
+                },
+                    leadingIcon = { PaletteSwatch(schemes.getValue(key).primary) },
+                    trailingIcon = if (palette == key) ({ Icon(Icons.Outlined.Check, "当前配色", Modifier.size(16.dp)) }) else null)
             }
-            FilterChip(selected = selected == key, onClick = { select(key) }, label = { Text(label) },
-                leadingIcon = {
-                    Box(Modifier.size(19.dp).background(scheme.primary, CircleShape)
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape))
-                }, trailingIcon = if (selected == key) ({ Icon(Icons.Outlined.Check, null, Modifier.size(16.dp)) }) else null,
-                modifier = Modifier.heightIn(min = 48.dp))
         }
     }
+}
+@Composable private fun PaletteSwatch(color: androidx.compose.ui.graphics.Color) {
+    Box(Modifier.size(19.dp).background(color, CircleShape)
+        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape))
 }
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) { Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary); content() } } }
 @Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, change: (Boolean) -> Unit) { Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(title); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Switch(checked, change) } }
