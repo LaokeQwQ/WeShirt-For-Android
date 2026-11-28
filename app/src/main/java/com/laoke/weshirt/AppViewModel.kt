@@ -276,13 +276,17 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     }
     private suspend fun refreshAccount(version: Int) {
         val signedIn = session.read() != null
-        val previouslyVerified = _state.value.authReady && signedIn
         if (!signedIn) {
             if (version == generation.get()) { _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
                 savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
             return
         }
-        _state.update { it.copy(sessionRestoring = !it.authReady, authError = null) }
+        val previouslyVerified = _state.value.let {
+            it.authReady && it.profile != null && it.access.optJSONObject("permissions") != null
+        }
+        // A resume refresh can see the new credentials before the callback
+        // resets guest state. Guest readiness is not permission verification.
+        _state.update { it.copy(authReady = previouslyVerified, sessionRestoring = !previouslyVerified, authError = null) }
         try {
             val (user, access) = coroutineScope {
                 val permissions = async { optionalRefresh {

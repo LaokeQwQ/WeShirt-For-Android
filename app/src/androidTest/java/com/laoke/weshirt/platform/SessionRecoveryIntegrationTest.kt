@@ -77,7 +77,7 @@ class SessionRecoveryIntegrationTest {
     @Volatile private var runningHotWash = false
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
-    private val origin = "https://recovery.invalid"
+    private var origin = "https://recovery.invalid"
 
     @Before fun prepare() {
         previous = prefs.all.toMap()
@@ -85,7 +85,7 @@ class SessionRecoveryIntegrationTest {
         prefs.edit().clear().putString("endpoint", origin).putString("building", "test").putBoolean("announcements", false).putBoolean("nativePushConsent", false).commit()
         client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
-            check(request.url.host == "recovery.invalid")
+            check(request.url.host == android.net.Uri.parse(origin).host)
             val path = request.url.encodedPath
             val buffer = okio.Buffer(); request.body?.writeTo(buffer)
             requests.add(path to buffer.readUtf8())
@@ -165,6 +165,10 @@ class SessionRecoveryIntegrationTest {
     }
 
     @Test fun newerRoomTimingRefreshesPrivateHotWashWithoutTouchingRefresh() {
+        // Other recovery cases intentionally publish 2030 boards. Use a
+        // distinct origin so the persisted board cannot outrank this fixture.
+        origin = "https://hot-wash-${java.util.UUID.randomUUID()}.invalid"
+        prefs.edit().putString("endpoint", origin).commit()
         runningHotWash = true
         profileStatus = 200
         saved(true)
