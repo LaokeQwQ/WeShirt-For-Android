@@ -94,8 +94,10 @@ class LaundryWidgetClickTest {
                     jobs().singleOrNull()?.let { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 } == true
                 }
                 views.forEach { view ->
+                    val expectedEta = app.getString(R.string.widget_expected_finish, "")
+                        .trim().substringBefore(' ').trim()
                     await("Widget must retain the verified countdown while the read retries") {
-                        onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString()?.startsWith("预计 ") == true }
+                        onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString()?.startsWith(expectedEta) == true }
                     }
                     onMain {
                         assertNull(view.findViewById<View>(R.id.widget_refresh))

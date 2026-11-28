@@ -133,7 +133,8 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         }
         views.setTextViewText(R.id.widget_task, visibleTitle)
         val visibleStatus = when {
-            refreshError != null -> context.getString(R.string.widget_refresh_failed)
+            refreshError != null && taskState in setOf(WidgetTaskState.NONE, WidgetTaskState.UNVERIFIED) ->
+                context.getString(R.string.widget_refresh_failed)
             size == WidgetSize.MINI -> miniStatus(context, taskState, taskStatus, snapshot, hasSession)
             else -> taskStatus
         }
