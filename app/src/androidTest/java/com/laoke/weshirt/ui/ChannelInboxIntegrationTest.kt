@@ -267,10 +267,11 @@ class ChannelInboxIntegrationTest {
         compose.waitUntil(10_000) { requests.any { it.requestUrl!!.encodedPath == "/api/assistant/status" } }
         compose.onNodeWithTag("assistant-page").assertIsDisplayed()
         compose.onNodeWithTag("navigation:4").assertIsSelected()
-        compose.waitUntil(10_000) { vm.state.value.assistant.panels["history"]?.data != null }
+        compose.waitUntil(10_000) { vm.state.value.assistant.panels["status"]?.data != null }
         compose.onNodeWithTag("assistant-status-card").assertIsDisplayed()
-        compose.onNodeWithTag("assistant-message:0").assertIsDisplayed()
-        assertEquals("The state card and conversation must not wait for optional memory", 1L, releaseMemory.count)
+        compose.onNodeWithTag("assistant-open-history").assertIsDisplayed()
+        assertFalse(requests.any { it.requestUrl!!.encodedPath == "/api/assistant/history" })
+        assertEquals("The state card must not wait for optional memory", 1L, releaseMemory.count)
         assertEquals("Opening the assistant must join the existing background preload", 1, requests.count { it.requestUrl!!.encodedPath == "/api/assistant/memory" })
         assertTrue("The independent assistant must use the current authenticated account", requests.filter { it.requestUrl!!.encodedPath.startsWith("/api/assistant/") }.all { it.getHeader("Authorization") == "Bearer channel-fixture" })
         captureScreen("native-assistant-page")

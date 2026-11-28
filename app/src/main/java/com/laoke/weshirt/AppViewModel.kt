@@ -386,9 +386,12 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         result.onSuccess { response ->
             val now = System.currentTimeMillis()
             val offset = epoch(response.str("serverNow"))?.minus(now) ?: 0L
+            deletedTaskReceipts.entries.removeAll {
+                it.value.generation != version || now - it.value.at !in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
+            }
             val items = response.optJSONArray("tasks")?.objects().orEmpty().map { row ->
                 LaundryTask.parse(row).copy(clockOffsetMs = offset)
-            }
+            }.filterNot { it.id in deletedTaskReceipts }
             val ids = items.mapTo(HashSet()) { it.id }
             _state.update { state ->
                 val taken = state.tasks.asSequence().filter { it.done }.map { it.id }.toSet()
@@ -486,6 +489,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private var taskRevision = 0L
     private data class TaskRegistrationReceipt(val generation: Int, val at: Long)
     private val taskRegistrationReceipts = mutableMapOf<String, TaskRegistrationReceipt>()
+    private val deletedTaskReceipts = mutableMapOf<String, TaskRegistrationReceipt>()
     private fun persistCurrentLaundry() {
         val current = _state.value
         val syncedAt = current.tasksUpdatedAt ?: return
@@ -505,6 +509,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
     }
 
+    private var registrationInFlight = false
+
     fun register(machine: Machine, minutes: Int, note: String, disinfectant: Boolean, cleaned: Boolean,
                  useMachine: Boolean, selfCleanProgram: Boolean, onSuccess: () -> Unit = {}, onFailure: (String) -> Unit = {}) = viewModelScope.launch {
         val start = _state.value
@@ -514,7 +520,14 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         fun currentAccount() = generation.get() == version && _state.value.let {
             it.authReady && it.profile?.id == owner && it.endpoint == start.endpoint && api.sessionFence() == fence
         }
-        if (!currentAccount() || !mutationMutex.tryLock()) return@launch
+        if (!currentAccount()) return@launch
+        if (registrationInFlight) {
+            message("上一笔登记正在确认，请稍候")
+            return@launch
+        }
+        if (!mutationMutex.tryLock()) return@launch
+        registrationInFlight = true
+        var holdsLock = true
         _state.update { it.copy(busy = true) }
         try {
             if (_state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("operate", true) == false) {
@@ -525,7 +538,29 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 throw ApiException(409, "machine_changed", "client_${UUID.randomUUID()}", "机器信息已变化，请重新核对并确认登记")
             }
             val body = TaskRegistration.body(latest, minutes, note, disinfectant, cleaned, useMachine, selfCleanProgram)
-            val response = api.call("/api/tasks", "POST", body)
+            val requestKey = UUID.randomUUID().toString()
+            val response = try {
+                api.call("/api/tasks", "POST", body, key = requestKey)
+            } catch (problem: ApiException) {
+                if (!isRegistrationRetryable(problem) || !currentAccount()) throw problem
+                _state.update { it.copy(busy = false) }
+                mutationMutex.unlock()
+                holdsLock = false
+                message("服务暂时繁忙，正在确认这次登记")
+                var result: JSONObject? = null
+                for (pause in listOf(1_500L, 4_000L)) {
+                    kotlinx.coroutines.delay(pause)
+                    if (!currentAccount()) return@launch
+                    try {
+                        result = api.call("/api/tasks", "POST", body, key = requestKey)
+                        break
+                    } catch (retry: ApiException) {
+                        if (!isRegistrationRetryable(retry)) throw retry
+                    }
+                }
+                result ?: throw ApiException(problem.status, problem.code, problem.eventId,
+                    "登记结果暂未确认，请先在「我的洗衣」查看")
+            }
             if (!currentAccount()) return@launch
             val task = response.optJSONObject("task")?.let(LaundryTask::parse)
                 ?.takeIf { it.id.isNotBlank() && it.machineId == machine.id }
@@ -546,13 +581,22 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             refresh(afterCurrent = true)
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) {
-            if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "登记未完成，请重试"))
+            if (currentAccount()) {
+                onFailure(com.laoke.weshirt.ui.clientFailure(problem, "登记未完成，请重试"))
+                if (!holdsLock) refresh(afterCurrent = true)
+            }
         }
         finally {
-            _state.update { it.copy(busy = false) }
-            mutationMutex.unlock()
+            registrationInFlight = false
+            if (holdsLock) {
+                _state.update { it.copy(busy = false) }
+                mutationMutex.unlock()
+            }
         }
     }
+
+    private fun isRegistrationRetryable(problem: ApiException): Boolean =
+        problem.status in setOf(0, 408, 500, 502, 503, 504) || problem.code == "idempotency_in_progress"
     fun favorite(machine: Machine) = mutate(null) { api.call("/api/user/favorites/toggle", "POST", JSONObject().put("machineId", machine.id)) }
     fun testMobileNotification() = mutate(null) {
         if (!platform.notificationsEnabled) {
@@ -622,6 +666,54 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             mutationMutex.unlock()
         }
     }
+    fun deleteLaundryTask(taskId: String, onSuccess: () -> Unit, onFailure: (String) -> Unit): Job = viewModelScope.launch {
+        val initial = _state.value
+        val owner = initial.profile?.id ?: return@launch
+        val version = generation.get()
+        val fence = api.sessionFence()
+        fun currentAccount() = version == generation.get() && api.sessionFence() == fence &&
+            _state.value.let { it.profile?.id == owner && it.endpoint == initial.endpoint }
+        fun failure(status: Int, code: String, message: String) = ApiException(status, code, "client_${UUID.randomUUID()}", message)
+        if (!initial.authReady) {
+            onFailure(failure(409, "account_restoring", "账号正在恢复，请稍后删除登记").message.orEmpty())
+            return@launch
+        }
+        if (!mutationMutex.tryLock()) {
+            onFailure(failure(409, "another_operation", "其他操作正在处理，请稍后重试").message.orEmpty())
+            return@launch
+        }
+        _state.update { it.copy(busy = true) }
+        try {
+            if (_state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("operate", true) == false)
+                throw failure(403, "forbidden", "当前账号没有删除登记权限")
+            if (_state.value.tasks.none { it.id == taskId })
+                throw failure(409, "task_changed", "登记状态已变化，请刷新后重试")
+            val response = api.call("/api/tasks/${api.encoded(taskId)}", "DELETE")
+            if (!currentAccount()) return@launch
+            if (!response.optBoolean("ok"))
+                throw failure(502, "delete_receipt_invalid", "暂未收到删除确认，请刷新查看后重试")
+            val now = System.currentTimeMillis()
+            taskRevision++
+            taskRegistrationReceipts.remove(taskId)
+            deletedTaskReceipts[taskId] = TaskRegistrationReceipt(version, now)
+            _state.update { state -> state.copy(tasks = state.tasks.filterNot { it.id == taskId },
+                tasksUpdatedAt = now, tasksRefreshFailed = false) }
+            persistCurrentLaundry()
+            message("登记已删除")
+            onSuccess()
+            viewModelScope.launch {
+                if (currentAccount()) platform.synchronize(_state.value, confirmedRemoval = true)
+            }
+            refresh(afterCurrent = true)
+        } catch (cancel: CancellationException) { throw cancel }
+        catch (problem: Exception) {
+            if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "删除登记未完成，请重试"))
+        } finally {
+            _state.update { it.copy(busy = false) }
+            mutationMutex.unlock()
+        }
+    }
+
     fun cancelQueue(machineId: String) = mutate("已取消排队") { api.call("/api/queue?machineId=${api.encoded(machineId)}", "DELETE") }
     fun nick(value: String) = mutate { api.call("/api/user/profile", "POST", JSONObject().put("nick", value)) }
     fun randomNick(callback: (String) -> Unit) = mutate(null) { val j=api.call("/api/user/random?field=nick"); callback(j.str("nick", j.str("value"))) }

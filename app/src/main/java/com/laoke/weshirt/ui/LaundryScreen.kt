@@ -45,6 +45,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     var registration by remember(state.profile?.id, state.building) { mutableStateOf<Machine?>(null) }
     var registrationError by remember { mutableStateOf<String?>(null) }
     var confirm by remember { mutableStateOf<TaskConfirmation?>(null) }
+    var deleteError by remember(confirm?.task?.id) { mutableStateOf<String?>(null) }
     var history by rememberSaveable { mutableStateOf(false) }
     var historyQuery by rememberSaveable { mutableStateOf("") }
     var now by remember(state.updatedAt, state.tasksUpdatedAt) { mutableLongStateOf(System.currentTimeMillis()) }
@@ -182,19 +183,16 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     }
     confirm?.let { ask ->
         if (ask.delete) {
-            AlertDialog(onDismissRequest = { if (!session.busy) confirm = null }, title = { Text("删除登记？") }, text = {
+            AlertDialog(onDismissRequest = { if (!busy) confirm = null }, title = { Text("删除登记？") }, text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("${ask.task.name}\n删除这条记录并释放登记占用，机器远端状态不会随登记删除改变。")
-                    FeatureError(session)
+                    deleteError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
-            }, dismissButton = { TextButton(enabled = !session.busy, onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
+            }, dismissButton = { TextButton(enabled = !busy, onClick = { confirm = null }) { Text("取消") } }, confirmButton = {
                 TextButton(enabled = !busy, onClick = {
-                    session.run(refresh = true) {
-                        if (vm.state.value.tasks.none { it.id == ask.task.id }) throw IllegalStateException("登记状态已变化，请刷新后重试")
-                        request("/api/tasks/${vm.api.encoded(ask.task.id)}", "DELETE")
-                        confirm = null; vm.message("登记已删除")
-                    }
-                }) { Text(if (session.busy) "正在删除…" else "确认删除") }
+                    deleteError = null
+                    vm.deleteLaundryTask(ask.task.id, onSuccess = { confirm = null }, onFailure = { deleteError = it })
+                }) { Text(if (busy) "正在删除…" else "确认删除") }
             })
         } else key(ask.task.id) {
             TaskTakeDialog(

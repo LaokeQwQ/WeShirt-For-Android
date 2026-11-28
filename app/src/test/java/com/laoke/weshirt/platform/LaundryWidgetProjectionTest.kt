@@ -63,8 +63,8 @@ class LaundryWidgetProjectionTest {
     }
 
     @Test fun newBoardDoesNotMakeOldFailedTaskRequestLookCurrent() {
-        val old = projectLaundryWidget(state().copy(tasksUpdatedAt = now - 700_000), now)!!
-        assertEquals(now - 700_000, old.updatedAtMillis)
+        val old = projectLaundryWidget(state().copy(tasksUpdatedAt = now - 1_500_001), now)!!
+        assertEquals(now - 1_500_001, old.updatedAtMillis)
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(old, now))
         val failed = projectLaundryWidget(state().copy(tasksRefreshFailed = true), now)!!
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(failed, now))

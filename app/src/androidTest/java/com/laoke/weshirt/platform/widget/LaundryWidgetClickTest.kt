@@ -90,13 +90,12 @@ class LaundryWidgetClickTest {
                     assertNotNull(job.periodicityInfo)
                     assertEquals(TimeUnit.MINUTES.toMillis(15), job.periodicityInfo?.repeatIntervalMillis)
                 }
-                await("The periodic job did not persist the network failure") {
-                    jobs().singleOrNull()?.state == WorkInfo.State.ENQUEUED &&
-                        LaundryWidgetStore.refreshError(app)?.contains("HTTP 0") == true
+                await("The periodic job did not schedule a bounded retry") {
+                    jobs().singleOrNull()?.let { it.state == WorkInfo.State.ENQUEUED && it.runAttemptCount > 0 } == true
                 }
                 views.forEach { view ->
-                    await("Widget did not display the refresh failure") {
-                        onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString() == app.getString(R.string.widget_refresh_failed) }
+                    await("Widget must retain the verified countdown while the read retries") {
+                        onMain { view.findViewById<TextView>(R.id.widget_task_eta)?.text?.toString()?.startsWith("预计 ") == true }
                     }
                     onMain {
                         assertNull(view.findViewById<View>(R.id.widget_refresh))

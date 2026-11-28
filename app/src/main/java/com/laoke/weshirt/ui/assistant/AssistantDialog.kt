@@ -100,7 +100,9 @@ private data class AssistantConfirmation(val title: String, val message: String,
     var streamInterrupted by remember(session) { mutableStateOf(false) }
     val streamBuffer = remember(session) { StringBuilder() }
     val usage = status?.optJSONObject("usage")
-    val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0
+    val blockedUntil = status?.str("blockedUntil").orEmpty()
+    val suspended = runCatching { java.time.Instant.parse(blockedUntil).toEpochMilli() > System.currentTimeMillis() }.getOrDefault(false)
+    val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0 && !suspended
     val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 &&
         (input.isNotBlank() || photo != null) && input.length <= 1000 && !session.busy
 
@@ -215,7 +217,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                         }
                         item("assistant-composer") {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                safetyNotice?.let { notice ->
+                                (safetyNotice ?: "助手暂时停用，请在审核限制到期后刷新。".takeIf { suspended })?.let { notice ->
                                     Surface(color = MaterialTheme.colorScheme.errorContainer,
                                         shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
                                         Text(notice, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer)

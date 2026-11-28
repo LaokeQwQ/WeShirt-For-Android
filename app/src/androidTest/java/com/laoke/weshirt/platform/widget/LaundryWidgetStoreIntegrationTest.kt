@@ -104,7 +104,7 @@ class LaundryWidgetStoreIntegrationTest {
         assertTrue(coordinator.synchronizeWidget(state))
         assertEquals("2 号洗衣机 · 新名称", LaundryWidgetStore.read(app)?.taskMachineName)
         assertTrue(coordinator.synchronizeWidget(state.copy(boardWarning = "状态待确认")))
-        assertTrue(LaundryWidgetStore.read(app)!!.taskUnverified)
+        assertFalse(LaundryWidgetStore.read(app)!!.taskUnverified)
         assertTrue(coordinator.synchronizeWidget(state.copy(updatedAt = now - 30_000,
             access = JSONObject("""{"permissions":{"tasks":{"view":false}}}"""))))
         val redacted = LaundryWidgetStore.read(app)!!

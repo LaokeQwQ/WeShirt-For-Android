@@ -132,6 +132,10 @@ class SessionRecoveryIntegrationTest {
                         """{"error":{"code":"fixture_busy","message":"服务暂不可用","eventId":"evt_pickup_fixture"}}"""
                     } else """{"ok":true,"task":{"id":"washer-task","machineId":"public-machine","done":true}}"""
                 }
+                "/api/tasks/washer-task" -> {
+                    check(request.method == "DELETE" && withLaundryTask)
+                    """{"ok":true}"""
+                }
                 "/api/user/test-notify" -> """{"ok":true,"accepted":true,"channel":"mobile","provider":"fcm"}"""
                 "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"unauthorized","message":"fixture expired"}}""" }
                 "/api/mobile/auth/refresh" -> { status = 401; """{"error":{"code":"invalid_refresh_token"}}""" }
@@ -222,6 +226,22 @@ class SessionRecoveryIntegrationTest {
         assertEquals(2, takeAttempts.get())
     }
 
+    @Test fun deletionAcknowledgementImmediatelyRemovesTaskAndFencesSubsequentReplicaReads() {
+        withLaundryTask = true
+        profileStatus = 200
+        saved(true)
+        val vm = model()
+        release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.tasks.any { it.id == "washer-task" } }
+        val deletion = onMain { vm.deleteLaundryTask("washer-task", {}, { fail(it) }) }
+        runBlocking { deletion.join() }
+        assertTrue(vm.state.value.tasks.isEmpty())
+        assertEquals(1, requests.count { it.first == "/api/tasks/washer-task" })
+        val refresh = onMain { vm.refresh(afterCurrent = true) }
+        runBlocking { refresh.join() }
+        assertTrue("A lagging GET must not resurrect a deleted registration", vm.state.value.tasks.isEmpty())
+    }
+
     @Test fun coldRestoreNeverShowsLoginAndTransientFailureKeepsSavedIdentityAndCredentials() {
         saved(true)
         val vm = model()
@@ -289,7 +309,8 @@ class SessionRecoveryIntegrationTest {
         compose.onNodeWithText("正在恢复账号").assertIsDisplayed()
         compose.onNodeWithText("钉钉登录").assertDoesNotExist()
         profileStatus = 200; release.countDown()
-        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["history"]?.data != null }
+        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["status"]?.data != null }
+        assertFalse(requests.any { it.first == "/api/assistant/history" })
         assertEquals("saved-user", vm.state.value.assistant.scope?.userId)
         assertNotNull(SecureSession(app).read())
     }
