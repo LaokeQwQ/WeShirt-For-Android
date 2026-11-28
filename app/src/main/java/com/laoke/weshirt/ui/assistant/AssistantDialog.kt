@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.animation.AnimatedVisibility
@@ -55,16 +56,12 @@ private data class AssistantConfirmation(val title: String, val message: String,
     key(state.endpoint, state.profile.id, state.building) { AssistantFeature(state, vm, null, true, {}) }
 }
 
-@Composable private fun AssistantFrame(embedded: Boolean, close: () -> Unit, refresh: () -> Unit, busy: Boolean,
-                                      content: @Composable (PaddingValues) -> Unit) {
-    if (!embedded) UserFeatureDialog("洗衣助手", close, actions = { IconButton(onClick = refresh, enabled = !busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") } }, content = content)
-    else Column(Modifier.fillMaxSize().testTag("assistant-page")) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("问问洗衣助手", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-            IconButton(onClick = refresh, enabled = !busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") }
-        }
-        Box(Modifier.weight(1f).fillMaxWidth()) { content(PaddingValues()) }
-    }
+@Composable private fun AssistantFrame(
+    embedded: Boolean, close: () -> Unit, actions: @Composable RowScope.() -> Unit,
+    content: @Composable (PaddingValues) -> Unit,
+) {
+    if (!embedded) UserFeatureDialog("洗衣助手", close, actions = actions, content = content)
+    else Box(Modifier.fillMaxSize().testTag("assistant-page")) { content(PaddingValues()) }
 }
 
 @Composable private fun AssistantFeature(state: AppState, vm: AppViewModel, initialSkill: String?, embedded: Boolean, close: () -> Unit) {
@@ -105,6 +102,8 @@ private data class AssistantConfirmation(val title: String, val message: String,
     val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0 && !suspended
     val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 &&
         (input.isNotBlank() || photo != null) && input.length <= 1000 && !session.busy
+    val conversationScroll = rememberLazyListState()
+    val featureScroll = key(tab) { rememberLazyListState() }
 
     fun load() { vm.preloadAssistant(force = true, names = if (historyOpen) AssistantPreloader.NAMES else AssistantPreloader.OPEN_PANELS) }
     fun updated(vararg names: String, acceptLocal: Boolean = true) {
@@ -155,15 +154,88 @@ private data class AssistantConfirmation(val title: String, val message: String,
         }
     }
 
-    AssistantFrame(embedded, close, ::load, session.busy) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+    fun send() {
+        if (!canSend || session.busy) return
+        val submitted = input.trim()
+        val attached = photo
+        val displayQuestion = if (attached == null) submitted else
+            listOf("[照片]", submitted).filter(String::isNotBlank).joinToString(" ")
+        val body = JSONObject().put("input", submitted).put("conversationId", conversationId)
+        if (deepThink && status?.optBoolean("deepThinkingAvailable") == true) body.put("deepThink", true)
+        attached?.let { body.put("photoData", it.dataUrl) }
+        val partial = streamBuffer.apply { clear() }
+        var renderedAt = 0L
+        draftQuestion = displayQuestion; draftReply = ""; streamInterrupted = false; streaming = true; safetyNotice = null
+        session.run {
+            try {
+                val data = streamAssistant(body, onReset = { partial.clear(); draftReply = ""; renderedAt = 0L }) { delta ->
+                    partial.append(delta)
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (renderedAt == 0L || now - renderedAt >= 50) { draftReply = partial.toString(); renderedAt = now }
+                }
+                val reply = data.str("reply").ifBlank { partial.toString() }
+                messages = messages + listOf(JSONObject().put("role", "user").put("content", displayQuestion),
+                    JSONObject().put("role", "assistant").put("content", reply))
+                contextInfo = data.optJSONObject("context")
+                status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
+                draftQuestion = null; draftReply = ""; streamInterrupted = false
+                vm.invalidateAssistant(setOf("history"))
+                updated("status")
+                if (input.trim() == submitted) input = ""
+                if (photo === attached) photo = null
+            } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
+                if ((failure as? ApiException)?.code in setOf("assistant_refusal", "assistant_suspended")) {
+                    partial.clear()
+                    draftQuestion = null
+                    draftReply = ""
+                    safetyNotice = failure.message
+                    updated("status", acceptLocal = false)
+                    return@run
+                }
+                draftReply = partial.toString(); streamInterrupted = true
+                // Reconcile spent quota after provider failure; keep the typed question intact.
+                updated("status", acceptLocal = false)
+                throw failure
+            } finally { streaming = false }
+        }
+    }
+
+    LaunchedEffect(tab, draftQuestion, messages.size) {
+        if (tab == 0 && (draftQuestion != null || messages.isNotEmpty())) {
+            withFrameNanos { }
+            val last = conversationScroll.layoutInfo.totalItemsCount - 1
+            if (last >= 0) conversationScroll.scrollToItem(last)
+        }
+    }
+
+    val headerActions: @Composable RowScope.() -> Unit = {
+        IconButton(onClick = {
+            historyOpen = true
+            vm.preloadAssistant(force = true, names = setOf("history"))
+        }, modifier = Modifier.testTag("assistant-open-history")) { Icon(Icons.Outlined.History, "查看聊天记录") }
+        IconButton(onClick = ::load, enabled = !session.busy) { Icon(Icons.Outlined.Refresh, "刷新助手资料") }
+    }
+    AssistantFrame(embedded, close, actions = headerActions) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding()) {
         Column(Modifier.fillMaxSize()) {
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, modifier = Modifier.testTag("assistant-tab:$index"), label = { Text(label) }) }
+            Row(Modifier.fillMaxWidth().padding(end = if (embedded) 8.dp else 0.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label ->
+                        FilterChip(selected = tab == index, onClick = { tab = index },
+                            modifier = Modifier.testTag("assistant-tab:$index"), label = { Text(label) })
+                    }
+                }
+                if (embedded) headerActions()
             }
-            LazyColumn(Modifier.fillMaxSize().testTag("assistant-conversation"), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                item { FeatureError(session) }
-                item { AssistantPanelFeedback("status", panels["status"], "助手状态") { vm.preloadAssistant(force = true, names = setOf("status")) } }
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("assistant-conversation"),
+                state = if (tab == 0) conversationScroll else featureScroll,
+                contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (tab != 0 && session.error != null) item { FeatureError(session) }
+                val statusPanel = panels["status"]
+                if (statusPanel?.loading == true || statusPanel?.error != null) item {
+                    AssistantPanelFeedback("status", statusPanel, "助手状态") { vm.preloadAssistant(force = true, names = setOf("status")) }
+                }
                 status?.let { info -> item {
                     Card(Modifier.fillMaxWidth().testTag("assistant-status-card")) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(info.str("buildingName", "当前住宿楼"), style = MaterialTheme.typography.titleMedium)
@@ -179,14 +251,8 @@ private data class AssistantConfirmation(val title: String, val message: String,
                 when (tab) {
                     0 -> {
                         if(contextInfo?.optBoolean("compressed")==true)item{Text("较早的对话已自动压缩，近期问题保留原文；需要时请补充细节。",style=MaterialTheme.typography.bodySmall)}
-                        item {
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text("可以问我哪台机器空闲，或查询你的登记、历史记录和洗衣时间。", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                IconButton(onClick = {
-                                    historyOpen = true
-                                    vm.preloadAssistant(force = true, names = setOf("history"))
-                                }, modifier = Modifier.testTag("assistant-open-history")) { Icon(Icons.Outlined.History, "查看聊天记录") }
-                            }
+                        if (messages.isEmpty() && draftQuestion == null) item {
+                            Text("可以问我哪台机器空闲，或查询你的登记、历史记录和洗衣时间。", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         itemsIndexed(messages) { index, message ->
                             val mine = message.str("role") == "user"
@@ -214,73 +280,6 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                     else if (draftReply.isNotBlank()) TextButton(onClick = { copyFeatureText(context, draftReply); vm.message("已复制部分回答") }) { Text("复制部分回答") }
                                 }
                             } }
-                        }
-                        item("assistant-composer") {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                (safetyNotice ?: "助手暂时停用，请在审核限制到期后刷新。".takeIf { suspended })?.let { notice ->
-                                    Surface(color = MaterialTheme.colorScheme.errorContainer,
-                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
-                                        Text(notice, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer)
-                                    }
-                                }
-                                if (status?.optBoolean("deepThinkingAvailable") == true) {
-                                    FilterChip(selected = deepThink, onClick = { deepThink = !deepThink },
-                                        enabled = !streaming, label = { Text("深度思考") })
-                                }
-                                photo?.let { AssistantPhotoPreview(it, enabled = !session.busy) { photo = null } }
-                                OutlinedTextField(input, { input = it.take(1000) }, label = { Text("想问什么？") }, enabled = !session.busy, supportingText = { Text("${input.length}/1000") }, modifier = Modifier.fillMaxWidth().testTag("assistant-chat-input"), minLines = 2, maxLines = 6)
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                    AssistantPhotoInput(session, "$conversationId:$tab", enabled = !session.busy && !streaming) { photo = it }
-                                    AssistantVoiceInput(session, enabled = !session.busy && !streaming) { recognized ->
-                                        input = listOf(input.trimEnd(), recognized).filter(String::isNotBlank).joinToString(" ").take(1000)
-                                    }
-                                    Button(enabled = canSend, onClick = send@ {
-                                        if (session.busy) return@send
-                                        val submitted = input.trim()
-                                        val attached = photo
-                                        val displayQuestion = if (attached == null) submitted else
-                                            listOf("[照片]", submitted).filter(String::isNotBlank).joinToString(" ")
-                                        val body = JSONObject().put("input", submitted).put("conversationId", conversationId)
-                                        if (deepThink && status?.optBoolean("deepThinkingAvailable") == true) body.put("deepThink", true)
-                                        attached?.let { body.put("photoData", it.dataUrl) }
-                                        val partial = streamBuffer.apply { clear() }
-                                        var renderedAt = 0L
-                                        draftQuestion = displayQuestion; draftReply = ""; streamInterrupted = false; streaming = true; safetyNotice = null
-                                        session.run {
-                                            try {
-                                                val data = streamAssistant(body, onReset = { partial.clear(); draftReply = ""; renderedAt = 0L }) { delta ->
-                                                    partial.append(delta)
-                                                    val now = android.os.SystemClock.elapsedRealtime()
-                                                    if (renderedAt == 0L || now - renderedAt >= 50) { draftReply = partial.toString(); renderedAt = now }
-                                                }
-                                                val reply = data.str("reply").ifBlank { partial.toString() }
-                                                messages = messages + listOf(JSONObject().put("role", "user").put("content", displayQuestion),
-                                                    JSONObject().put("role", "assistant").put("content", reply))
-                                                contextInfo = data.optJSONObject("context")
-                                                status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
-                                                draftQuestion = null; draftReply = ""; streamInterrupted = false
-                                                vm.invalidateAssistant(setOf("history"))
-                                                updated("status")
-                                                if (input.trim() == submitted) input = ""
-                                                if (photo === attached) photo = null
-                                            } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
-                                                if ((failure as? com.laoke.weshirt.data.ApiException)?.code in setOf("assistant_refusal", "assistant_suspended")) {
-                                                    partial.clear()
-                                                    draftQuestion = null
-                                                    draftReply = ""
-                                                    safetyNotice = failure.message
-                                                    updated("status", acceptLocal = false)
-                                                    return@run
-                                                }
-                                                draftReply = partial.toString(); streamInterrupted = true
-                                                // Reconcile spent quota after provider failure; keep the typed question intact.
-                                                updated("status", acceptLocal = false)
-                                                throw failure
-                                            } finally { streaming = false }
-                                        }
-                                    }, modifier = Modifier.testTag("assistant-chat-send")) { Text(if (streaming) "生成中…" else if (session.busy) "请稍候…" else "发送") }
-                                }
-                            }
                         }
                     }
                     1 -> {
@@ -381,6 +380,14 @@ private data class AssistantConfirmation(val title: String, val message: String,
                     }
                 }
             }
+            if (tab == 0) AssistantComposer(
+                input = input, onInput = { input = it }, photo = photo, onPhoto = { photo = it },
+                deepThinkingAvailable = status?.optBoolean("deepThinkingAvailable") == true,
+                deepThink = deepThink, onDeepThink = { deepThink = !deepThink },
+                canSend = canSend, streaming = streaming, onSend = ::send,
+                safetyNotice = safetyNotice ?: "助手暂时停用，请在审核限制到期后刷新。".takeIf { suspended },
+                session = session, conversationId = conversationId,
+            )
         }
         AnimatedVisibility(intro, modifier = Modifier.align(Alignment.Center),
             enter = fadeIn(tween(220)) + scaleIn(tween(260), initialScale = .86f), exit = fadeOut(tween(220))) {

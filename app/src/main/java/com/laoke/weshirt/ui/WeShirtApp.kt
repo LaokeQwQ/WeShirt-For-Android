@@ -99,7 +99,7 @@ import kotlinx.coroutines.launch
                         0 -> RoomScreen(state, onMachine = { selected = it }, onQuality = vm::message, allow3D = state.building.equals("guiyuan", ignoreCase = true))
                         1 -> LaundryScreen(state, vm, onLogin)
                         2 -> key(state.endpoint, state.profile?.id) { ChannelScreen(state, vm, onLogin) }
-                        4 -> AssistantScreen(state, vm, onLogin)
+                        4 -> Box(Modifier.fillMaxSize().consumeWindowInsets(padding)) { AssistantScreen(state, vm, onLogin) }
                         else -> SettingsScreen(state, vm, onLogin, onRequestNotifications,
                             { buildingPicker = true }, { backgroundSettings = true }, appUpdates, onInstallUpdate)
                     }

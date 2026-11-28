@@ -23,19 +23,30 @@ import coil.compose.AsyncImage
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import com.laoke.weshirt.data.Channel
+import com.laoke.weshirt.data.ChannelLoadState
 
 @Composable
 internal fun ChannelDirectory(channels: List<Channel>, building: String, accountKey: String,
-                              mentioned: Set<String>, onSelect: (Channel) -> Unit, retry: () -> Unit) {
+                              mentioned: Set<String>, load: ChannelLoadState, onSelect: (Channel) -> Unit, retry: () -> Unit,
+                              openMachineMention: (() -> Unit)? = null) {
     val scheme = MaterialTheme.colorScheme
     LazyColumn(Modifier.fillMaxSize().testTag("channel-directory"), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text("选择频道", style = MaterialTheme.typography.headlineSmall)
             Text("公共频道和你的住宿楼优先显示", style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant)
         }
-        if (channels.isEmpty()) item {
-            Text("频道暂未显示，可以重新获取。", style = MaterialTheme.typography.bodyMedium)
-            TextButton(onClick = retry) { Text("重新获取频道") }
+        if (openMachineMention != null) item {
+            TextButton(onClick = openMachineMention) { Text("查看机器留言中的 @ 提醒") }
+        }
+        if (channels.isEmpty() || load is ChannelLoadState.Failed) item {
+            when (load) {
+                ChannelLoadState.Loading -> Text("正在加载频道…", color = scheme.onSurfaceVariant, modifier = Modifier.testTag("channel-directory-loading"))
+                ChannelLoadState.Loaded -> Text("暂无可查看的频道", color = scheme.onSurfaceVariant)
+                is ChannelLoadState.Failed -> {
+                    Text(load.message, style = MaterialTheme.typography.bodyMedium, color = scheme.error)
+                    TextButton(onClick = retry) { Text("重新获取频道") }
+                }
+            }
         }
         items(channels.sortedBy { when (it.code) { "public" -> 0; building -> 1; else -> 2 } }, key = { it.code }) { channel ->
             Card(onClick = { onSelect(channel) }, modifier = Modifier.fillMaxWidth().testTag("channel:${channel.code}"), shape = RoundedCornerShape(22.dp),

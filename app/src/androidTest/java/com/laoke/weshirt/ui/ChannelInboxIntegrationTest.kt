@@ -49,6 +49,9 @@ class ChannelInboxIntegrationTest {
     private val tasksStarted = java.util.concurrent.CountDownLatch(1)
     private val releaseTasks = java.util.concurrent.CountDownLatch(1)
     private val releaseMemory = java.util.concurrent.CountDownLatch(1)
+    private val releaseChannels = java.util.concurrent.CountDownLatch(1)
+    private val releaseMessages = java.util.concurrent.CountDownLatch(1)
+    @Volatile private var delayConversation = false
     @Volatile private var memoryRecovered = false
     private val readIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var previous = emptyMap<String, Any?>()
@@ -105,8 +108,12 @@ class ChannelInboxIntegrationTest {
                     "/api/assistant/status" -> """{"ready":true,"dormBuilding":"test","buildingName":"测试楼","usage":{"dailyRemaining":100,"dailyLimit":1000,"minuteRemaining":30}}"""
                     "/api/assistant/history" -> """{"messages":[{"role":"assistant","content":"可以帮你查询当前楼栋的空闲机器。"}]}"""
                     "/api/messages/realtime" -> """{"enabled":false}"""
-                    "/api/messages/channels" -> """{"channels":[{"code":"public","name":"公共频道","unreadCount":${45 - readIds.size},"summary":{"messageId":"message-0","nick":"李**同学","text":"你好","kind":"text","at":"2030-01-01T00:00:00Z"}}]}"""
+                    "/api/messages/channels" -> {
+                        if (delayConversation) check(releaseChannels.await(30, TimeUnit.SECONDS))
+                        """{"channels":[{"code":"public","name":"公共频道","unreadCount":${45 - readIds.size},"summary":{"messageId":"message-0","nick":"李**同学","text":"你好","kind":"text","at":"2030-01-01T00:00:00Z"}}]}"""
+                    }
                     "/api/messages" -> {
+                        if (delayConversation) check(releaseMessages.await(30, TimeUnit.SECONDS))
                         val rows = (0 until 45).map { index ->
                             JSONObject().put("id", if (index == 0 && replaceVisibleMessage) "replacement-0" else "message-$index")
                                 .put("nick", "李**同学").put("text", "这是第 $index 条可见性测试消息，只有实际出现在屏幕上才算已读。")
@@ -135,6 +142,7 @@ class ChannelInboxIntegrationTest {
 
     @After fun cleanup() {
         releaseTasks.countDown(); releaseMemory.countDown()
+        releaseChannels.countDown(); releaseMessages.countDown()
         onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow(); server.shutdown()
@@ -144,6 +152,7 @@ class ChannelInboxIntegrationTest {
     }
 
     @Test fun directoryAppearsBeforeSlowPersonalRefreshAndOnlyVisibleMessagesBecomeRead() {
+        delayConversation = true
         // MockWebServer.url() uses the address's canonical host name, which is
         // localhost on Android even when start() bound 127.0.0.1. Keep the URL,
         // certificate SAN and no-network-escape interceptor on the same literal IP.
@@ -184,6 +193,9 @@ class ChannelInboxIntegrationTest {
                 } }
             }
         }
+        compose.onNodeWithTag("channel-directory-loading").assertIsDisplayed()
+        compose.onNodeWithText("暂无可查看的频道").assertDoesNotExist()
+        releaseChannels.countDown()
         compose.waitUntil(10_000) { vm.state.value.channels.isNotEmpty() && tasksStarted.count == 0L }
         compose.onNodeWithTag("channel-directory").assertIsDisplayed()
         assertEquals("The real task request must still be blocked when the directory is displayed", 1L, releaseTasks.count)
@@ -207,6 +219,9 @@ class ChannelInboxIntegrationTest {
             // The viewport deliberately withholds read receipts otherwise.
             compose.waitUntil(10_000) { focusedWindow && resumedWindow }
             compose.onNodeWithTag("channel:public").performClick()
+            compose.onNodeWithTag("channel-messages-loading").assertIsDisplayed()
+            compose.onNodeWithText("还没有消息，来打个招呼吧。").assertDoesNotExist()
+            releaseMessages.countDown()
             compose.waitUntil(10_000) { readIds.isNotEmpty() }
         } catch (problem: Throwable) {
             // ComposeTimeoutException is not an AssertionError. Keep the original

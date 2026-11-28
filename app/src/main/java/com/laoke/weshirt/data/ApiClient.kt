@@ -47,6 +47,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
     private val pendingKeys = ConcurrentHashMap<String, String>()
     private val mediaDir = File(cacheDir, "private-media").apply { mkdirs() }
     private val http = client ?: OkHttpClient.Builder().cache(Cache(File(cacheDir, "public-http"), 12L * 1024 * 1024)).connectTimeout(12, TimeUnit.SECONDS).readTimeout(25, TimeUnit.SECONDS).retryOnConnectionFailure(false).followRedirects(false).followSslRedirects(false).build()
+    private val pickupHttp = http.newBuilder().callTimeout(10, TimeUnit.SECONDS).build()
     fun validEndpoint(value: String): String? = value.trim().toHttpUrlOrNull()?.takeIf { it.isHttps && it.username.isEmpty() && it.password.isEmpty() && it.encodedPath == "/" && it.query == null && it.fragment == null }?.toString()?.trimEnd('/')
     private fun snapshot(): Pair<String, Long> = synchronized(guard) { (validEndpoint(baseUrl) ?: throw ApiException(0, "endpoint_required", eventId(), "请先设置服务地址")) to generation }
     private fun current(origin: String, version: Long) { if(baseUrl != origin || generation != version) throw CancellationException("Service or account changed") }
@@ -223,7 +224,7 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         req.method(method, if(method in listOf("GET", "HEAD")) null else (body ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
         val started = System.nanoTime()
         var status = 0
-        try { return execute(req.build(), requestId).also { status = 200 } }
+        try { return execute(req.build(), requestId, if (method == "POST" && PICKUP_PATH.matches(path)) pickupHttp else http).also { status = 200 } }
         catch(e: ApiException) { status = e.status; throw e }
         finally { if(!path.startsWith("/api/telemetry")) onMetric?.invoke(path.substringBefore('?'), ((System.nanoTime()-started)/1_000_000).coerceIn(0,60_000),status) }
     }

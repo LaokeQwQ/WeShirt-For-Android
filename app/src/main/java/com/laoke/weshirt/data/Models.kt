@@ -72,11 +72,18 @@ data class Message(val id: String, val nick: String, val text: String, val avata
         )
     }
 }
+sealed interface ChannelLoadState {
+    data object Loading : ChannelLoadState
+    data object Loaded : ChannelLoadState
+    data class Failed(val message: String) : ChannelLoadState
+}
+
 data class AppState(
     val endpoint: String = "", val building: String = "", val buildings: List<Building> = emptyList(),
     val machines: List<Machine> = emptyList(), val tasks: List<LaundryTask> = emptyList(),
     val profile: Profile? = null, val favorites: Set<String> = emptySet(),
     val channels: List<Channel> = emptyList(), val channel: String = "public", val messages: List<Message> = emptyList(),
+    val channelLoad: ChannelLoadState = ChannelLoadState.Loading, val messageLoad: ChannelLoadState = ChannelLoadState.Loading,
     val discussionMachine: String = "",
     val messageNotices: List<JSONObject> = emptyList(), val messagesPage: Int = 1, val messagesHasMore: Boolean = false,
     val queueNotices: List<JSONObject> = emptyList(),
