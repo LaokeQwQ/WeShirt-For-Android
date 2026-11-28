@@ -35,7 +35,13 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         java.io.File(app.cacheDir, "public-rooms"),
     )
     private val assistantPreloader = AssistantPreloader({ path -> api.call(path) })
-    private var channelsJob: kotlinx.coroutines.Job? = null
+    private var channelsJob: Job? = null
+    private var channelsRequestScope: ChannelAccountScope? = null
+    private data class MessageScope(val account: ChannelAccountScope, val channel: String, val machineId: String)
+    private var messageRequest: Job? = null
+    private var messageRequestScope: MessageScope? = null
+    private var messageRefreshPending = false
+    private var channelNoticesJob: Job? = null
     private var refreshJob: Job? = null
     private var refreshGeneration = -1
     private var refreshPending = false
@@ -84,11 +90,11 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             viewModelScope.launch(Dispatchers.Main.immediate) {
                 if (api.sessionFence() != invalidated || generation.get() != account || session.read() != null) return@launch
                 generation.incrementAndGet()
-                channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
+                resetChannelRequests(); metadata.clear(); assistantPreloader.clear()
                 platform.clearLocal()
                 coil.Coil.imageLoader(app).memoryCache?.clear()
-                _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
-                    savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+                _state.update { it.clearChannelData().copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+                    savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, queueNotices = emptyList(), social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
                 refresh()
             }
         }
@@ -97,11 +103,11 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         refresh()
     }
     fun platformSessionChanged() {
-        generation.incrementAndGet(); metadata.clear(); channelInbox.clear(); channelsJob?.cancel(); assistantPreloader.clear(); platform.sessionChanged()
+        generation.incrementAndGet(); metadata.clear(); resetChannelRequests(); assistantPreloader.clear(); platform.sessionChanged()
         val restoring = session.read() != null
         val cachedProfile = api.cachedProfile()
         val cachedLaundry = if (restoring && cachedProfile != null) session.readLaundry(api.baseUrl) else null
-        _state.update { it.copy(profile = cachedProfile, channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), channelConnected = false,
+        _state.update { it.clearChannelData().copy(profile = cachedProfile,
             tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false, social = JSONObject(), access = JSONObject(), favorites = emptySet(), queues = emptyList(), assistant = AssistantSnapshot(),
             authReady = !restoring, sessionRestoring = restoring, authError = null,
             savedLaundryTasks = cachedLaundry?.tasks.orEmpty(), savedLaundrySyncedAt = cachedLaundry?.syncedAt) }
@@ -277,7 +283,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     private suspend fun refreshAccount(version: Int) {
         val signedIn = session.read() != null
         if (!signedIn) {
-            if (version == generation.get()) { _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+            if (version == generation.get()) { _state.update { it.clearChannelData().copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
                 savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, authReady = true, sessionRestoring = false, authError = null) }; refreshAnnouncements(version, null) }
             return
         }
@@ -307,7 +313,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                 // display identity is immediately available.
                 if (version == generation.get()) _state.update { before ->
                     val sameOwner = before.profile?.id == identity.str("id")
-                    before.copy(profile = Profile.parse(identity), savedLaundryTasks = before.savedLaundryTasks.takeIf { sameOwner }.orEmpty(),
+                    (if (sameOwner) before else before.clearChannelData()).copy(profile = Profile.parse(identity), savedLaundryTasks = before.savedLaundryTasks.takeIf { sameOwner }.orEmpty(),
                         savedLaundrySyncedAt = before.savedLaundrySyncedAt.takeIf { sameOwner })
                 }
                 identity to permissions.await().getOrThrow()
@@ -610,7 +616,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     fun take(taskId: String, requireElapsed: Boolean = false, onSuccess: () -> Unit,
              onFailure: (String) -> Unit): Job = viewModelScope.launch {
         val initial = _state.value
-        val owner = initial.profile?.id ?: return@launch
+        val owner = initial.profile?.id ?: run { onFailure("请先登录后确认取衣"); return@launch }
         val version = generation.get()
         val fence = api.sessionFence()
         fun currentAccount() = version == generation.get() && api.sessionFence() == fence &&
@@ -655,12 +661,19 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             message("已确认取衣")
             onSuccess()
             viewModelScope.launch {
-                if (currentAccount()) platform.synchronize(_state.value, confirmedRemoval = true)
+                if (currentAccount()) {
+                    platform.synchronize(_state.value, confirmedRemoval = true)
+                    refreshTasks(version, taskRevision, mayReadTasks = true)
+                }
             }
-            refresh(afterCurrent = true)
         } catch (cancel: CancellationException) { throw cancel }
         catch (problem: Exception) {
-            if (currentAccount()) onFailure(com.laoke.weshirt.ui.clientFailure(problem, "确认取衣未完成，请重试"))
+            if (currentAccount()) {
+                onFailure(com.laoke.weshirt.ui.clientFailure(problem, "取衣结果待核对"))
+                if (problem is ApiException && (problem.status == 0 || problem.status >= 500)) {
+                    viewModelScope.launch { if (currentAccount()) refreshTasks(version, taskRevision, mayReadTasks = true) }
+                }
+            }
         } finally {
             _state.update { it.copy(busy = false) }
             mutationMutex.unlock()
@@ -759,9 +772,15 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
     }
     fun saveReminders(enabled: Boolean, start: String, end: String) = mutate { api.call("/api/user/laundry-preferences", "PATCH", JSONObject().put("enabled", enabled).put("favorites", JSONArray(_state.value.favorites.toList())).put("timeWindows", JSONArray().put(JSONObject().put("start", start).put("end", end).put("days", JSONArray(listOf(1,2,3,4,5,6,7)))))) }
-    fun channel(code: String, machineId: String? = null) { _state.update { it.copy(channel = code, discussionMachine = machineId.orEmpty(), messages = emptyList(), messagesPage = 1, messagesHasMore = false) }; refreshMessages() }
-    private val messagesLock = Mutex()
-    private var messagesPending = false
+    fun channel(code: String, machineId: String? = null) {
+        val targetMachine = machineId.orEmpty()
+        _state.update {
+            if (it.channel == code && it.discussionMachine == targetMachine) it
+            else it.copy(channel = code, discussionMachine = targetMachine, messages = emptyList(),
+                messagesPage = 1, messagesHasMore = false, messageLoad = ChannelLoadState.Loading)
+        }
+        refreshMessages()
+    }
     fun channelConnection(connected: Boolean) { _state.update { it.copy(channelConnected = connected) } }
     fun receiveShare(raw: String) {
         val share = parseIncomingShare(raw, _state.value.endpoint)
@@ -769,22 +788,77 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         else _state.update { it.copy(pendingShare = share) }
     }
     fun dismissShare() { _state.update { it.copy(pendingShare = null) } }
-    fun refreshMessages(): kotlinx.coroutines.Job = viewModelScope.launch {
-        if (!_state.value.authReady || _state.value.profile == null) return@launch
-        if (!messagesLock.tryLock()) { messagesPending = true; return@launch }
-        try { val version = generation.get(); loadMessagesNow(version); loadNoticesNow(version) }
-        catch(cancel: CancellationException) { throw cancel }
-        catch(problem: Exception) { message(problem.message.orEmpty()) }
-        finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
+    fun refreshMessages() {
+        val scope = messageScope() ?: return
+        requestMessages(scope, page = 1)
+        refreshChannelNotices(scope.account)
     }
-    fun moreMessages() = viewModelScope.launch {
-        if (!_state.value.authReady || _state.value.profile == null) return@launch
-        if (!messagesLock.tryLock()) return@launch
-        try { if (_state.value.messagesHasMore) loadMessagesNow(generation.get(), _state.value.messagesPage + 1) }
-        catch(cancel: CancellationException) { throw cancel }
-        catch(problem: Exception) { message(problem.message.orEmpty()) }
-        finally { messagesLock.unlock(); if (messagesPending) { messagesPending = false; refreshMessages() } }
+
+    fun ensureConversationLoaded() {
+        val scope = messageScope() ?: return
+        if (_state.value.messageLoad == ChannelLoadState.Loading && messageRequestScope != scope) refreshMessages()
     }
+
+    fun moreMessages() {
+        val scope = messageScope() ?: return
+        if (_state.value.messagesHasMore) requestMessages(scope, _state.value.messagesPage + 1)
+    }
+
+    private fun messageScope(): MessageScope? {
+        val account = channelAccount() ?: return null
+        val state = _state.value
+        return MessageScope(account, state.channel, state.discussionMachine)
+    }
+
+    private fun requestMessages(scope: MessageScope, page: Int) {
+        if (messageRequestScope == scope && messageRequest?.isActive == true) {
+            if (page == 1) messageRefreshPending = true
+            return
+        }
+        messageRequest?.cancel()
+        messageRequestScope = scope
+        messageRefreshPending = false
+        _state.update { it.copy(messageLoad = ChannelLoadState.Loading) }
+        messageRequest = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val owner = coroutineContext[Job]
+            try {
+                loadMessagesNow(scope, page)
+            } catch (cancel: CancellationException) { throw cancel }
+            catch (problem: Exception) {
+                if (messageRequest === owner && messageScope() == scope) _state.update { before ->
+                    val accessLost = problem is ApiException && problem.status in setOf(401, 403)
+                    before.copy(messages = if (accessLost) emptyList() else before.messages,
+                        messagesHasMore = !accessLost && before.messagesHasMore,
+                        messageLoad = ChannelLoadState.Failed(problem.message ?: "消息加载失败"))
+                }
+            } finally {
+                if (messageRequest === owner) {
+                    messageRequest = null
+                    messageRequestScope = null
+                    val pending = messageRefreshPending
+                    messageRefreshPending = false
+                    if (pending && messageScope() == scope) requestMessages(scope, page = 1)
+                }
+            }
+        }
+        messageRequest?.start()
+    }
+
+    private fun resetChannelRequests() {
+        channelInbox.clear()
+        channelsJob?.cancel()
+        channelsRequestScope = null
+        channelNoticesJob?.cancel()
+        messageRequest?.cancel()
+        messageRequestScope = null
+        messageRefreshPending = false
+    }
+
+    private fun AppState.clearChannelData() = copy(
+        channels = emptyList(), channelLoad = ChannelLoadState.Loading, channel = "public", discussionMachine = "",
+        messages = emptyList(), messageLoad = ChannelLoadState.Loading, messagesPage = 1, messagesHasMore = false,
+        messageNotices = emptyList(), channelConnected = false,
+    )
     private suspend fun loadNoticesNow(version: Int) {
         if (!_state.value.authReady || _state.value.profile == null || version != generation.get()) return
         val (notices, queueNotices) = coroutineScope {
@@ -794,41 +868,72 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         }
         if (version == generation.get()) _state.update { it.copy(messageNotices = notices, queueNotices = queueNotices) }
     }
+    private fun refreshChannelNotices(account: ChannelAccountScope) {
+        if (channelNoticesJob?.isActive == true) return
+        channelNoticesJob = viewModelScope.launch {
+            optionalRefresh {
+                val notices = api.call("/api/messages/notices").optJSONArray("notices")?.objects()
+                if (notices != null && channelAccount() == account) _state.update { it.copy(messageNotices = notices) }
+            }
+        }
+    }
     fun readChannelNotices() = mutate(null) {
-        val selected = _state.value.channel
-        api.call("/api/messages/notices/read", "POST", JSONObject().put("channel", selected))
+        val scope = messageScope() ?: return@mutate
+        val body = JSONObject().put("channel", scope.channel)
+        if (scope.machineId.isNotBlank()) body.put("machineId", scope.machineId)
+        api.call("/api/messages/notices/read", "POST", body)
+        if (messageScope() == scope) {
+            channelNoticesJob?.cancel()
+            channelNoticesJob = null
+            refreshChannelNotices(scope.account)
+        }
     }
     private fun channelAccount(): ChannelAccountScope? = _state.value.takeIf { it.authReady }?.profile?.id?.takeIf { it.isNotBlank() }?.let {
         ChannelAccountScope(_state.value.endpoint, it, generation.get())
     }
     fun refreshChannels() {
-        if (channelAccount() == null || channelsJob?.isActive == true) return
+        val account = channelAccount() ?: return
+        refreshChannelNotices(account)
+        if (channelsRequestScope == account && channelsJob?.isActive == true) return
+        channelsJob?.cancel()
+        channelsRequestScope = account
+        _state.update { it.copy(channelLoad = ChannelLoadState.Loading) }
         channelsJob = viewModelScope.launch {
-            val account = channelAccount() ?: return@launch
             try {
                 val channels = channelInbox.load(account) { channelAccount() == account }
                 if (channelAccount() != account) return@launch
                 _state.update { before ->
                     val selected = before.channel.takeIf { code -> channels.any { it.code == code } }
                         ?: channels.firstOrNull()?.code ?: "public"
-                    before.copy(channels = channels, channel = selected,
-                        messages = if (selected == before.channel) before.messages else emptyList())
+                    val sameChannel = selected == before.channel
+                    before.copy(channels = channels, channel = selected, channelLoad = ChannelLoadState.Loaded,
+                        discussionMachine = before.discussionMachine.takeIf { sameChannel }.orEmpty(),
+                        messages = before.messages.takeIf { sameChannel }.orEmpty(),
+                        messageLoad = if (sameChannel) before.messageLoad else ChannelLoadState.Loading,
+                        messagesPage = if (sameChannel) before.messagesPage else 1,
+                        messagesHasMore = sameChannel && before.messagesHasMore)
                 }
             } catch (cancel: CancellationException) { throw cancel }
-            catch (problem: Exception) { if (channelAccount() == account) _state.update { it.copy(error = problem.message ?: "频道加载失败") } }
+            catch (problem: Exception) {
+                if (channelAccount() == account) _state.update { before ->
+                    val accessLost = problem is ApiException && problem.status in setOf(401, 403)
+                    (if (accessLost) before.clearChannelData() else before)
+                        .copy(channelLoad = ChannelLoadState.Failed(problem.message ?: "频道加载失败"))
+                }
+            }
         }
     }
     /** Called by the foreground conversation viewport, never by directory fetch or prefetch. */
-    suspend fun readVisibleMessages(channel: String, ids: List<String>): Boolean {
+    suspend fun readVisibleMessages(channel: String, ids: List<String>, machineId: String = ""): Boolean {
         val account = channelAccount() ?: return false
-        fun current() = channelAccount() == account && _state.value.tab == 2 && _state.value.channel == channel
+        fun current() = channelAccount() == account && _state.value.tab == 2 && _state.value.channel == channel && _state.value.discussionMachine == machineId
         if (!current()) return false
         // Recheck membership against the current scope; stale UI rows cannot mark another chat read.
         val visible = visibleIncomingMessageIds(_state.value.messages, ids)
         return try {
-            val unread = channelInbox.acknowledge(account, channel, visible, ::current) ?: return true
+            val unread = channelInbox.acknowledge(account, channel, visible, machineId, ::current)
             if (current()) _state.update { it.copy(
-                channels = it.channels.map { row -> if (row.code == channel) row.copy(unreadCount = unread) else row },
+                channels = if (unread == null) it.channels else it.channels.map { row -> if (row.code == channel) row.copy(unreadCount = unread) else row },
                 messageNotices = it.messageNotices.filterNot { notice -> notice.str("channel") == channel && notice.str("messageId") in visible }
             ) }
             true
@@ -838,17 +943,24 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             false // Keep unread intact; deleted IDs disappear after refreshing current rows.
         }
     }
-    private suspend fun loadMessagesNow(version: Int, page: Int = 1) {
-        if (!_state.value.authReady || _state.value.profile == null) return
-        val channel = _state.value.channel
-        val machineId = _state.value.discussionMachine
-        val filter = if (machineId.isNotBlank()) "&machineId=${api.encoded(machineId)}" else ""
-        val j = api.call("/api/messages?channel=${api.encoded(channel)}&limit=50&page=$page$filter")
-        val rows = j.optJSONArray("messages")?.objects().orEmpty().map(Message::parse)
-        if(version == generation.get() && channel == _state.value.channel && machineId == _state.value.discussionMachine) _state.update { it.copy(messages = (if(page == 1) rows else it.messages + rows).distinctBy { m -> m.id }, messagesPage = page, messagesHasMore = j.optJSONObject("pagination")?.optBoolean("hasMore") == true) }
+    private suspend fun loadMessagesNow(scope: MessageScope, page: Int) {
+        if (messageScope() != scope) return
+        val filter = if (scope.machineId.isNotBlank()) "&machineId=${api.encoded(scope.machineId)}" else ""
+        val result = api.call("/api/messages?channel=${api.encoded(scope.channel)}&limit=50&page=$page$filter")
+        val rows = result.optJSONArray("messages")?.objects()?.map(Message::parse)
+            ?: error("消息列表未返回，请重试")
+        if (messageRequest === kotlinx.coroutines.currentCoroutineContext()[Job] && messageScope() == scope) _state.update {
+            it.copy(messages = (if (page == 1) rows else it.messages + rows).distinctBy(Message::id),
+                messagesPage = page, messagesHasMore = result.optJSONObject("pagination")?.optBoolean("hasMore") == true,
+                messageLoad = ChannelLoadState.Loaded)
+        }
     }
     fun sendMessage(text: String, reply: String?, mentions: List<String>, all: Boolean) = mutate(null) {
-        api.call("/api/messages", "POST", JSONObject().put("channel", _state.value.channel).put("text", text).put("replyTo", reply).put("mentions", JSONArray(mentions)).put("mentionAll", all)); loadMessagesNow(generation.get())
+        val scope = messageScope() ?: return@mutate
+        val body = JSONObject().put("channel", scope.channel).put("text", text).put("replyTo", reply).put("mentions", JSONArray(mentions)).put("mentionAll", all)
+        if (scope.machineId.isNotBlank()) body.put("machineId", scope.machineId)
+        api.call("/api/messages", "POST", body)
+        if (messageScope() == scope) refreshMessages()
     }
     fun report(message: Message) = mutate("举报已提交管理员") { api.call("/api/messages/${api.encoded(message.id)}/report", "POST", JSONObject().put("reason", "other").put("detail", "用户通过原生客户端举报")) }
     private suspend fun loadSocialNow(version: Int) {
@@ -861,7 +973,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
     fun acceptInvite(ticket: String) = mutate("朋友已绑定") { api.call("/api/social/accept", "POST", JSONObject().put("ticket", ticket)) }
     fun assistant(text: String, callback: (String) -> Unit) = mutate(null) { val j = api.call("/api/assistant/chat", "POST", JSONObject().put("input", text)); callback(j.str("reply", j.str("message"))) }
     fun logout() = mutate("已退出登录", allowRestoring = true) {
-        generation.incrementAndGet(); channelInbox.clear(); metadata.clear(); channelsJob?.cancel(); assistantPreloader.clear()
+        generation.incrementAndGet(); resetChannelRequests(); metadata.clear(); assistantPreloader.clear()
         prefs.edit().remove("pendingGuestNotifyEnable").commit()
         com.laoke.weshirt.platform.login.DingTalkLoginBridge.clear(getApplication())
         try {
@@ -869,8 +981,8 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             api.logout()
         } finally {
             session.clear(); platform.clearLocal()
-            _state.update { it.copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
-                savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, social = JSONObject(), access = JSONObject(), channels = emptyList(), messages = emptyList(), messageNotices = emptyList(), queueNotices = emptyList(), channelConnected = false, favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
+            _state.update { it.clearChannelData().copy(profile = null, tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false,
+                savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null, social = JSONObject(), access = JSONObject(), queueNotices = emptyList(), favorites = emptySet(), assistant = AssistantSnapshot(), notificationsOn = platform.notificationsEnabled, authReady = true, sessionRestoring = false, authError = null) }
         }
     }
 }

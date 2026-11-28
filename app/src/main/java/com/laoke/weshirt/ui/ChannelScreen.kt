@@ -53,29 +53,45 @@ import java.util.UUID
 
 @Composable fun ChannelScreen(state: AppState, vm: AppViewModel, login: () -> Unit) {
     var directory by remember(state.endpoint, state.profile?.id) { mutableStateOf(state.discussionMachine.isBlank()) }
-    LaunchedEffect(state.endpoint, state.profile?.id, directory) { if (state.profile != null && directory) vm.refreshChannels() }
+    LaunchedEffect(state.endpoint, state.profile?.id, state.authReady, directory) { if (state.profile != null && state.authReady && directory) vm.refreshChannels() }
     LaunchedEffect(state.discussionMachine) { if (state.discussionMachine.isNotBlank()) directory = false }
-    var connected by remember { mutableStateOf(false) }
+    var connected by remember(state.channel, state.discussionMachine) { mutableStateOf(false) }
     val owner = LocalLifecycleOwner.current
-    LaunchedEffect(state.endpoint, state.profile?.id, state.channel, directory, owner) {
-        if (state.profile != null && !directory) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+    LaunchedEffect(state.endpoint, state.profile?.id, state.authReady, state.channel, state.discussionMachine, directory, owner) {
+        if (state.profile != null && state.authReady && !directory) owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            vm.ensureConversationLoaded()
             coroutineScope {
                 launch {
                     channelHttpFallback(current = {
                         val current = vm.state.value
-                        current.tab == 2 && current.channel == state.channel && current.endpoint == state.endpoint && current.profile?.id == state.profile.id
+                        current.tab == 2 && current.channel == state.channel && current.discussionMachine == state.discussionMachine &&
+                            current.endpoint == state.endpoint && current.profile?.id == state.profile.id
                     }, connected = { connected }, refresh = { vm.refreshMessages() })
                 }
-                ChannelRealtime(vm.api).run(state.channel, { vm.refreshMessages() }, { connected = it; vm.channelConnection(it) })
+                if (state.discussionMachine.isBlank())
+                    ChannelRealtime(vm.api).run(state.channel, { vm.refreshMessages() }, { connected = it; vm.channelConnection(it) })
             }
         }
     }
     DisposableEffect(Unit) { onDispose { vm.channelConnection(false) } }
-    if (state.profile == null) { EmptyPanel("和楼里的朋友聊聊", "登录后可查看公共频道和自己的住宿楼频道。", Icons.Outlined.ChatBubbleOutline, "钉钉登录", login); return }
+    if (state.profile == null) {
+        if (state.sessionRestoring) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("正在恢复账号…") }
+        else EmptyPanel("和楼里的朋友聊聊", "登录后可查看公共频道和自己的住宿楼频道。", Icons.Outlined.ChatBubbleOutline, "钉钉登录", login)
+        return
+    }
     if (directory) {
+        val unreadNotices = state.messageNotices.filter { it.str("readAt").isBlank() }
+        val machineMention = unreadNotices.firstNotNullOfOrNull { notice ->
+            val channel = notice.str("channel")
+            val machine = machineNoticeId(notice)
+            if (machine.isNotBlank() && channel != "public" && channel.matches(Regex("[A-Za-z0-9_-]{1,40}"))) channel to machine else null
+        }
         ChannelDirectory(state.channels, state.profile.building, "${state.endpoint}|${state.profile.id}",
-            state.messageNotices.filter { it.str("readAt").isBlank() }.map { it.str("channel") }.toSet(),
-            onSelect = { vm.channel(it.code); directory = false }, retry = vm::refreshChannels)
+            unreadNotices.filter { machineNoticeId(it).isBlank() }.map { it.str("channel") }.toSet(),
+            load = if (!state.authReady && state.authError != null) ChannelLoadState.Failed(state.authError) else state.channelLoad,
+            onSelect = { vm.channel(it.code); directory = false },
+            retry = { if (state.authReady) vm.refreshChannels() else vm.refresh() },
+            openMachineMention = machineMention?.let { (channel, machine) -> { vm.channel(channel, machine); directory = false } })
         return
     }
     val scope = ChatScope(state.endpoint, state.profile?.id, state.channel, state.discussionMachine)
@@ -112,7 +128,7 @@ import java.util.UUID
                     if (pending.isNotEmpty() && scope.matches(vm.state.value) && vm.state.value.tab == 2) {
                         var attempts = 0
                         while (attempts++ < 3 && scope.matches(vm.state.value) && vm.state.value.tab == 2) {
-                            if (vm.readVisibleMessages(scope.channel, pending)) { acknowledged.addAll(pending); break }
+                            if (vm.readVisibleMessages(scope.channel, pending, scope.machineId)) { acknowledged.addAll(pending); break }
                             delay(1_500)
                         }
                     }
@@ -140,11 +156,24 @@ import java.util.UUID
         }
         LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(state.channels, key = { it.code }) { channel -> FilterChip(selected = channel.code == state.channel, onClick = { vm.channel(channel.code) }, label = { Text(channel.name) }) } }
         if (state.discussionMachine.isNotBlank()) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("仅看 ${state.machines.find { it.id == state.discussionMachine }?.name ?: "这台机器"} 的留言", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
-            TextButton(onClick = { vm.channel(state.channel) }) { Text("查看全频道") }
+            Text("${state.machines.find { it.id == state.discussionMachine }?.name ?: "当前机器"} · 留言板", Modifier.weight(1f), style = MaterialTheme.typography.labelMedium)
+            TextButton(onClick = { vm.channel(state.channel) }) { Text("返回楼栋频道") }
         }
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("channel-message-list"), state = messageList, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp), reverseLayout = true) {
-            if(state.messages.isEmpty()) item { Text("还没有消息，来打个招呼吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            val messageLoad = if (!state.authReady && state.authError != null) ChannelLoadState.Failed(state.authError) else state.messageLoad
+            if (state.messages.isEmpty() || messageLoad is ChannelLoadState.Failed) item {
+                when (messageLoad) {
+                    ChannelLoadState.Loading -> Text("正在加载消息…", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("channel-messages-loading"))
+                    ChannelLoadState.Loaded -> Text(
+                        if (state.discussionMachine.isBlank()) "还没有消息，来打个招呼吧。" else "这台机器还没有留言。",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    is ChannelLoadState.Failed -> Column {
+                        Text(messageLoad.message, color = MaterialTheme.colorScheme.error)
+                        TextButton(onClick = { if (state.authReady) vm.refreshMessages() else vm.refresh() }) { Text("重新加载消息") }
+                    }
+                }
+            }
             items(state.messages, key = { it.id }) { message ->
                 Row(Modifier.fillMaxWidth().testTag("channel-message:${message.id}"), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Surface(Modifier.size(40.dp).combinedClickable(onClick = {}, onLongClick = { if(!state.busy && message.mentionRef.isNotBlank()) { mentions = mentions + message.mentionRef; input = (input + "@${message.nick} ").take(200) } }), shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer) { Box(contentAlignment = Alignment.Center) { if(message.avatar.isNotBlank()) AsyncImage(ImageRequest.Builder(context).data(message.avatar).memoryCacheKey("avatar|${scope.endpoint}|${scope.profileId}|${message.avatar}").diskCachePolicy(coil.request.CachePolicy.DISABLED).build(), "${message.nick}的头像", Modifier.fillMaxSize()) else Text(message.nick.take(1)) } }
@@ -179,8 +208,8 @@ import java.util.UUID
             }
             if (state.messagesHasMore) item { TextButton(onClick = { vm.moreMessages() }, enabled = !state.busy) { Text("加载更早的消息") } }
         }
-        if (state.messageNotices.any { it.str("channel") == state.channel && it.str("readAt").isBlank() }) TextButton(onClick = { vm.readChannelNotices() }, enabled = !state.busy) { Text("有人 @ 你 · 标为已读", color = androidx.compose.ui.graphics.Color(0xFFD87717)) }
-        if (state.channels.find { it.code == state.channel }?.canAnnounce == true) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(announcement, { announcement = it }, enabled = !state.busy); Text("作为频道公告发送", style = MaterialTheme.typography.bodySmall) }
+        if (state.messageNotices.any { it.str("channel") == state.channel && it.str("readAt").isBlank() && machineNoticeId(it) == scope.machineId }) TextButton(onClick = { vm.readChannelNotices() }, enabled = !state.busy) { Text("有人 @ 你 · 标为已读", color = androidx.compose.ui.graphics.Color(0xFFD87717)) }
+        if (scope.machineId.isBlank() && state.channels.find { it.code == state.channel }?.canAnnounce == true) Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Checkbox(announcement, { announcement = it }, enabled = !state.busy); Text("作为频道公告发送", style = MaterialTheme.typography.bodySmall) }
         if(reply != null || attached != null) Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) { Text(if(attached != null) "已添加附件" else "回复 ${reply?.nick}：${reply?.text?.take(20)}", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall); IconButton(onClick = { reply = null; attached = null }) { Icon(Icons.Outlined.Close, "取消引用或附件") } }
         NativeAttachmentActions(!state.busy, "${scope.endpoint}|${scope.profileId}|${scope.channel}|${scope.machineId}", onMedia = { uri, cleanup ->
                     val target = scope
@@ -232,7 +261,7 @@ import java.util.UUID
             if (!scope.matches(vm.state.value)) throw CancellationException("Chat changed")
             vm.api.call("/api/messages/${vm.api.encoded(message.id)}/report","POST",JSONObject().put("reason","other").put("detail","用户通过原生客户端举报"))
         }; menu = null }, enabled = !state.busy) { Text("举报") }
-        if(state.channels.find { it.code == state.channel }?.mentionAll == true) {
+        if(scope.machineId.isBlank() && state.channels.find { it.code == state.channel }?.mentionAll == true) {
             TextButton(onClick = { all = true; input = (input + "@全体成员 ").take(200); menu = null }, enabled = !state.busy) { Text("@ 全体成员") }
         }
         if(message.canPin) {
@@ -245,6 +274,14 @@ import java.util.UUID
 
 private data class ChatScope(val endpoint: String, val profileId: String?, val channel: String, val machineId: String = "") {
     fun matches(state: AppState) = profileId != null && endpoint == state.endpoint && profileId == state.profile?.id && channel == state.channel && machineId == state.discussionMachine
+}
+
+private fun machineNoticeId(notice: JSONObject): String {
+    val id = notice.str("machineId").ifBlank {
+        val fragment = Uri.parse(notice.str("url")).fragment.orEmpty()
+        Uri.parse("https://example.invalid/" + fragment.trimStart('/')).getQueryParameter("machine").orEmpty()
+    }
+    return id.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,100}")) }.orEmpty()
 }
 internal fun prepareMedia(context: android.content.Context, uri: Uri): Pair<ByteArray, String> {
     try { return decodeMedia(context, uri) }

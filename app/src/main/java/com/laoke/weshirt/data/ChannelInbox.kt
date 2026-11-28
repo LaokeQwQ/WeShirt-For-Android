@@ -24,21 +24,26 @@ class ChannelInbox(private val api: ApiClient, private val now: () -> Long = { S
     suspend fun load(scope: ChannelAccountScope, current: () -> Boolean): List<Channel> = lock.withLock {
         if (!current()) throw CancellationException("Account changed")
         if (account == scope && now() < expires) return@withLock channels
-        val rows = api.call("/api/messages/channels").optJSONArray("channels")?.objects().orEmpty().map(Channel::parse)
+        val rows = api.call("/api/messages/channels").optJSONArray("channels")?.objects()?.map(Channel::parse)
+            ?: error("频道列表未返回，请重试")
         if (!current()) throw CancellationException("Account changed")
         account = scope; channels = rows; expires = now() + 10_000
         rows
     }
 
-    suspend fun acknowledge(scope: ChannelAccountScope, channel: String, ids: List<String>, current: () -> Boolean): Int? = lock.withLock {
+    suspend fun acknowledge(scope: ChannelAccountScope, channel: String, ids: List<String>, machineId: String = "", current: () -> Boolean): Int? = lock.withLock {
         if (!current()) throw CancellationException("Conversation changed")
         val selected = ids.filter(String::isNotBlank).distinct().take(50)
         if (selected.isEmpty()) return@withLock null
-        val response = api.call("/api/messages/read", "POST", JSONObject().put("channel", channel).put("messageIds", JSONArray(selected)))
+        val body = JSONObject().put("channel", channel).put("messageIds", JSONArray(selected))
+        if (machineId.isNotBlank()) body.put("machineId", machineId)
+        val response = api.call("/api/messages/read", "POST", body)
         if (!current()) throw CancellationException("Conversation changed")
         val unread = response.optInt("unreadCount").coerceAtLeast(0)
-        if (account == scope) channels = channels.map { if (it.code == channel) it.copy(unreadCount = unread) else it }
-        unread
+        if (machineId.isBlank()) {
+            if (account == scope) channels = channels.map { if (it.code == channel) it.copy(unreadCount = unread) else it }
+            unread
+        } else null
     }
 }
 

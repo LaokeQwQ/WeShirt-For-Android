@@ -45,6 +45,7 @@ fun OverdueCollectionPrompt(state: AppState, vm: AppViewModel, enabled: Boolean 
             confirmLabel = "我已取衣",
             busy = state.busy,
             close = { selected = null },
+            onBackgroundFailure = vm::message,
         ) { succeeded, failed -> vm.take(task.id, requireElapsed = true, onSuccess = succeeded, onFailure = failed) }
     } }
 }

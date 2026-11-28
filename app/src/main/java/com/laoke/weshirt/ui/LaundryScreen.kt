@@ -202,6 +202,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 confirmLabel = "已取走衣物",
                 busy = busy,
                 close = { confirm = null },
+                onBackgroundFailure = vm::message,
             ) { succeeded, failed -> vm.take(ask.task.id, onSuccess = succeeded, onFailure = failed) }
         }
     }

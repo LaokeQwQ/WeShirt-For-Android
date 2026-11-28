@@ -61,7 +61,7 @@ internal fun MachineCommentsDialog(machine: Machine, state: AppState, vm: AppVie
         title = { Text("${machine.name} · 留言") },
         text = {
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("留言在本楼栋频道公开，和 Web 同步。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("本楼栋成员可在这台机器的独立留言板查看。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (comments.isEmpty() && !loading && error == null) item { Text("还没有留言，来分享这台机器的使用情况吧。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     items(comments, key = { it.id }) { comment ->
@@ -74,7 +74,7 @@ internal fun MachineCommentsDialog(machine: Machine, state: AppState, vm: AppVie
                                 if (comment.pinned) Text("置顶", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
                                 if (comment.reply.isNotBlank()) Text(comment.reply, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 if (comment.text.isNotBlank()) Text(comment.text, style = MaterialTheme.typography.bodyMedium)
-                                if (comment.mediaId.isNotBlank()) Text(if (comment.mediaKind == "video") "视频留言 · 在楼栋频道查看" else "图片留言 · 在楼栋频道查看", style = MaterialTheme.typography.bodySmall)
+                                if (comment.mediaId.isNotBlank()) Text(if (comment.mediaKind == "video") "视频留言 · 在完整机器留言板查看" else "图片留言 · 在完整机器留言板查看", style = MaterialTheme.typography.bodySmall)
                                 Row {
                                     TextButton(onClick = { reply = comment }, enabled = !sending && !muted && !accessDenied) { Text("回复") }
                                     TextButton(onClick = { vm.report(comment) }, enabled = !state.busy) { Text("举报") }

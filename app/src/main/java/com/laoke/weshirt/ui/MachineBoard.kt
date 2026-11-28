@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -100,8 +101,9 @@ fun MachineBoard(
             "other" to visible.filter { it.kind != "washer" && it.kind != "dryer" }
         ).filter { it.second.isNotEmpty() }
     }
+    val fontScale = LocalDensity.current.fontScale.coerceAtLeast(1f)
     LazyVerticalGrid(
-        columns = if (cards) GridCells.Adaptive(168.dp) else GridCells.Fixed(1),
+        columns = if (cards) GridCells.Adaptive(154.dp * fontScale) else GridCells.Fixed(1),
         modifier = modifier.fillMaxSize().testTag("machine-board"),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -198,15 +200,19 @@ fun MachineBoard(
 @Composable
 internal fun BoardMachineItem(machine: Machine, favorite: Boolean, status: MachineBoardStatus, cards: Boolean, onClick: () -> Unit) {
     val scheme = MaterialTheme.colorScheme
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("machine:${machine.id}"), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = scheme.surfaceContainerLow)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Card(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("machine:${machine.id}"), shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = if (cards) scheme.surfaceContainer else scheme.surfaceContainerLow)) {
+        Column(Modifier.fillMaxWidth().padding(if (cards) 12.dp else 16.dp),
+            verticalArrangement = Arrangement.spacedBy(if (cards) 8.dp else 12.dp)) {
             if (cards) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    MachineNumber(machine)
+                    MachineNumber(machine, compact = true)
                     Spacer(Modifier.weight(1f))
-                    MachineFavorite(machine.id, favorite)
+                    if (favorite) MachineFavorite(machine.id, favorite = true)
                 }
-                MachineName(machine)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    MachineName(machine, compact = true)
+                }
             } else {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     MachineNumber(machine)
@@ -216,9 +222,18 @@ internal fun BoardMachineItem(machine: Machine, favorite: Boolean, status: Machi
                     MachineFavorite(machine.id, favorite)
                 }
             }
-            FlowRow(Modifier.fillMaxWidth().testTag("machine-status-line:${machine.id}"), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp), itemVerticalAlignment = Alignment.CenterVertically) {
-                MachineStatusBadge(status)
-                status.detail?.let { Text(it, Modifier.testTag("machine-remaining:${machine.id}"), style = if (status.state == MachineBoardState.RUNNING) MaterialTheme.typography.labelLarge else MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant) }
+            val statusModifier = Modifier.fillMaxWidth().testTag("machine-status-line:${machine.id}")
+            if (cards) {
+                Column(statusModifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MachineStatusBadge(status)
+                    MachineStatusDetail(machine.id, status)
+                }
+            } else {
+                FlowRow(statusModifier, horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+                    MachineStatusBadge(status)
+                    MachineStatusDetail(machine.id, status)
+                }
             }
             if (machine.originalName.isNotBlank() && machine.originalName != machine.name) Text("原名：${machine.originalName}", maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val care = listOfNotNull("已用消毒液".takeIf { machine.disinfectant }, "已自清洁".takeIf { machine.selfCleaned }).joinToString(" · ")
@@ -230,18 +245,38 @@ internal fun BoardMachineItem(machine: Machine, favorite: Boolean, status: Machi
 }
 
 @Composable
-private fun MachineNumber(machine: Machine) {
-    Surface(Modifier.width(52.dp).heightIn(min = 58.dp).testTag("machine-slot:${machine.id}"), shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer) {
-        Column(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(machine.slot.ifBlank { "—" }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Icon(if (machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService, null, Modifier.size(16.dp))
+private fun MachineStatusDetail(id: String, status: MachineBoardStatus) {
+    status.detail?.let { detail ->
+        Text(detail, Modifier.testTag("machine-remaining:$id"),
+            style = if (status.state == MachineBoardState.RUNNING) MaterialTheme.typography.labelLarge else MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun MachineNumber(machine: Machine, compact: Boolean = false) {
+    val modifier = if (compact) Modifier.widthIn(min = 42.dp) else Modifier.width(52.dp).heightIn(min = 58.dp)
+    Surface(modifier.testTag("machine-slot:${machine.id}"), shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer) {
+        val icon = if (machine.kind == "dryer") Icons.Outlined.Air else Icons.Outlined.LocalLaundryService
+        if (compact) {
+            Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, Modifier.size(16.dp))
+                Text(machine.slot.ifBlank { "—" }, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        } else {
+            Column(Modifier.padding(horizontal = 4.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(machine.slot.ifBlank { "—" }, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(icon, null, Modifier.size(16.dp))
+            }
         }
     }
 }
 
 @Composable
-private fun MachineName(machine: Machine) {
-    Text(machine.name.ifBlank { "未命名设备" }, Modifier.testTag("machine-name:${machine.id}"), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+private fun MachineName(machine: Machine, compact: Boolean = false) {
+    Text(machine.name.ifBlank { "未命名设备" }, Modifier.testTag("machine-name:${machine.id}"), maxLines = 2, overflow = TextOverflow.Ellipsis,
+        style = if (compact) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium)
     Text(listOf(if (machine.kind == "dryer") "烘干" else if (machine.kind == "washer") "洗衣" else "其他设备", machine.floorName.ifBlank { machine.floorCode }).filter { it.isNotBlank() }.joinToString(" · "),
         Modifier.testTag("machine-type:${machine.id}"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }

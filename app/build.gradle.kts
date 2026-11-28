@@ -17,7 +17,7 @@ android {
         applicationId = "com.laoke.weshirt"
         minSdk = 29
         targetSdk = 36
-        versionCode = 22
+        versionCode = 23
         // Build 19 was the final fixed-name release at 0.1.1.
         versionName = "0.1.${versionCode!! - 18}"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -137,7 +137,7 @@ class AssistantStreamingUiTest {
         compose.onNodeWithTag("assistant-stream-answer").assertDoesNotExist()
         assertEquals(1, streamPosts.get())
         assertEquals(0, historyGets.get())
-        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-open-history"))
+        compose.onNodeWithTag("assistant-open-history").assertIsDisplayed()
         compose.onNodeWithTag("assistant-open-history").performClick()
         compose.waitUntil(10_000) { vm.state.value.assistant.panels["history"]?.data?.optJSONArray("messages")?.length() == 2 }
         assertEquals(1, historyGets.get())
@@ -149,7 +149,6 @@ class AssistantStreamingUiTest {
         compose.waitUntil(10_000) { visibleNativeText("先看看") }
         compose.onNodeWithTag("assistant-stop-stream").performClick()
         release.countDown()
-        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-chat-input"))
         compose.onNodeWithTag("assistant-chat-input").assertTextContains("哪台空闲？")
         compose.waitUntil(5000) { compose.onAllNodes(hasTestTag("assistant-chat-send") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("assistant-chat-send").assertIsEnabled()
@@ -158,7 +157,13 @@ class AssistantStreamingUiTest {
     }
 
     @Test fun photoButtonOffersCameraAndGalleryWithoutUploadingOrLoadingHistory() {
-        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-photo-input"))
+        val composer = hasAnyAncestor(hasTestTag("assistant-composer"))
+        compose.onNode(hasTestTag("assistant-voice-input") and composer).assertIsDisplayed()
+        compose.onNode(hasTestTag("assistant-photo-input") and composer).assertIsDisplayed()
+        val historyTop = compose.onNodeWithTag("assistant-open-history").getUnclippedBoundsInRoot().top
+        val conversationTop = compose.onNodeWithTag("assistant-conversation").getUnclippedBoundsInRoot().top
+        val composerTop = compose.onNodeWithTag("assistant-composer").getUnclippedBoundsInRoot().top
+        assertTrue(historyTop < conversationTop && conversationTop < composerTop)
         compose.onNodeWithTag("assistant-photo-input").performClick()
         compose.onNodeWithText("相机拍照").assertIsDisplayed()
         compose.onNodeWithText("从相册选择").assertIsDisplayed()
@@ -167,9 +172,8 @@ class AssistantStreamingUiTest {
     }
 
     private fun send() {
-        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-chat-input"))
         compose.onNodeWithTag("assistant-chat-input").performTextInput("哪台空闲？")
-        compose.onNodeWithTag("assistant-chat-send").performScrollTo().performClick()
+        compose.onNodeWithTag("assistant-chat-send").assertIsDisplayed().performClick()
     }
 
     private fun visibleNativeText(text: String): Boolean = onMain {

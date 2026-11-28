@@ -12,10 +12,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -84,7 +87,10 @@ private suspend fun recordSpeech(stopped: AtomicBoolean): ByteArray? = withConte
 }
 
 @Composable
-internal fun AssistantVoiceInput(session: UserFeatureSession, enabled: Boolean, onText: (String) -> Unit) {
+internal fun AssistantVoiceInput(
+    session: UserFeatureSession, enabled: Boolean, onText: (String) -> Unit,
+    content: @Composable (voiceButton: @Composable () -> Unit, voiceFeedback: @Composable () -> Unit) -> Unit,
+) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -140,22 +146,40 @@ internal fun AssistantVoiceInput(session: UserFeatureSession, enabled: Boolean, 
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer); job?.cancel() }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        TextButton(enabled = recording || enabled && !uploading, onClick = {
-            if (recording) stop.set(true)
-            else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
-            else permission.launch(Manifest.permission.RECORD_AUDIO)
-        }, modifier = Modifier.testTag("assistant-voice-input")) {
-            Icon(if (recording) Icons.Outlined.Stop else Icons.Outlined.Mic, null)
-            Text(when { recording -> "结束录音"; uploading -> "正在识别…"; else -> "语音输入" })
-        }
-        if (recording) Text("正在录音，最长 30 秒", style = MaterialTheme.typography.bodySmall)
-        hint?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (offerSystem) TextButton(enabled = enabled && !recording && !uploading, onClick = {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
-            if (runCatching { systemVoice.launch(intent) }.isFailure) hint = "此设备未安装系统听写服务"
-        }) { Text("使用系统听写") }
-    }
+    content(
+        {
+            IconButton(enabled = recording || enabled && !uploading, onClick = {
+                if (recording) stop.set(true)
+                else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) start()
+                else permission.launch(Manifest.permission.RECORD_AUDIO)
+            }, modifier = Modifier.testTag("assistant-voice-input")) {
+                Icon(if (recording) Icons.Outlined.Stop else Icons.Outlined.Mic, when {
+                    recording -> "结束录音"
+                    uploading -> "正在识别"
+                    else -> "语音输入"
+                })
+            }
+        },
+        {
+            if (recording || uploading || hint != null || offerSystem) {
+                Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    val feedback = when {
+                        recording -> "正在录音，最长 30 秒"
+                        uploading -> "正在识别…"
+                        else -> hint
+                    }
+                    feedback?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (offerSystem && !recording && !uploading) TextButton(enabled = enabled, onClick = {
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                        if (runCatching { systemVoice.launch(intent) }.isFailure) hint = "此设备未安装系统听写服务"
+                    }) { Text("使用系统听写") }
+                }
+            }
+        },
+    )
 }
