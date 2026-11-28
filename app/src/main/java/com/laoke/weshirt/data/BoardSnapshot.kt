@@ -15,20 +15,27 @@ fun preferLatestBoard(incoming: BoardSnapshot, building: String, previousBuildin
 fun parseBoardSnapshot(response: JSONObject, building: String): BoardSnapshot {
     val board = response.optJSONObject("board")
     if (board == null || board.str("dormBuilding") != building || board.optJSONArray("floors") == null) throw ApiException(502, "invalid_board", "client_${UUID.randomUUID()}", "楼栋数据不匹配，请重试")
-    val clockOffset = epoch(response.optJSONObject("freshness")?.str("serverNow").orEmpty())?.minus(System.currentTimeMillis()) ?: 0L
+    val freshness = response.optJSONObject("freshness")
+    val updatedAt = epoch(board.str("updatedAt"))
+    val clockOffset = epoch(freshness?.str("serverNow").orEmpty())?.minus(System.currentTimeMillis()) ?: 0L
+    val stale = freshness?.optBoolean("stale") == true || freshness?.optBoolean("syncFailed") == true
     val machines = board.getJSONArray("floors").objects().flatMap { floor ->
         floor.optJSONArray("machines")?.objects().orEmpty().map { value ->
-            Machine.parse(value).let { machine -> machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") }, floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }, clockOffsetMs = clockOffset) }
+            val machine = Machine.parse(value)
+            machine.copy(floorCode = machine.floorCode.ifBlank { floor.str("code") },
+                floorName = machine.floorName.ifBlank { floor.str("name", floor.str("code")) }, clockOffsetMs = clockOffset,
+                timingSource = value.str("timeSource"), timingObservedAt = epoch(value.str("timeObservedAt")) ?: updatedAt,
+                timingStale = stale || value.optBoolean("timeStale") || value.optBoolean("registrationPending") ||
+                    value.optJSONObject("health")?.optBoolean("stale") == true)
         }
     }
     if (machines.any { it.id.isBlank() } || machines.map { it.id }.distinct().size != machines.size) throw ApiException(502, "invalid_board", "client_${UUID.randomUUID()}", "机器数据异常，请重试")
-    val freshness = response.optJSONObject("freshness")
     val warning = when {
         freshness?.optBoolean("syncFailed") == true -> "最近一次设备数据同步未成功，当前显示上次成功的数据。\n状态码 503 · 事件 ${freshness.str("eventId").ifBlank { "client_${UUID.randomUUID()}" }}"
         freshness?.optBoolean("stale") == true -> "设备数据更新有延迟，请以机器现场为准。"
         else -> null
     }
-    return BoardSnapshot(machines, epoch(board.str("updatedAt")), warning)
+    return BoardSnapshot(machines, updatedAt, warning)
 }
 
 /** Optional service failures must not cancel a successful board refresh. Account changes still cancel it. */

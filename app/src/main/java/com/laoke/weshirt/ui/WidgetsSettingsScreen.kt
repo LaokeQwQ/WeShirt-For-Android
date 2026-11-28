@@ -162,7 +162,7 @@ internal class AndroidWidgetsManager(private val context: Context) {
         item {
             Text("移动与移除", style = MaterialTheme.typography.titleMedium)
             Text("在桌面长按 WeShirt 小组件，可拖动调整位置，或选择「移除」。移除组件不会删除洗衣记录。", Modifier.padding(top = 8.dp))
-            Text("若找不到 WeShirt：先打开一次应用，再回到桌面组件列表；检查桌面是否有足够空间、是否锁定布局。使用第三方桌面时，请在该桌面的组件列表中添加。", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall)
+            Text("在系统组件列表搜索 WeShirt，再滑动浏览尺寸。找不到 2×2 时，检查桌面是否有连续两行两列的空位，也可以从上方点击 2×2 旁的加号。", Modifier.padding(top = 10.dp), style = MaterialTheme.typography.bodySmall)
         }
     }
     if (chooseFamily) AlertDialog(onDismissRequest = { chooseFamily = false }, title = { Text("选择桌面指引") }, text = {

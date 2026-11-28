@@ -227,9 +227,13 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         catch(e: ApiException) { status = e.status; throw e }
         finally { if(!path.startsWith("/api/telemetry")) onMetric?.invoke(path.substringBefore('?'), ((System.nanoTime()-started)/1_000_000).coerceIn(0,60_000),status) }
     }
-    private suspend fun execute(request: Request, requestId: String): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun execute(request: Request, requestId: String, client: OkHttpClient = http): JSONObject = withContext(Dispatchers.IO) {
+        val call = client.newCall(request)
+        val cancellation = launch(start = CoroutineStart.UNDISPATCHED) {
+            try { awaitCancellation() } finally { call.cancel() }
+        }
         try {
-            http.newCall(request).execute().use { r ->
+            call.execute().use { r ->
                 val body = r.body ?: throw IOException("empty response")
                 if(body.contentLength() > MAX_RESPONSE) throw IOException("oversized response")
                 val source = body.source(); source.request(MAX_RESPONSE + 1)
@@ -243,8 +247,28 @@ class ApiClient(private val session: SessionStore, cacheDir: File, client: OkHtt
         } catch (e: SocketTimeoutException) {
             throw ApiException(0, "network_timeout", requestId, "等待服务器响应超时，请重试").apply { initCause(e) }
         } catch (e: IOException) {
+            currentCoroutineContext().ensureActive()
             throw ApiException(0, "network_error", requestId, "连接未完成，请检查网络后重试").apply { initCause(e) }
+        } finally {
+            cancellation.cancel()
         }
+    }
+    internal suspend fun transcribeAssistant(wav: ByteArray): String {
+        require(wav.size in 46..960_044)
+        val (origin, version) = snapshot()
+        val authorization = accessSession(origin, version) ?: throw ApiException(401, "unauthorized", eventId(), "请先登录")
+        currentAuthorization(origin, version, authorization)
+        val trace = eventId()
+        val request = Request.Builder().url("$origin/api/assistant/transcribe")
+            .header("Authorization", "Bearer " + authorization.str("accessToken"))
+            .header("Accept", "application/json").header("Cache-Control", "no-cache, no-store")
+            .header("X-Request-ID", trace).header("Idempotency-Key", UUID.randomUUID().toString())
+            .post(wav.toRequestBody("audio/wav".toMediaType())).build()
+        val client = http.newBuilder().cache(null).readTimeout(55, TimeUnit.SECONDS).callTimeout(65, TimeUnit.SECONDS).build()
+        val response = execute(request, trace, client)
+        currentAuthorization(origin, version, authorization)
+        return response.str("text").trim().take(1000)
+            .ifBlank { throw ApiException(422, "transcription_empty", trace, "未识别到文字，请重新录音") }
     }
     /** A single authenticated POST; partial answers are never retried or stored as final history. */
     internal suspend fun streamAssistant(body: JSONObject, onReset: suspend () -> Unit = {}, onDelta: suspend (String) -> Unit): JSONObject {

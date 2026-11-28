@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -64,15 +65,19 @@ class SessionRecoveryIntegrationTest {
     private val replacementIdentityStarted = CountDownLatch(1)
     private val firstTakeReply = CountDownLatch(1)
     private val takeAttempts = AtomicInteger()
+    private val timingBoardRelease = CountDownLatch(1)
+    private val timingTaskReads = AtomicInteger()
+    private val timingNow = java.time.Instant.now()
     private var previous = emptyMap<String, Any?>()
     @Volatile private var profileStatus = 503
     @Volatile private var blockReplacementBoard = false
     @Volatile private var blockReplacementIdentity = false
     @Volatile private var withLaundryTask = false
     @Volatile private var mayViewLaundry = true
+    @Volatile private var runningHotWash = false
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
-    private val origin = "https://recovery.invalid"
+    private var origin = "https://recovery.invalid"
 
     @Before fun prepare() {
         previous = prefs.all.toMap()
@@ -80,7 +85,7 @@ class SessionRecoveryIntegrationTest {
         prefs.edit().clear().putString("endpoint", origin).putString("building", "test").putBoolean("announcements", false).putBoolean("nativePushConsent", false).commit()
         client = OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
-            check(request.url.host == "recovery.invalid")
+            check(request.url.host == android.net.Uri.parse(origin).host)
             val path = request.url.encodedPath
             val buffer = okio.Buffer(); request.body?.writeTo(buffer)
             requests.add(path to buffer.readUtf8())
@@ -102,11 +107,23 @@ class SessionRecoveryIntegrationTest {
                 "/api/site" -> """{"buildings":[{"code":"test","name":"测试楼"}]}"""
                 "/api/machines" -> {
                     if (blockReplacementBoard) { replacementBoardStarted.countDown(); check(replacementBoardRelease.await(20, TimeUnit.SECONDS)) }
-                    """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
+                    if (runningHotWash) {
+                        check(timingBoardRelease.await(20, TimeUnit.SECONDS))
+                        """{"freshness":{"serverNow":"$timingNow"},"board":{"dormBuilding":"test","updatedAt":"$timingNow","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"occupied","finishAt":"${timingNow.plusSeconds(1559)}","timeSource":"upstream","timeObservedAt":"$timingNow"}]}]}}"""
+                    } else """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
                 }
                 "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true},"tasks":{"view":$mayViewLaundry}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
-                "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else """{"tasks":[]}"""
+                "/api/tasks" -> when {
+                    runningHotWash -> {
+                        val old = timingTaskReads.incrementAndGet() == 1
+                        val observedAt = if (old) timingNow.minusSeconds(60) else timingNow
+                        val endAt = if (old) timingNow.minusSeconds(60) else timingNow.plusSeconds(1559)
+                        """{"serverNow":"$timingNow","tasks":[{"id":"hot-wash","machineId":"public-machine","machineName":"热水洗","currentTask":true,"machineState":"occupied","timingObservedAt":"$observedAt","endAt":"$endAt","timingSource":"upstream","takeState":"waiting","startAt":"${timingNow.minusSeconds(1200)}"}]}"""
+                    }
+                    withLaundryTask -> """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}"""
+                    else -> """{"tasks":[]}"""
+                }
                 "/api/tasks/washer-task/take" -> {
                     check(request.method == "POST" && withLaundryTask)
                     if (takeAttempts.incrementAndGet() == 1) {
@@ -114,6 +131,10 @@ class SessionRecoveryIntegrationTest {
                         status = 503
                         """{"error":{"code":"fixture_busy","message":"服务暂不可用","eventId":"evt_pickup_fixture"}}"""
                     } else """{"ok":true,"task":{"id":"washer-task","machineId":"public-machine","done":true}}"""
+                }
+                "/api/tasks/washer-task" -> {
+                    check(request.method == "DELETE" && withLaundryTask)
+                    """{"ok":true}"""
                 }
                 "/api/user/test-notify" -> """{"ok":true,"accepted":true,"channel":"mobile","provider":"fcm"}"""
                 "/api/session-fixture-expired" -> { status = 401; """{"error":{"code":"unauthorized","message":"fixture expired"}}""" }
@@ -126,7 +147,7 @@ class SessionRecoveryIntegrationTest {
     }
 
     @After fun cleanup() {
-        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); firstTakeReply.countDown(); onMain { models.clear() }
+        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); firstTakeReply.countDown(); timingBoardRelease.countDown(); onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow()
         prefs.edit().clear().apply { previous.forEach { (key, value) -> when (value) {
@@ -145,6 +166,30 @@ class SessionRecoveryIntegrationTest {
     private fun render(vm: AppViewModel) = compose.setContent {
         val state by vm.state.collectAsState()
         WeShirtTheme("light", "blue") { SettingsScreen(state, vm, {}, {}, {}) }
+    }
+
+    @Test fun newerRoomTimingRefreshesPrivateHotWashWithoutTouchingRefresh() {
+        // Other recovery cases intentionally publish 2030 boards. Use a
+        // distinct origin so the persisted board cannot outrank this fixture.
+        origin = "https://hot-wash-${java.util.UUID.randomUUID()}.invalid"
+        prefs.edit().putString("endpoint", origin).commit()
+        runningHotWash = true
+        profileStatus = 200
+        saved(true)
+        val vm = model()
+        release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.tasks.singleOrNull()?.id == "hot-wash" }
+        compose.setContent {
+            val state by vm.state.collectAsState()
+            WeShirtTheme("light", "blue") { com.laoke.weshirt.ui.LaundryScreen(state, vm, {}) }
+        }
+        compose.onNodeWithTag("laundry-page").performScrollToNode(hasTestTag("laundry-task:hot-wash"))
+        compose.onNodeWithTag("laundry-task-time:hot-wash").assertTextContains("机器仍在运行", substring = true)
+        timingBoardRelease.countDown()
+        compose.waitUntil(10_000) { timingTaskReads.get() >= 2 && vm.state.value.tasks.singleOrNull()?.timingObservedAt == timingNow.toEpochMilli() }
+        compose.onNodeWithTag("laundry-task-time:hot-wash").assertTextContains("平台剩余 26 分钟")
+        compose.onNodeWithTag("laundry-take:hot-wash").assertDoesNotExist()
+        assertEquals(2, timingTaskReads.get())
     }
 
     @Test fun takeShowsPendingAndInDialogErrorThenKeepsAcknowledgedCompletionWhenReadLags() {
@@ -179,6 +224,22 @@ class SessionRecoveryIntegrationTest {
         assertTrue(vm.state.value.tasks.single().done)
         assertEquals("taken", vm.state.value.tasks.single().takeState)
         assertEquals(2, takeAttempts.get())
+    }
+
+    @Test fun deletionAcknowledgementImmediatelyRemovesTaskAndFencesSubsequentReplicaReads() {
+        withLaundryTask = true
+        profileStatus = 200
+        saved(true)
+        val vm = model()
+        release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.tasks.any { it.id == "washer-task" } }
+        val deletion = onMain { vm.deleteLaundryTask("washer-task", {}, { fail(it) }) }
+        runBlocking { deletion.join() }
+        assertTrue(vm.state.value.tasks.isEmpty())
+        assertEquals(1, requests.count { it.first == "/api/tasks/washer-task" })
+        val refresh = onMain { vm.refresh(afterCurrent = true) }
+        runBlocking { refresh.join() }
+        assertTrue("A lagging GET must not resurrect a deleted registration", vm.state.value.tasks.isEmpty())
     }
 
     @Test fun coldRestoreNeverShowsLoginAndTransientFailureKeepsSavedIdentityAndCredentials() {
@@ -248,7 +309,8 @@ class SessionRecoveryIntegrationTest {
         compose.onNodeWithText("正在恢复账号").assertIsDisplayed()
         compose.onNodeWithText("钉钉登录").assertDoesNotExist()
         profileStatus = 200; release.countDown()
-        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["history"]?.data != null }
+        compose.waitUntil(10_000) { vm.state.value.authReady && vm.state.value.assistant.panels["status"]?.data != null }
+        assertFalse(requests.any { it.first == "/api/assistant/history" })
         assertEquals("saved-user", vm.state.value.assistant.scope?.userId)
         assertNotNull(SecureSession(app).read())
     }

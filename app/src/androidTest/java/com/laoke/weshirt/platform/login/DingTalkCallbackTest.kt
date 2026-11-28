@@ -197,7 +197,9 @@ class DingTalkCallbackTest {
             assertEquals("fixture-code", sent.get().getString("authCode"))
             assertEquals(request.codeChallenge, DingTalkLoginBridge.challengeFor(sent.get().getString("codeVerifier")))
             val profileDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-            while (model.get().state.value.let { it.profile?.id != "login-fixture" || !it.authReady || it.loading } &&
+            while (model.get().state.value.let {
+                    it.profile?.id != "login-fixture" || !it.authReady || it.access.optJSONObject("permissions") == null || it.loading
+                } &&
                 System.nanoTime() < profileDeadline) Thread.sleep(30)
             val loggedIn = model.get().state.value
             assertEquals("The successful exchange must load the account shown by the app", "login-fixture", loggedIn.profile?.id)

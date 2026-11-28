@@ -36,13 +36,13 @@ class TaskProgressPresentationTest {
         assertTrue(display.indeterminate)
         assertEquals(0, display.progress)
         assertTrue(display.title.endsWith("等待确认"))
-        assertEquals("预计时间已到 · 等待设备确认", display.text)
+        assertEquals("预计时间已到，设备尚未确认完成", display.text)
     }
 
     @Test fun queueAndSelfCleanUseTheirOwnStateAndFutureTasksCannotBePromotedAsRunning() {
         val queued = task().copy(taskId = "queue:reservation", startedAtMillis = 0).presentation(now, ZoneOffset.UTC)
         assertTrue(queued.title.endsWith("等候中"))
-        assertTrue(queued.text.startsWith("前一项预计"))
+        assertTrue(queued.text.startsWith("上一位预计"))
         assertTrue(queued.indeterminate)
         val clean = task().copy(kind = "washer", program = "self_clean").presentation(now, ZoneOffset.UTC)
         assertTrue(clean.title.endsWith("桶自洁中"))

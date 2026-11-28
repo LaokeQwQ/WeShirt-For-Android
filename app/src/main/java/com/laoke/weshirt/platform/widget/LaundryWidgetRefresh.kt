@@ -79,7 +79,6 @@ internal suspend fun readVerifiedWidgetState(
     request: suspend (path: String, auth: Boolean) -> JSONObject,
     current: () -> Boolean,
     now: () -> Long = System::currentTimeMillis,
-    allowMissingBoard: Boolean = false,
 ): AppState {
     fun checkCurrent() { if (!current()) throw CancellationException("Widget account changed") }
     suspend fun read(path: String, auth: Boolean = true): JSONObject {
@@ -91,22 +90,26 @@ internal suspend fun readVerifiedWidgetState(
     val user = read("/api/auth/me").optJSONObject("user")
         ?: throw widgetProblem(502, "profile_missing", "账号资料暂不可用，请重试")
     if (expectedAccount.isBlank() || user.str("id") != expectedAccount) throw CancellationException("Widget account differs from server")
-    val access = read("/api/user/permissions")
+    val (access, site) = coroutineScope {
+        val userAccess = async { read("/api/user/permissions") }
+        val directory = async { optionalRefresh { read("/api/site", false) } }
+        userAccess.await() to directory.await()
+    }
     val permissions = access.optJSONObject("permissions")
         ?: throw widgetProblem(502, "permissions_missing", "权限暂不可用，请重试")
-    val site = read("/api/site", false)
-    val buildings = site.optJSONArray("buildings")?.objects().orEmpty()
+    val buildings = site.getOrNull()?.optJSONArray("buildings")?.objects().orEmpty()
         .filter { !it.has("enabled") || it.optBoolean("enabled") }
         .map { Building(it.str("code"), it.str("name")) }
     val building = user.str("dormBuilding")
-    if (!Regex("[a-z][a-z0-9_-]{0,63}").matches(building) || buildings.none { it.code == building })
+    if (!Regex("[a-z][a-z0-9_-]{0,63}").matches(building) || site.isSuccess && buildings.none { it.code == building })
         throw widgetProblem(409, "building_required", "请在应用内选择已启用的住宿楼")
     val (board, tasks) = coroutineScope {
         val board = async {
-            val readBoard = { response: JSONObject -> parseBoardSnapshot(response, building) }
-            if (allowMissingBoard) optionalRefresh { readBoard(read("/api/machines?dorm=$building", false)) }
+            // The public board is optional. It may be stale or fail without
+            // invalidating a successfully authenticated task for this account.
+            if (site.isFailure) BoardSnapshot(emptyList(), null)
+            else optionalRefresh { parseBoardSnapshot(read("/api/machines?dorm=$building", false), building) }
                 .getOrElse { BoardSnapshot(emptyList(), null) }
-            else readBoard(read("/api/machines?dorm=$building", false))
         }
         val tasks = async {
             val started = now()
@@ -144,8 +147,13 @@ internal fun widgetRefreshError(error: Exception): String {
 }
 
 internal object WidgetRefreshPolicy {
-    const val FRESH_MILLIS = 10 * 60_000L
+    private const val LEGACY_FRESH_MILLIS = 10 * 60_000L
+    private const val VERIFIED_FRESH_MILLIS = 25 * 60_000L
     private const val TASK_GRACE_MILLIS = 60 * 60_000L
+
+    /** Give the 15-minute periodic refresh time to run under Android scheduling. */
+    fun freshnessWindow(snapshot: LaundryWidgetSnapshot): Long =
+        if ((snapshot.taskObservedAtMillis ?: 0L) > 0L) VERIFIED_FRESH_MILLIS else LEGACY_FRESH_MILLIS
 
     fun followUntil(verifiedAt: Long?, estimatedEndOrStart: Long?): Long? {
         val verified = verifiedAt?.takeIf { it > 0 } ?: return null
@@ -165,10 +173,11 @@ internal object WidgetRefreshPolicy {
         if (snapshot.taskMachineName.isNullOrBlank() || snapshot.taskEstimatedFinishAtMillis?.takeIf { it > 0 } == null || snapshot.taskUnverified || snapshot.taskCompletionConfirmed) return null
         val clock = LaundryWidgetState.taskClock(snapshot)
         val age = now - clock
-        if (clock <= 0 || age < -30_000L || age >= FRESH_MILLIS) return null
+        val freshness = freshnessWindow(snapshot)
+        if (clock <= 0 || age < -30_000L || age >= freshness) return null
         // A bounded chain redraws the existing estimate only; reaching zero is
         // awaiting platform confirmation, never a synthetic idle/completed state.
-        return minOf(60_000L, FRESH_MILLIS - age.coerceAtLeast(0)).coerceAtLeast(1)
+        return minOf(60_000L, freshness - age.coerceAtLeast(0)).coerceAtLeast(1)
     }
 }
 
@@ -313,8 +322,7 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
             WidgetRefreshPolicy.activeTask(LaundryWidgetStore.read(applicationContext), System.currentTimeMillis()) == tracking)
         try {
             val state = withTimeout(45_000L) {
-                readVerifiedWidgetState(scope.userId, { path, auth -> api.call(path, auth = auth) }, ::current,
-                    allowMissingBoard = registeredTask != null)
+                readVerifiedWidgetState(scope.userId, { path, auth -> api.call(path, auth = auth) }, ::current)
             }
             val refreshedAt = System.currentTimeMillis()
             val snapshot = if (registeredTask != null) projectRegisteredWidgetTask(state, registeredTask, refreshedAt)
@@ -329,9 +337,11 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
                 }
             }
         } catch (_: TimeoutCancellationException) {
+            if (current() && runAttemptCount < 2) return Result.retry()
             synchronized(LaundryWidgetRefresh) {
                 if (registeredTask == null && current()) LaundryWidgetStore.setError(applicationContext,
-                    widgetRefreshError(widgetProblem(0, "widget_timeout", "刷新超时，请稍后重试")), scope, tracking)
+                    widgetRefreshError(widgetProblem(0, "widget_timeout", "刷新超时，请稍后重试")), scope, tracking,
+                    retainFreshTask = true)
             }
         } catch (cancel: CancellationException) {
             // CAS/profile/session conflicts discard the obsolete client. System
@@ -339,10 +349,16 @@ class LaundryWidgetRefreshWorker(context: Context, parameters: WorkerParameters)
             if (isStopped) throw cancel
             return Result.success()
         } catch (error: Exception) {
+            if (current() && runAttemptCount < 2 && (error !is ApiException || error.status in setOf(0, 408, 429, 500, 502, 503, 504)))
+                return Result.retry()
             synchronized(LaundryWidgetRefresh) {
                 if (registeredTask == null && current()) {
                     val safe = if (error is ApiException) error else widgetProblem(0, "widget_network", "暂时无法连接，请稍后重试")
-                    LaundryWidgetStore.setError(applicationContext, widgetRefreshError(safe), scope, tracking)
+                    if (safe.status == 401 || safe.status == 403) {
+                        LaundryWidgetStore.redactTask(applicationContext, scope)
+                        LaundryWidgetStore.setError(applicationContext, widgetRefreshError(safe), scope)
+                    } else LaundryWidgetStore.setError(applicationContext, widgetRefreshError(safe), scope, tracking,
+                        retainFreshTask = safe.status in setOf(0, 408, 429, 500, 502, 503, 504))
                 }
             }
         } finally {

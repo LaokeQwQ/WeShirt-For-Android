@@ -62,11 +62,12 @@ class LaundryNotifications(context: Context) {
         if (manager.getNotificationChannel(channel)?.importance == NotificationManager.IMPORTANCE_NONE) return false
         val notification = Notification.Builder(app, channel)
             .setSmallIcon(R.drawable.notification_laundry)
+            .setColor(contextAccent(event.kind == PushEventKind.CHAT_MENTION))
             .setContentTitle(event.title).setContentText(event.body)
-            .setStyle(Notification.BigTextStyle().bigText(event.body))
+            .setStyle(Notification.BigTextStyle().bigText(event.body.trim()))
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(Notification.Builder(app, channel).setSmallIcon(R.drawable.notification_laundry)
-                .setContentTitle("WeShirt").setContentText("有一条新的洗衣提醒").build())
+                .setContentTitle("WeShirt").setContentText("解锁查看新通知").build())
             .setAutoCancel(true).setOnlyAlertOnce(true)
             .setContentIntent(NativeNavigation.pendingIntent(app, event.kind.name, event.eventId)).build()
         try {
@@ -115,27 +116,30 @@ class LaundryNotifications(context: Context) {
         val dismiss = PendingIntent.getBroadcast(app, progress.taskId.hashCode(),
             Intent(app, NotificationDismissReceiver::class.java).setAction("dismiss:${progress.taskId}")
                 .putExtra("taskId", progress.taskId), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val accent = contextAccent(progress.taskId.startsWith("queue:"))
         val builder = Notification.Builder(app, PROGRESS_CHANNEL)
             .setSmallIcon(R.drawable.notification_laundry)
-            .setContentTitle(display.title).setContentText(display.text).setSubText("预计进度")
+            .setColor(accent)
+            .setContentTitle(display.title).setContentText(display.text)
             .setOngoing(!display.expectedEnded && display.hasStarted).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(Notification.Builder(app, PROGRESS_CHANNEL).setSmallIcon(R.drawable.notification_laundry)
                 .setContentTitle("WeShirt").setContentText("解锁查看洗衣进度").build())
             .setContentIntent(open).setDeleteIntent(dismiss)
-            .addAction(Notification.Action.Builder(null, "查看洗衣", open).build())
             .addAction(Notification.Action.Builder(null, "隐藏进度", dismiss).build())
         if (!display.expectedEnded) builder.setWhen(progress.estimatedFinishAtMillis).setShowWhen(true)
             .setUsesChronometer(true).setChronometerCountDown(true)
         else builder.setShowWhen(false)
-        if (Build.VERSION.SDK_INT >= 36) {
+        if (display.expectedEnded || !display.hasStarted) {
+            builder.setStyle(Notification.BigTextStyle().bigText(display.text))
+        } else if (Build.VERSION.SDK_INT >= 36) {
             builder.setStyle(Notification.ProgressStyle()
-                .setProgressSegments(listOf(Notification.ProgressStyle.Segment(1000).setColor(Color.rgb(55, 124, 107))))
+                .setProgressSegments(listOf(Notification.ProgressStyle.Segment(1000).setColor(accent)))
                 .setProgress(display.progress).setProgressIndeterminate(display.indeterminate)
                 .setProgressTrackerIcon(Icon.createWithResource(app, R.drawable.notification_laundry)))
             // Short critical text overrides the system timer. Leave it null so the chip counts down
             // while the app sleeps, instead of freezing a string such as "20 minutes" until refresh.
-            builder.setShortCriticalText(if (display.expectedEnded) "待确认" else null)
+            builder.setShortCriticalText(null)
         } else builder.setProgress(1000, display.progress, display.indeterminate)
         if (Build.VERSION.SDK_INT >= 36 && capability.liveUpdatesAllowed && progress.userRequestedTracking &&
             !display.expectedEnded && display.hasStarted) {
@@ -144,6 +148,9 @@ class LaundryNotifications(context: Context) {
         }
         return builder.build()
     }
+
+    private fun contextAccent(secondary: Boolean) =
+        if (secondary) Color.rgb(116, 82, 176) else Color.rgb(41, 101, 217)
 
     fun cancelProgress(taskId: String) { manager.cancel("progress:$taskId", 0) }
     fun wasHandled(event: NativePushEvent): Boolean = synchronized(lock) { !loadLedger().shouldAccept(event.eventId, event.revision) }

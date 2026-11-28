@@ -63,8 +63,8 @@ class LaundryWidgetProjectionTest {
     }
 
     @Test fun newBoardDoesNotMakeOldFailedTaskRequestLookCurrent() {
-        val old = projectLaundryWidget(state().copy(tasksUpdatedAt = now - 700_000), now)!!
-        assertEquals(now - 700_000, old.updatedAtMillis)
+        val old = projectLaundryWidget(state().copy(tasksUpdatedAt = now - 1_500_001), now)!!
+        assertEquals(now - 1_500_001, old.updatedAtMillis)
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(old, now))
         val failed = projectLaundryWidget(state().copy(tasksRefreshFailed = true), now)!!
         assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(failed, now))
@@ -83,8 +83,22 @@ class LaundryWidgetProjectionTest {
         assertEquals(task.id, com.laoke.weshirt.platform.widget.WidgetRefreshPolicy.activeTask(snapshot, now))
     }
 
+    @Test fun dryerProgressSurvivesPublicFailureAndTheFifteenMinuteRefreshInterval() {
+        val dryer = task.copy(startAt = null, endAt = now + offset + 60 * 60_000L)
+        val snapshot = projectLaundryWidget(state().copy(tasks = listOf(dryer), tasksUpdatedAt = now, boardFromCache = true,
+            boardWarning = "公开登记请求失败"), now)!!
+        val nextRead = now + 15 * 60_000L
+        assertEquals("dryer", snapshot.taskKind)
+        assertFalse(snapshot.taskUnverified)
+        assertEquals(WidgetTaskState.ESTIMATED, LaundryWidgetState.taskState(snapshot, nextRead))
+        assertEquals(45, LaundryWidgetState.remainingMinutes(snapshot, nextRead))
+        assertNotNull(LaundryWidgetState.progressPercent(snapshot, nextRead))
+        assertEquals(60_000L, com.laoke.weshirt.platform.widget.WidgetRefreshPolicy.tickDelay(snapshot, nextRead))
+        assertEquals(WidgetTaskState.UNVERIFIED, LaundryWidgetState.taskState(snapshot, now + 25 * 60_000L))
+    }
+
     @Test fun realStartIsRequiredForPercentageAndZeroDoesNotMeanFinished() {
-        val noStart = projectLaundryWidget(state().copy(tasks = listOf(task.copy(startAt = null))), now)!!
+        val noStart = projectLaundryWidget(state().copy(tasks = listOf(task.copy(startAt = null, createdAt = null))), now)!!
         assertNull(LaundryWidgetState.progressPercent(noStart, now))
         val invalidStart = noStart.copy(taskStartedAtMillis = now + 1)
         assertNull(LaundryWidgetState.progressPercent(invalidStart, now))

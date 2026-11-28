@@ -9,13 +9,15 @@ fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJ
 fun epoch(value: String): Long? = runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()
 data class Building(val code: String, val name: String)
 data class PendingShare(val origin: String, val kind: String, val ticket: String)
-data class Machine(val id: String, val name: String, val slot: String, val kind: String, val state: String, val finishAt: Long?, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val health: String, val occupantId: String = "", val suspectedUncollected: Boolean = false, val estimated: Boolean = false, val floorCode: String = "", val floorName: String = "", val originalName: String = "", val remarkName: String = "", val clockOffsetMs: Long = 0) {
+data class Machine(val id: String, val name: String, val slot: String, val kind: String, val state: String, val finishAt: Long?, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val health: String, val occupantId: String = "", val suspectedUncollected: Boolean = false, val estimated: Boolean = false, val floorCode: String = "", val floorName: String = "", val originalName: String = "", val remarkName: String = "", val clockOffsetMs: Long = 0,
+                   val timingSource: String = "", val timingObservedAt: Long? = null, val timingStale: Boolean = false) {
     fun minutes(now: Long = System.currentTimeMillis()) = finishAt?.let { ((it - (now + clockOffsetMs) + 59999) / 60000).coerceAtLeast(0) }
     fun availability(now: Long) = if(suspectedUncollected) Long.MAX_VALUE - 2 else when (state) { "idle" -> 0L; "occupied", "abnormal" -> localFinishAt()?.takeIf { it > now } ?: Long.MAX_VALUE - 1; else -> Long.MAX_VALUE }
     val stateLabel get() = if(suspectedUncollected) "疑似未取" else when (state) { "idle" -> "空闲"; "occupied" -> "使用中"; "abnormal" -> "待复核"; "faulty" -> "暂不可用"; else -> "状态待更新" }
     companion object { fun parse(j: JSONObject) = Machine(j.str("id"), j.str("displayName", j.str("name")), j.str("slot"), j.str("kind", "washer"), j.str("state", "unknown"), epoch(j.str("finishAt")), j.optJSONObject("occupancy")?.str("note") ?: j.str("note"), j.optBoolean("useDisinfectant") || j.optJSONObject("occupancy")?.optBoolean("useDisinfectant") == true, j.optBoolean("selfCleaned") || j.optJSONObject("occupancy")?.optBoolean("selfCleaned") == true, j.optJSONObject("health")?.str("label") ?: "", occupantId = j.optJSONObject("occupancy")?.str("userId").orEmpty(), suspectedUncollected = j.optBoolean("suspectedUncollected") || j.optJSONObject("occupancy")?.optBoolean("suspectedUncollected") == true, estimated = j.optBoolean("estimated"), floorCode = j.str("floorCode"), floorName = j.str("floorName"), originalName = j.str("originalName", j.str("name")), remarkName = j.str("remarkName")) }
 }
-data class LaundryTask(val id: String, val machineId: String, val name: String, val kind: String, val endAt: Long?, val done: Boolean, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val estimated: Boolean, val startAt: Long? = null, val createdAt: Long? = null, val archived: Boolean = false, val expiresAt: Long? = null, val timingSource: String = "user_report", val completionConfirmed: Boolean = false, val timeOffsetMinutes: Int = 0, val clockOffsetMs: Long = 0, val mode: String = "", val program: String = "", val minutes: Int? = null, val takeState: String = "") {
+data class LaundryTask(val id: String, val machineId: String, val name: String, val kind: String, val endAt: Long?, val done: Boolean, val note: String, val disinfectant: Boolean, val selfCleaned: Boolean, val estimated: Boolean, val startAt: Long? = null, val createdAt: Long? = null, val archived: Boolean = false, val expiresAt: Long? = null, val timingSource: String = "user_report", val completionConfirmed: Boolean = false, val timeOffsetMinutes: Int = 0, val clockOffsetMs: Long = 0, val mode: String = "", val program: String = "", val minutes: Int? = null, val takeState: String = "",
+                       val currentTask: Boolean? = null, val machineState: String = "", val timingObservedAt: Long? = null, val timingStale: Boolean = false) {
     companion object {
         fun parse(j: JSONObject) = LaundryTask(
             j.str("id"), j.str("machineId"), j.str("machineName"), j.str("kind"), epoch(j.str("endAt")),
@@ -23,7 +25,9 @@ data class LaundryTask(val id: String, val machineId: String, val name: String, 
             j.optBoolean("estimated"), epoch(j.str("startAt")), epoch(j.str("createdAt")), j.optBoolean("archived"),
             epoch(j.str("expiresAt")), j.str("timingSource", "user_report"), j.optBoolean("completionConfirmed"),
             j.optInt("timeOffsetMinutes"), mode = j.str("mode"), program = j.str("program"),
-            minutes = j.optInt("minutes").takeIf { it > 0 }, takeState = j.str("takeState")
+            minutes = j.optInt("minutes").takeIf { it > 0 }, takeState = j.str("takeState"),
+            currentTask = j.opt("currentTask") as? Boolean, machineState = j.str("machineState"),
+            timingObservedAt = epoch(j.str("timingObservedAt")), timingStale = j.optBoolean("timeStale")
         )
     }
 }

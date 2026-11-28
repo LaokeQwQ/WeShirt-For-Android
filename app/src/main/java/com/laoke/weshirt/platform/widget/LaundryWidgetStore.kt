@@ -7,6 +7,7 @@ import com.laoke.weshirt.data.LaundryTask
 import com.laoke.weshirt.data.SecureSession
 import com.laoke.weshirt.data.isArchived
 import com.laoke.weshirt.data.isExpired
+import com.laoke.weshirt.data.laundryDisplayTask
 import com.laoke.weshirt.data.serviceEndpoint
 import com.laoke.weshirt.data.str
 import org.json.JSONObject
@@ -72,7 +73,7 @@ fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()
     if (!state.authReady || profile.id.isBlank() || state.building.isBlank()) return null
     val permissions = state.access.optJSONObject("permissions") ?: return null
     val mayReadTasks = permissions.optJSONObject("tasks")?.optBoolean("view", true) != false
-    val tasks = if (mayReadTasks) state.tasks.filter { it.isWidgetTask(now) } else emptyList()
+    val tasks = if (mayReadTasks) state.tasks.filter { it.isWidgetTask(now) }.map { state.laundryDisplayTask(it, now) } else emptyList()
     val running = tasks.filterNot { it.completionConfirmed }
     val task = running.filter { (it.endAt?.minus(it.clockOffsetMs) ?: Long.MIN_VALUE) > now }
         .minByOrNull { it.endAt!!.minus(it.clockOffsetMs) }
@@ -101,11 +102,13 @@ fun projectLaundryWidget(state: AppState, now: Long = System.currentTimeMillis()
             }
         },
         taskEstimatedFinishAtMillis = task?.endAt?.minus(task.clockOffsetMs),
-        taskStartedAtMillis = task?.startAt?.takeIf { it > 0 }?.minus(task.clockOffsetMs),
+        taskStartedAtMillis = task?.let { row ->
+            (row.startAt ?: row.createdAt)?.takeIf { it > 0 && row.endAt?.let { end -> it < end } == true }
+                ?.minus(row.clockOffsetMs)
+        },
         taskId = task?.id,
         taskKind = task?.kind,
-        taskUnverified = !mayReadTasks || state.tasksRefreshFailed || verifiedAt == null ||
-            (acknowledgedTaskId == null && (state.boardFromCache || state.boardWarning != null)),
+        taskUnverified = !mayReadTasks || state.tasksRefreshFailed || verifiedAt == null,
         taskCompletionConfirmed = task?.completionConfirmed == true,
         taskRefreshUntilMillis = task?.takeUnless { it.completionConfirmed }?.let { pending ->
             val reference = (pending.endAt ?: pending.startAt ?: pending.createdAt)?.minus(pending.clockOffsetMs)
@@ -181,14 +184,20 @@ object LaundryWidgetStore {
     }
 
     /** The caller supplies only a safe status/event description, never an API response body. */
-    @Synchronized fun setError(context: Context, error: String, expectedScope: LaundryWidgetScope?, tracking: String? = null): Boolean {
+    @Synchronized fun setError(context: Context, error: String, expectedScope: LaundryWidgetScope?, tracking: String? = null,
+        retainFreshTask: Boolean = false): Boolean {
         if (expectedScope == null || captureScope(context) != expectedScope) return false
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val old = if (prefs.getString("scope", null) == expectedScope.key) read(context) else null
         if (tracking != null && WidgetRefreshPolicy.activeTask(old, System.currentTimeMillis()) != tracking) return false
         val edit = prefs.edit().putString("scope", expectedScope.key)
             .putString("error", LaundryWidgetState.safeLabel(error))
-        if (old == null) edit.remove("snapshot") else edit.putString("snapshot", encodeWidgetSnapshot(old.copy(taskUnverified = true)).toString())
+        if (old == null) edit.remove("snapshot") else {
+            val keep = retainFreshTask && old.taskId != null &&
+                LaundryWidgetState.taskState(old, System.currentTimeMillis()) in
+                setOf(WidgetTaskState.ESTIMATED, WidgetTaskState.AWAITING_CONFIRMATION, WidgetTaskState.READY_FOR_PICKUP)
+            edit.putString("snapshot", encodeWidgetSnapshot(if (keep) old else old.copy(taskUnverified = true)).toString())
+        }
         val committed = edit.commit()
         if (committed) refresh(context)
         return committed

@@ -34,7 +34,8 @@ class LaundryWidgetRefreshTest {
     @Test fun refreshVerifiesIdentityAndPermissionsBeforeOnlyOwnTasksAndBoundRoomReads() = runTest {
         val requests = mutableListOf<Pair<String, Boolean>>()
         val state = readVerifiedWidgetState("one", { path, auth -> requests += path to auth; response(path) }, { true }, { now })
-        assertEquals(listOf("/api/auth/me", "/api/user/permissions", "/api/site"), requests.take(3).map { it.first })
+        assertEquals("/api/auth/me", requests.first().first)
+        assertEquals(setOf("/api/user/permissions", "/api/site"), requests.drop(1).take(2).map { it.first }.toSet())
         assertEquals(setOf("/api/auth/me", "/api/user/permissions", "/api/site", "/api/machines?dorm=guiyuan", "/api/tasks"), requests.map { it.first }.toSet())
         assertFalse(requests.single { it.first.startsWith("/api/machines") }.second)
         assertTrue(requests.single { it.first == "/api/tasks" }.second)
@@ -113,7 +114,10 @@ class LaundryWidgetRefreshTest {
             "/api/tasks" -> tasks
             "/api/machines?dorm=guiyuan" -> throw ApiException(503, "fixture", "evt_fixture", "暂不可用")
             else -> response(path)
-        } }, { true }, { now }, allowMissingBoard = true)
+        } }, { true }, { now })
+        val regular = projectLaundryWidget(state, now)
+        assertEquals(WidgetTaskState.ESTIMATED, LaundryWidgetState.taskState(regular, now))
+        assertTrue(state.machines.isEmpty())
         val snapshot = projectRegisteredWidgetTask(state, "t_fixture", now)
         assertEquals("t_fixture", snapshot?.taskId)
         assertEquals(now, snapshot?.taskAcknowledgedAtMillis)

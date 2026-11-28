@@ -58,6 +58,13 @@ internal class UserFeatureSession(private val vm: AppViewModel, private val scop
         current(); currentCoroutineContext().ensureActive()
         return result
     }
+    suspend fun transcribeAssistant(wav: ByteArray): String {
+        current()
+        val text = vm.api.transcribeAssistant(wav)
+        current()
+        currentCoroutineContext().ensureActive()
+        return text
+    }
     fun cancel() { job?.cancel() }
     fun run(refresh: Boolean = false, silent: Boolean = false, block: suspend UserFeatureSession.() -> Unit): Boolean {
         if (!active || busy) return false

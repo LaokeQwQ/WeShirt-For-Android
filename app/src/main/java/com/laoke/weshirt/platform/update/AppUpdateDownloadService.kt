@@ -155,9 +155,9 @@ class AppUpdateDownloadService : Service() {
     private fun notification(release: AppRelease, metrics: UpdateDownloadMetrics): Notification {
         val cancel = PendingIntent.getService(this, NOTICE, Intent(this, AppUpdateDownloadService::class.java)
             .setAction(CANCEL).putExtra(REQUEST, requestId), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val text = if (verifying) "正在核对版本与应用签名…" else metrics.description()
-        return builder().setContentTitle("正在更新 WeShirt v${release.versionName}").setContentText(text)
-            .setStyle(Notification.BigTextStyle().bigText(text)).setOngoing(true)
+        val text = if (verifying) "正在验证安装包签名" else metrics.description()
+        return builder().setContentTitle("下载更新 · v${release.versionName}").setContentText(text)
+            .setOngoing(true).setCategory(Notification.CATEGORY_PROGRESS)
             .setProgress(1000, (metrics.fraction * 1000).toInt(), verifying)
             .addAction(Notification.Action.Builder(null, "取消下载", cancel).build()).build()
     }
@@ -168,6 +168,7 @@ class AppUpdateDownloadService : Service() {
         .setAutoCancel(true).build()
 
     private fun builder() = Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.notification_laundry)
+        .setColor(android.graphics.Color.rgb(41, 101, 217)).setShowWhen(false)
         .setOnlyAlertOnce(true).setVisibility(Notification.VISIBILITY_PRIVATE)
         .setContentIntent(NativeNavigation.pendingIntent(this, "APP_UPDATE", "app-update"))
 

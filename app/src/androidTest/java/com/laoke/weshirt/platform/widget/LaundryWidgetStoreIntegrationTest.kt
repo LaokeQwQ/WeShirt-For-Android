@@ -104,7 +104,7 @@ class LaundryWidgetStoreIntegrationTest {
         assertTrue(coordinator.synchronizeWidget(state))
         assertEquals("2 号洗衣机 · 新名称", LaundryWidgetStore.read(app)?.taskMachineName)
         assertTrue(coordinator.synchronizeWidget(state.copy(boardWarning = "状态待确认")))
-        assertTrue(LaundryWidgetStore.read(app)!!.taskUnverified)
+        assertFalse(LaundryWidgetStore.read(app)!!.taskUnverified)
         assertTrue(coordinator.synchronizeWidget(state.copy(updatedAt = now - 30_000,
             access = JSONObject("""{"permissions":{"tasks":{"view":false}}}"""))))
         val redacted = LaundryWidgetStore.read(app)!!
@@ -146,10 +146,13 @@ class LaundryWidgetStoreIntegrationTest {
         }
         assertFalse(LaundryWidgetStore.read(app)!!.taskUnverified)
         occupancyRelease.countDown()
-        await("The final public occupancy failure must invalidate widget status") {
-            vm.state.value.boardWarning != null && LaundryWidgetStore.read(app)?.taskUnverified == true
+        await("The public occupancy failure must be reported independently") {
+            vm.state.value.boardWarning != null
         }
-        assertEquals("vm-task", LaundryWidgetStore.read(app)?.taskId)
+        val snapshot = requireNotNull(LaundryWidgetStore.read(app))
+        assertEquals("vm-task", snapshot.taskId)
+        assertFalse("A public care-only failure does not invalidate an authenticated task", snapshot.taskUnverified)
+        assertNotNull(LaundryWidgetState.progressPercent(snapshot, System.currentTimeMillis()))
     }
 
     private fun await(message: String, ready: () -> Boolean) {

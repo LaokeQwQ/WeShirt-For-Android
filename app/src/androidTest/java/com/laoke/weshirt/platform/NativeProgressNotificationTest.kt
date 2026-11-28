@@ -50,6 +50,8 @@ class NativeProgressNotificationTest {
         val notification = requireNotNull(posted(task))
         assertEquals("一层 · 2号机 · 烘干中", notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
         assertTrue(notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("预计"))
+        assertEquals(listOf("隐藏进度"), notification.actions.map { it.title.toString() })
+        assertNotNull(notification.contentIntent)
         assertEquals(task.estimatedFinishAtMillis, notification.`when`)
         assertTrue(notification.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER))
         assertTrue(notification.extras.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN))
@@ -73,11 +75,12 @@ class NativeProgressNotificationTest {
         }
         assertTrue(notices.updateProgress(task.copy(revision = 2, estimatedFinishAtMillis = now - 1)))
         await("An elapsed estimate must stop the live timer without claiming completion") {
-            posted(task)?.extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString() == "预计时间已到 · 等待设备确认"
+            posted(task)?.extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString() == "预计时间已到，设备尚未确认完成"
         }
         val elapsed = requireNotNull(posted(task))
         assertFalse(elapsed.flags and Notification.FLAG_ONGOING_EVENT != 0)
         assertFalse(elapsed.extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER))
+        assertEquals(0, elapsed.extras.getInt(Notification.EXTRA_PROGRESS_MAX))
         if (Build.VERSION.SDK_INT >= 36) assertFalse(elapsed.hasPromotableCharacteristics())
     }
 

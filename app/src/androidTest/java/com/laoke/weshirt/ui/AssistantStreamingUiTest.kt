@@ -48,6 +48,7 @@ class AssistantStreamingUiTest {
     private val models = ViewModelStore()
     private val release = CountDownLatch(1)
     private val streamPosts = AtomicInteger()
+    private val historyGets = AtomicInteger()
     private val completed = AtomicBoolean()
     private lateinit var vm: AppViewModel
     private lateinit var client: OkHttpClient
@@ -64,6 +65,10 @@ class AssistantStreamingUiTest {
             val body: ResponseBody = if (path == "/api/assistant/chat/stream") {
                 assertEquals("Bearer streaming-ui-access", request.header("Authorization"))
                 assertEquals("text/event-stream", request.header("Accept"))
+                val sent = Buffer()
+                request.body!!.writeTo(sent)
+                assertTrue(JSONObject(sent.readUtf8()).getString("conversationId")
+                    .matches(Regex("[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}")))
                 streamPosts.incrementAndGet()
                 val prefix = Buffer().writeUtf8("event: delta\ndata: {\"text\":\"先看看\"}\n\n")
                 val suffix = Buffer().writeUtf8("event: delta\ndata: {\"text\":\"当前楼栋。\"}\n\nevent: done\ndata: {\"reply\":\"先看看当前楼栋。\",\"messages\":$finalHistory,\"usage\":{\"dailyRemaining\":99,\"dailyLimit\":100,\"minuteRemaining\":9}}\n\n")
@@ -90,7 +95,10 @@ class AssistantStreamingUiTest {
                     "/api/machines" -> """{"board":{"dormBuilding":"test","floors":[]}}"""
                     "/api/user/announcements" -> """{"enabled":false}"""
                     "/api/assistant/status" -> """{"ready":true,"dormBuilding":"test","buildingName":"测试楼","usage":{"dailyRemaining":100,"dailyLimit":100,"minuteRemaining":10}}"""
-                    "/api/assistant/history" -> "{\"messages\":${if (completed.get()) finalHistory else "[]"}}"
+                    "/api/assistant/history" -> {
+                        historyGets.incrementAndGet()
+                        "{\"messages\":${if (completed.get()) finalHistory else "[]"}}"
+                    }
                     else -> "{}"
                 }
                 data.toResponseBody("application/json".toMediaType())
@@ -116,16 +124,23 @@ class AssistantStreamingUiTest {
         } } }.commit()
     }
 
-    @Test fun firstNativeTextIsVisibleBeforeCompletionThenCanonicalHistoryReplacesTheDraft() {
+    @Test fun firstNativeTextAppearsBeforeCompletionAndHistoryLoadsOnlyAfterATap() {
         send()
         compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-stream-answer"))
         compose.waitUntil(10_000) { visibleNativeText("先看看") }
         assertFalse("First text must not wait for final provider data", completed.get())
-        assertTrue(vm.state.value.assistant.panels["history"]?.data?.optJSONArray("messages")?.length() == 0)
+        assertEquals(0, historyGets.get())
         release.countDown()
-        compose.waitUntil(10_000) { vm.state.value.assistant.panels["history"]?.data?.optJSONArray("messages")?.length() == 2 }
+        compose.waitUntil(10_000) { completed.get() && vm.state.value.assistant.panels["status"]?.data != null &&
+            compose.onAllNodesWithTag("assistant-stream-answer").fetchSemanticsNodes().isEmpty() }
+        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-message:1"))
         compose.onNodeWithTag("assistant-stream-answer").assertDoesNotExist()
         assertEquals(1, streamPosts.get())
+        assertEquals(0, historyGets.get())
+        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-open-history"))
+        compose.onNodeWithTag("assistant-open-history").performClick()
+        compose.waitUntil(10_000) { vm.state.value.assistant.panels["history"]?.data?.optJSONArray("messages")?.length() == 2 }
+        assertEquals(1, historyGets.get())
     }
 
     @Test fun stoppingKeepsPartialTextAndTypedQuestionWithoutReplayingOrConfirmingHistory() {
@@ -139,7 +154,16 @@ class AssistantStreamingUiTest {
         compose.waitUntil(5000) { compose.onAllNodes(hasTestTag("assistant-chat-send") and isEnabled()).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("assistant-chat-send").assertIsEnabled()
         assertEquals(1, streamPosts.get())
-        assertEquals(0, vm.state.value.assistant.panels["history"]?.data?.optJSONArray("messages")?.length())
+        assertEquals(0, historyGets.get())
+    }
+
+    @Test fun photoButtonOffersCameraAndGalleryWithoutUploadingOrLoadingHistory() {
+        compose.onNodeWithTag("assistant-conversation").performScrollToNode(hasTestTag("assistant-photo-input"))
+        compose.onNodeWithTag("assistant-photo-input").performClick()
+        compose.onNodeWithText("相机拍照").assertIsDisplayed()
+        compose.onNodeWithText("从相册选择").assertIsDisplayed()
+        assertEquals(0, streamPosts.get())
+        assertEquals(0, historyGets.get())
     }
 
     private fun send() {

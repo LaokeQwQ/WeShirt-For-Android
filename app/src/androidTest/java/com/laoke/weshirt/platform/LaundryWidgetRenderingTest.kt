@@ -270,7 +270,7 @@ class LaundryWidgetRenderingTest {
                         for (size in fullCardSizes) {
                             val dimensions = when (size) {
                                 WidgetSize.MINI -> error("Mini cards have a dedicated layout matrix")
-                                WidgetSize.COMPACT -> listOf(150 to 150, 180 to 180)
+                                WidgetSize.COMPACT -> listOf(120 to 120, 150 to 150, 180 to 180)
                                 WidgetSize.WIDE -> listOf(250 to 120, 320 to 140)
                             }
                             for ((width, height) in dimensions) {
@@ -306,7 +306,7 @@ class LaundryWidgetRenderingTest {
                                 assertTrue("The task area cannot collapse ($measuredCase)", section.height() > 0)
                                 val illustration = artworkBounds(view, view.findViewById(R.id.widget_machine_shell))
                                 val minimumArt = if (size == WidgetSize.COMPACT) {
-                                    if (height == 150) 56 else 84
+                                    when (height) { 120 -> 34; 150 -> 56; else -> 84 }
                                 } else if (height == 120) 80 else 90
                                 assertTrue("The visible machine must remain prominent, artwork=$illustration ($measuredCase)",
                                     illustration.height() >= dp(context, minimumArt))
