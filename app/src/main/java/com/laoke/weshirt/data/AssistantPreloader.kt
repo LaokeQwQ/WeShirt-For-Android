@@ -82,5 +82,8 @@ class AssistantPreloader(
     }
 
     private fun copy(panel: AssistantPanel) = panel.copy(data = panel.data?.let { JSONObject(it.toString()) })
-    companion object { val NAMES = setOf("status", "history", "skills", "memory", "preferences") }
+    companion object {
+        val OPEN_PANELS = setOf("status", "skills", "memory", "preferences")
+        val NAMES = OPEN_PANELS + "history"
+    }
 }

@@ -9,14 +9,13 @@ internal enum class WidgetSize(val columns: Int, val rows: Int) {
 
 /** Time estimates never establish that a machine is idle or a task has ended. */
 internal object LaundryWidgetState {
-    private const val STALE_AFTER_MILLIS = 10 * 60_000L
     private const val FUTURE_TOLERANCE_MILLIS = 30_000L
 
     fun freshness(snapshot: LaundryWidgetSnapshot?, now: Long): WidgetFreshness {
         if (snapshot == null) return WidgetFreshness.MISSING
         val updated = taskClock(snapshot)
         if (updated <= 0L || updated > now && updated - now > FUTURE_TOLERANCE_MILLIS) return WidgetFreshness.INVALID_TIME
-        return if (now >= updated && now - updated >= STALE_AFTER_MILLIS) WidgetFreshness.OUTDATED else WidgetFreshness.RECENT
+        return if (now >= updated && now - updated >= WidgetRefreshPolicy.freshnessWindow(snapshot)) WidgetFreshness.OUTDATED else WidgetFreshness.RECENT
     }
 
     fun taskState(snapshot: LaundryWidgetSnapshot?, now: Long): WidgetTaskState {

@@ -451,7 +451,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
         val panel = assistantPreloader.accept(account, name, value)
         _state.update { it.copy(assistant = AssistantSnapshot(account, (it.assistant.takeIf { snapshot -> snapshot.scope == account }?.panels.orEmpty()) + (name to panel))) }
     }
-    fun preloadAssistant(force: Boolean = false, names: Set<String> = AssistantPreloader.NAMES): kotlinx.coroutines.Job = viewModelScope.launch {
+    fun preloadAssistant(force: Boolean = false, names: Set<String> = AssistantPreloader.OPEN_PANELS): kotlinx.coroutines.Job = viewModelScope.launch {
         val account = assistantScope() ?: return@launch
         if (_state.value.access.optJSONObject("permissions")?.optJSONObject("assistant")?.optBoolean("view", true) == false) {
             assistantPreloader.clear(); _state.update { it.copy(assistant = AssistantSnapshot()) }; return@launch

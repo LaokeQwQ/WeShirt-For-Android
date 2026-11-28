@@ -6,6 +6,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.*
@@ -16,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.History
 import com.laoke.weshirt.ui.EmptyPanel
 import com.laoke.weshirt.ui.SessionRestoringPanel
 import androidx.compose.ui.unit.dp
@@ -67,13 +73,17 @@ private data class AssistantConfirmation(val title: String, val message: String,
     val snapshot = state.assistant.takeIf { it.scope?.origin == state.endpoint && it.scope?.userId == state.profile?.id } ?: AssistantSnapshot()
     val panels = snapshot.panels
     var status by remember(session) { mutableStateOf(panels["status"]?.data) }
-    var messages by remember(session) { mutableStateOf(panels["history"]?.data?.optJSONArray("messages")?.objects().orEmpty()) }
+    val conversationId = remember(session) { java.util.UUID.randomUUID().toString() }
+    var messages by remember(session) { mutableStateOf<List<JSONObject>>(emptyList()) }
+    var historyOpen by remember(session) { mutableStateOf(false) }
+    var intro by remember(session) { mutableStateOf(false) }
     var skills by remember(session) { mutableStateOf(panels["skills"]?.data?.optJSONArray("skills")?.objects().orEmpty()) }
     var preferences by remember(session) { mutableStateOf(panels["preferences"]?.data) }
     var contextInfo by remember(session) { mutableStateOf<JSONObject?>(null) }
     var memory by remember(session) { mutableStateOf(panels["memory"]?.data) }
     var tab by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(0) }
     var input by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
+    var photo by remember(session) { mutableStateOf<AssistantPhoto?>(null) }
     var note by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(panels["memory"]?.data?.str("note").orEmpty()) }
     var noteDirty by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf(false) }
     var title by rememberSaveable(state.endpoint, state.profile?.id) { mutableStateOf("") }
@@ -85,19 +95,21 @@ private data class AssistantConfirmation(val title: String, val message: String,
     var streaming by remember(session) { mutableStateOf(false) }
     var draftQuestion by remember(session) { mutableStateOf<String?>(null) }
     var draftReply by remember(session) { mutableStateOf("") }
+    var deepThink by remember(session) { mutableStateOf(false) }
+    var safetyNotice by remember(session) { mutableStateOf<String?>(null) }
     var streamInterrupted by remember(session) { mutableStateOf(false) }
     val streamBuffer = remember(session) { StringBuilder() }
     val usage = status?.optJSONObject("usage")
     val canChat = status?.optBoolean("ready") == true && status?.str("dormBuilding").orEmpty().isNotBlank() && (usage?.optInt("dailyRemaining") ?: 0) > 0
-    val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 && input.isNotBlank() && input.length <= 1000 && !session.busy
+    val canSend = canChat && (usage?.optInt("minuteRemaining", 1) ?: 0) > 0 &&
+        (input.isNotBlank() || photo != null) && input.length <= 1000 && !session.busy
 
-    fun load() { vm.preloadAssistant(force = true) }
+    fun load() { vm.preloadAssistant(force = true, names = if (historyOpen) AssistantPreloader.NAMES else AssistantPreloader.OPEN_PANELS) }
     fun updated(vararg names: String, acceptLocal: Boolean = true) {
         val keys = names.toSet()
         if (acceptLocal) keys.forEach { name ->
             val confirmed = when (name) {
                 "status" -> status
-                "history" -> JSONObject().put("messages", org.json.JSONArray(messages))
                 "skills" -> JSONObject().put("skills", org.json.JSONArray(skills))
                 "memory" -> memory
                 "preferences" -> preferences
@@ -111,7 +123,6 @@ private data class AssistantConfirmation(val title: String, val message: String,
     // Each response becomes visible independently. Optional metadata never
     // holds the conversation behind a single session-wide busy flag.
     LaunchedEffect(session, panels["status"]) { panels["status"]?.takeIf { !it.loading && it.error == null }?.data?.let { status = it } }
-    LaunchedEffect(session, panels["history"]) { panels["history"]?.takeIf { !it.loading && it.error == null }?.data?.let { messages = it.optJSONArray("messages")?.objects().orEmpty() } }
     LaunchedEffect(session, panels["skills"]) { panels["skills"]?.takeIf { !it.loading && it.error == null }?.data?.let { skills = it.optJSONArray("skills")?.objects().orEmpty() } }
     LaunchedEffect(session, panels["preferences"]) { panels["preferences"]?.takeIf { !it.loading && it.error == null }?.data?.let { preferences = it } }
     LaunchedEffect(session, panels["memory"]) { panels["memory"]?.takeIf { !it.loading && it.error == null }?.data?.let { memory = it; if (!noteDirty) note = it.str("note") } }
@@ -122,6 +133,11 @@ private data class AssistantConfirmation(val title: String, val message: String,
         updated("memory")
     } }
     LaunchedEffect(session) { vm.preloadAssistant() }
+    LaunchedEffect(session) {
+        intro = true
+        delay(840)
+        intro = false
+    }
     LaunchedEffect(session, initialSkill) {
         if (!initialSkill.isNullOrBlank()) {
             val incoming = ShareLinks.ticket(initialSkill, "skill")
@@ -138,7 +154,8 @@ private data class AssistantConfirmation(val title: String, val message: String,
     }
 
     AssistantFrame(embedded, close, ::load, session.busy) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("对话", "技能与分享", "个人记忆", "只读 MCP", "提示词").forEachIndexed { index, label -> FilterChip(selected = tab == index, onClick = { tab = index }, modifier = Modifier.testTag("assistant-tab:$index"), label = { Text(label) }) }
             }
@@ -159,10 +176,16 @@ private data class AssistantConfirmation(val title: String, val message: String,
                 } }
                 when (tab) {
                     0 -> {
-                        item { AssistantPanelFeedback("history", panels["history"], "聊天记录") { vm.preloadAssistant(force = true, names = setOf("history")) } }
                         if(contextInfo?.optBoolean("compressed")==true)item{Text("较早的对话已自动压缩，近期问题保留原文；需要时请补充细节。",style=MaterialTheme.typography.bodySmall)}
-                        item { Text("技能已自动启用，会按问题使用洗衣知识和当前楼栋只读查询，无需选择。",style=MaterialTheme.typography.bodySmall) }
-                        if (messages.isEmpty() && panels["history"]?.data != null && panels["history"]?.loading != true) item { Text("可以询问空闲机器、洗衣建议或你的洗衣安排。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text("可以问我哪台机器空闲，或查询你的登记、历史记录和洗衣时间。", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                IconButton(onClick = {
+                                    historyOpen = true
+                                    vm.preloadAssistant(force = true, names = setOf("history"))
+                                }, modifier = Modifier.testTag("assistant-open-history")) { Icon(Icons.Outlined.History, "查看聊天记录") }
+                            }
+                        }
                         itemsIndexed(messages) { index, message ->
                             val mine = message.str("role") == "user"
                             Card(Modifier.fillMaxWidth().testTag("assistant-message:$index"), colors = CardDefaults.cardColors(containerColor = if (mine) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainer)) {
@@ -181,7 +204,7 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Text("洗衣助手", style = MaterialTheme.typography.labelSmall)
                                     if (draftReply.isNotBlank()) NativeMarkdown(draftReply) else Text(if (streaming) "正在思考…" else "本次回答未完成")
-                                    Text(if (streamInterrupted) "回答已中断，以上内容尚未确认保存；可刷新聊天记录确认。" else "正在生成回答…", style = MaterialTheme.typography.bodySmall)
+                                    Text(if (streamInterrupted) "回答已中断，以上内容尚未确认保存。可打开聊天记录确认。" else "正在生成回答…", style = MaterialTheme.typography.bodySmall)
                                     if (streaming) TextButton(onClick = {
                                         session.cancel(); draftReply = streamBuffer.toString(); streaming = false; streamInterrupted = true
                                         updated("status", acceptLocal = false)
@@ -192,20 +215,35 @@ private data class AssistantConfirmation(val title: String, val message: String,
                         }
                         item("assistant-composer") {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                safetyNotice?.let { notice ->
+                                    Surface(color = MaterialTheme.colorScheme.errorContainer,
+                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp)) {
+                                        Text(notice, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer)
+                                    }
+                                }
+                                if (status?.optBoolean("deepThinkingAvailable") == true) {
+                                    FilterChip(selected = deepThink, onClick = { deepThink = !deepThink },
+                                        enabled = !streaming, label = { Text("深度思考") })
+                                }
+                                photo?.let { AssistantPhotoPreview(it, enabled = !session.busy) { photo = null } }
                                 OutlinedTextField(input, { input = it.take(1000) }, label = { Text("想问什么？") }, enabled = !session.busy, supportingText = { Text("${input.length}/1000") }, modifier = Modifier.fillMaxWidth().testTag("assistant-chat-input"), minLines = 2, maxLines = 6)
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                    TextButton(enabled = !session.busy && messages.isNotEmpty(), onClick = {
-                                        confirmation = AssistantConfirmation("清空对话？", "会删除当前账号保存的聊天记录，个人记忆单独管理。") {
-                                            session.run { request("/api/assistant/history", "DELETE"); messages = emptyList(); updated("history") }
-                                        }
-                                    }) { Text("清空对话") }
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    AssistantPhotoInput(session, "$conversationId:$tab", enabled = !session.busy && !streaming) { photo = it }
+                                    AssistantVoiceInput(session, enabled = !session.busy && !streaming) { recognized ->
+                                        input = listOf(input.trimEnd(), recognized).filter(String::isNotBlank).joinToString(" ").take(1000)
+                                    }
                                     Button(enabled = canSend, onClick = send@ {
                                         if (session.busy) return@send
                                         val submitted = input.trim()
-                                        val body = JSONObject().put("input", submitted)
+                                        val attached = photo
+                                        val displayQuestion = if (attached == null) submitted else
+                                            listOf("[照片]", submitted).filter(String::isNotBlank).joinToString(" ")
+                                        val body = JSONObject().put("input", submitted).put("conversationId", conversationId)
+                                        if (deepThink && status?.optBoolean("deepThinkingAvailable") == true) body.put("deepThink", true)
+                                        attached?.let { body.put("photoData", it.dataUrl) }
                                         val partial = streamBuffer.apply { clear() }
                                         var renderedAt = 0L
-                                        draftQuestion = submitted; draftReply = ""; streamInterrupted = false; streaming = true
+                                        draftQuestion = displayQuestion; draftReply = ""; streamInterrupted = false; streaming = true; safetyNotice = null
                                         session.run {
                                             try {
                                                 val data = streamAssistant(body, onReset = { partial.clear(); draftReply = ""; renderedAt = 0L }) { delta ->
@@ -213,12 +251,25 @@ private data class AssistantConfirmation(val title: String, val message: String,
                                                     val now = android.os.SystemClock.elapsedRealtime()
                                                     if (renderedAt == 0L || now - renderedAt >= 50) { draftReply = partial.toString(); renderedAt = now }
                                                 }
-                                                messages = data.optJSONArray("messages")?.objects().orEmpty(); contextInfo = data.optJSONObject("context")
+                                                val reply = data.str("reply").ifBlank { partial.toString() }
+                                                messages = messages + listOf(JSONObject().put("role", "user").put("content", displayQuestion),
+                                                    JSONObject().put("role", "assistant").put("content", reply))
+                                                contextInfo = data.optJSONObject("context")
                                                 status = JSONObject(status?.toString() ?: "{}").put("usage", data.optJSONObject("usage"))
                                                 draftQuestion = null; draftReply = ""; streamInterrupted = false
-                                                updated("history", "status")
+                                                vm.invalidateAssistant(setOf("history"))
+                                                updated("status")
                                                 if (input.trim() == submitted) input = ""
+                                                if (photo === attached) photo = null
                                             } catch (cancel: CancellationException) { throw cancel } catch (failure: Exception) {
+                                                if ((failure as? com.laoke.weshirt.data.ApiException)?.code in setOf("assistant_refusal", "assistant_suspended")) {
+                                                    partial.clear()
+                                                    draftQuestion = null
+                                                    draftReply = ""
+                                                    safetyNotice = failure.message
+                                                    updated("status", acceptLocal = false)
+                                                    return@run
+                                                }
                                                 draftReply = partial.toString(); streamInterrupted = true
                                                 // Reconcile spent quota after provider failure; keep the typed question intact.
                                                 updated("status", acceptLocal = false)
@@ -320,13 +371,53 @@ private data class AssistantConfirmation(val title: String, val message: String,
                     3 -> item {
                         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("个人只读 MCP", style = MaterialTheme.typography.titleMedium)
-                            Text("支持 JSON-RPC HTTP，可读取当前绑定住宿楼的机器状态，不提供写入或通知工具。")
+                            Text("支持 JSON-RPC HTTP，可读取当前楼栋机器状态和本人的洗衣记录。")
                             Text(state.endpoint.trimEnd('/') + "/api/mcp")
                             Text("外部客户端需自行配置个人 Bearer 登录凭证。应用不会复制或分享你的登录凭证。", style = MaterialTheme.typography.bodySmall)
                             OutlinedButton(onClick = { copyFeatureText(context, state.endpoint.trimEnd('/') + "/api/mcp"); vm.message("MCP 地址已复制") }) { Text("仅复制接口地址") }
                         }
                     }
                 }
+            }
+        }
+        AnimatedVisibility(intro, modifier = Modifier.align(Alignment.Center),
+            enter = fadeIn(tween(220)) + scaleIn(tween(260), initialScale = .86f), exit = fadeOut(tween(220))) {
+            Surface(shape = MaterialTheme.shapes.extraLarge, color = MaterialTheme.colorScheme.primaryContainer,
+                tonalElevation = 3.dp, modifier = Modifier.testTag("assistant-intro")) {
+                Row(Modifier.padding(horizontal = 24.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Outlined.AutoAwesome, null)
+                    Text("洗衣助手", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+        }
+    }
+    if (historyOpen) UserFeatureDialog("聊天记录", { historyOpen = false }) { padding ->
+        val history = panels["history"]
+        val messagesByTime = history?.data?.optJSONArray("messages")?.objects().orEmpty()
+        LazyColumn(Modifier.fillMaxSize().padding(padding).testTag("assistant-history-page"),
+            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            item { AssistantPanelFeedback("history", history, "聊天记录") { vm.preloadAssistant(force = true, names = setOf("history")) } }
+            if (history?.data != null && messagesByTime.isEmpty()) item { Text("暂无聊天记录") }
+            items(messagesByTime) { message ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(if (message.str("role") == "user") "你" else "洗衣助手", style = MaterialTheme.typography.labelMedium)
+                        if (message.str("role") == "user") Text(message.str("content")) else NativeMarkdown(message.str("content"))
+                    }
+                }
+            }
+            if (messagesByTime.isNotEmpty()) item {
+                TextButton(enabled = !session.busy, onClick = {
+                    confirmation = AssistantConfirmation("清空聊天记录？", "删除当前账号保存的聊天记录。个人记忆单独管理。") {
+                        session.run {
+                            request("/api/assistant/history", "DELETE")
+                            messages = emptyList()
+                            vm.acceptAssistantPanel("history", JSONObject().put("messages", org.json.JSONArray()))
+                        }
+                    }
+                }) { Text("清空聊天记录") }
             }
         }
     }

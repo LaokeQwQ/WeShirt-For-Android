@@ -93,8 +93,9 @@ open class LaundryWidgetProvider : AppWidgetProvider() {
         val views = RemoteViews(context.packageName, layout)
         val freshness = LaundryWidgetState.freshness(snapshot, now)
         val taskState = LaundryWidgetState.taskState(snapshot, now)
+        val hasVerifiedTask = taskState in setOf(WidgetTaskState.ESTIMATED, WidgetTaskState.AWAITING_CONFIRMATION, WidgetTaskState.READY_FOR_PICKUP)
         val hasSession = LaundryWidgetStore.captureScope(context) != null
-        val refreshError = if (hasSession) LaundryWidgetStore.refreshError(context) else null
+        val refreshError = if (hasSession && !hasVerifiedTask) LaundryWidgetStore.refreshError(context) else null
         val running = LaundryWidgetState.isRunning(snapshot, now)
         val progress = LaundryWidgetState.progressPercent(snapshot, now)
         val building = snapshot?.buildingName?.let(LaundryWidgetState::safeLabel)?.takeIf(String::isNotBlank)

@@ -146,10 +146,13 @@ class LaundryWidgetStoreIntegrationTest {
         }
         assertFalse(LaundryWidgetStore.read(app)!!.taskUnverified)
         occupancyRelease.countDown()
-        await("The final public occupancy failure must invalidate widget status") {
-            vm.state.value.boardWarning != null && LaundryWidgetStore.read(app)?.taskUnverified == true
+        await("The public occupancy failure must be reported independently") {
+            vm.state.value.boardWarning != null
         }
-        assertEquals("vm-task", LaundryWidgetStore.read(app)?.taskId)
+        val snapshot = requireNotNull(LaundryWidgetStore.read(app))
+        assertEquals("vm-task", snapshot.taskId)
+        assertFalse("A public care-only failure does not invalidate an authenticated task", snapshot.taskUnverified)
+        assertNotNull(LaundryWidgetState.progressPercent(snapshot, System.currentTimeMillis()))
     }
 
     private fun await(message: String, ready: () -> Boolean) {
