@@ -47,7 +47,7 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     var confirm by remember { mutableStateOf<TaskConfirmation?>(null) }
     var history by rememberSaveable { mutableStateOf(false) }
     var historyQuery by rememberSaveable { mutableStateOf("") }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var now by remember(state.updatedAt, state.tasksUpdatedAt) { mutableLongStateOf(System.currentTimeMillis()) }
     val owner = LocalLifecycleOwner.current
     val busy = session.busy || state.busy
     val savedSnapshot = state.savedLaundrySyncedAt.takeIf { state.tasksUpdatedAt == null }
@@ -58,7 +58,11 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
     val socialView = state.authReady && permissions?.optJSONObject("social")?.optBoolean("view", true) != false
     val role = state.access.optJSONObject("identity")?.str("role", state.profile?.role ?: "user") ?: state.profile?.role.orEmpty()
     val inspectionView = permissions?.optJSONObject("inspections")?.optBoolean("view", role in setOf("super", "admin", "volunteer")) ?: (role in setOf("super", "admin", "volunteer"))
-    LaunchedEffect(owner) { owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) { while (true) { now = System.currentTimeMillis(); delay(30_000) } } }
+    LaunchedEffect(owner, state.updatedAt, state.tasksUpdatedAt) {
+        owner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (true) { now = System.currentTimeMillis(); delay(30_000) }
+        }
+    }
     val records = laundryRecords(if (savedSnapshot != null) state.savedLaundryTasks else state.tasks, now)
     val active = records.current
     val done = records.history
@@ -113,8 +117,8 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
                 }
             }
             items(active, key = { it.id }) { task ->
-                val finished = task.completionConfirmed || task.takeState == "pending" || task.timingSource != "upstream" && task.endAt?.let { it <= now + task.clockOffsetMs } == true
-                LaundryTaskCard(task, now, finished, busy, tasksOperate, socialView && tasksReady,
+                val displayTask = if (savedSnapshot == null) state.laundryDisplayTask(task, now) else task
+                LaundryTaskCard(displayTask, now, displayTask.canShowTake(now), busy, tasksOperate, socialView && tasksReady,
                     take = { confirm = TaskConfirmation(task, false) }, pickup = { pickupTaskId = task.id },
                     delete = { confirm = TaskConfirmation(task, true) }, cached = savedSnapshot != null)
             }
@@ -287,8 +291,11 @@ private data class TaskConfirmation(val task: LaundryTask, val delete: Boolean)
 internal fun laundryTimeLabel(task: LaundryTask, now: Long): String {
     if (task.done) return "已确认取衣"
     if (task.completionConfirmed) return "平台已确认完成 · 等待取衣"
-    val end = task.endAt ?: return "结束时间待确认"
     val platformNow = now + task.clockOffsetMs
+    val end = task.endAt
+    if (task.deviceStillRunning(now) && (end == null || end <= platformNow || task.timingSource == "none"))
+        return "机器仍在运行 · 剩余时间待更新"
+    if (end == null) return "结束时间待确认"
     if (end > platformNow) return "${if(task.timingSource == "upstream") "平台" else "预计"}剩余 ${((end - platformNow + 59_999) / 60_000).coerceAtLeast(1)} 分钟"
     if (task.timingSource == "upstream") return "即将完成"
     val overdue = ((platformNow - end) / 60_000).coerceAtLeast(0)

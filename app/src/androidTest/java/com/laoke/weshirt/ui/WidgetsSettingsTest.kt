@@ -56,6 +56,9 @@ class WidgetsSettingsTest {
         compose.onNodeWithTag("widgets-management").performScrollToNode(hasTestTag("widget-add:2x1"))
         compose.onNodeWithTag("widget-add:2x1").assertHeightIsAtLeast(48.dp).performClick()
         compose.runOnIdle { assertEquals("mini", pinned) }
+        compose.onNodeWithTag("widgets-management").performScrollToNode(hasTestTag("widget-add:2x2"))
+        compose.onNodeWithTag("widget-add:2x2").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("square", pinned) }
         compose.onNodeWithTag("widgets-management").performScrollToNode(hasTestTag("widget-add:4x2"))
         compose.onNodeWithTag("widget-add:4x2").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals("wide", pinned) }

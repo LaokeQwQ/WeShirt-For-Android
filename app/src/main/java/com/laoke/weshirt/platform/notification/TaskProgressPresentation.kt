@@ -52,11 +52,11 @@ internal fun TaskProgress.presentation(now: Long, zone: ZoneId = ZoneId.systemDe
     val end = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()).withZone(zone)
         .format(Instant.ofEpochMilli(estimatedFinishAtMillis))
     val text = when {
-        expectedEnded -> "预计时间已到 · 等待设备确认"
-        !hasStarted -> "等待开始 · 预计 $end 结束"
-        queued -> "前一项预计 $end 结束 · 空闲以设备确认为准"
-        !determinate -> "预计 $end 结束 · 进度待确认"
-        else -> "预计 $end 结束 · 以设备确认为准"
+        expectedEnded -> "预计时间已到，设备尚未确认完成"
+        !hasStarted -> "预计 $end 完成"
+        queued -> "上一位预计 $end 完成"
+        !determinate -> "预计 $end 完成，进度待确认"
+        else -> "预计 $end 完成"
     }
     val title = "$machine · ${if (expectedEnded) "等待确认" else if (!hasStarted) "等待开始" else activity}"
     return TaskProgressPresentation(title, text, progress, !determinate, expectedEnded, hasStarted)

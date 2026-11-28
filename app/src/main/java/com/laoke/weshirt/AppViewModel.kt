@@ -193,6 +193,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
                     val account = async { refreshAccount(version) }
                     room.await(); account.await()
                 }
+                catchUpLaundryTiming(version)
             } finally {
                 if (refreshGeneration == version && refreshJob === coroutineContext[Job]) {
                     refreshJob = null
@@ -331,49 +332,7 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             val mayReadQueue = target.isNotBlank() && permissions.optJSONObject("queue")?.optBoolean("view", true) != false
             val taskReadRevision = taskRevision
             val results = coroutineScope {
-                val tasks = async {
-                    val result = optionalRefresh {
-                        val response = if (mayReadTasks) api.call("/api/tasks") else JSONObject().put("tasks", JSONArray())
-                        if (response.optJSONArray("tasks") == null)
-                            throw ApiException(502, "tasks_missing", "client_${UUID.randomUUID()}", "暂无可核对的洗衣记录，请稍后重试")
-                        response
-                    }
-                    if (version == generation.get() && _state.value.authReady) {
-                        if (!mayReadTasks) _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
-                        else if (taskReadRevision == taskRevision) {
-                            result.onSuccess { response ->
-                                val offset = epoch(response.str("serverNow"))?.minus(System.currentTimeMillis()) ?: 0L
-                                val items = response.optJSONArray("tasks")?.objects().orEmpty().map { row ->
-                                    LaundryTask.parse(row).copy(clockOffsetMs = offset)
-                                }
-                                _state.update { state ->
-                                    val taken = state.tasks.asSequence().filter { it.done }.map { it.id }.toSet()
-                                    val now = System.currentTimeMillis()
-                                    val ids = items.mapTo(HashSet()) { it.id }
-                                    val acknowledged = state.tasks.filter { task ->
-                                        val receipt = taskRegistrationReceipts[task.id]
-                                        !task.done && task.id !in ids && receipt?.let {
-                                            it.generation == version && now - it.at in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
-                                        } == true
-                                    }
-                                    taskRegistrationReceipts.entries.removeAll {
-                                        it.value.generation != version || now - it.value.at !in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
-                                    }
-                                    state.copy(tasks = acknowledged + items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
-                                        tasksUpdatedAt = now, tasksRefreshFailed = false, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null)
-                                }
-                                persistCurrentLaundry()
-                            }.onFailure { problem ->
-                                if (problem is ApiException && problem.status in setOf(401, 403)) {
-                                    _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null) }
-                                    persistLaundry(null)
-                                }
-                                _state.update { it.copy(tasksRefreshFailed = true) }
-                            }
-                        }
-                    }
-                    result
-                }
+                val tasks = async { refreshTasks(version, taskReadRevision, mayReadTasks) }
                 val queue = async { optionalRefresh { if (mayReadQueue) api.call("/api/queue?dorm=${api.encoded(target)}") else JSONObject().put("queue", JSONArray()) } }
                 val laundry = async { optionalRefresh { metadata("/api/user/laundry-preferences").optJSONObject("preferences") ?: JSONObject() } }
                 val announcements = async { optionalRefresh { metadata("/api/user/announcements") } }
@@ -407,6 +366,67 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             }
         }
     }
+    private suspend fun refreshTasks(version: Int, taskReadRevision: Long, mayReadTasks: Boolean): Result<JSONObject> {
+        if (!mayReadTasks) {
+            if (version == generation.get() && _state.value.authReady)
+                _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, tasksRefreshFailed = false) }
+            return Result.success(JSONObject())
+        }
+        val result = optionalRefresh {
+            val response = api.call("/api/tasks")
+            if (response.optJSONArray("tasks") == null)
+                throw ApiException(502, "tasks_missing", "client_${UUID.randomUUID()}", "暂无可核对的洗衣记录，请稍后重试")
+            response
+        }
+        if (version != generation.get() || !_state.value.authReady || taskReadRevision != taskRevision) return result
+        result.onSuccess { response ->
+            val now = System.currentTimeMillis()
+            val offset = epoch(response.str("serverNow"))?.minus(now) ?: 0L
+            val items = response.optJSONArray("tasks")?.objects().orEmpty().map { row ->
+                LaundryTask.parse(row).copy(clockOffsetMs = offset)
+            }
+            val ids = items.mapTo(HashSet()) { it.id }
+            _state.update { state ->
+                val taken = state.tasks.asSequence().filter { it.done }.map { it.id }.toSet()
+                val acknowledged = state.tasks.filter { task ->
+                    val receipt = taskRegistrationReceipts[task.id]
+                    !task.done && task.id !in ids && receipt?.let {
+                        it.generation == version && now - it.at in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
+                    } == true
+                }
+                state.copy(tasks = acknowledged + items.map { if (it.id in taken) it.copy(done = true, takeState = "taken") else it },
+                    tasksUpdatedAt = now, tasksRefreshFailed = false, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null)
+            }
+            taskRegistrationReceipts.entries.removeAll {
+                it.value.generation != version || now - it.value.at !in 0L until TASK_REGISTRATION_VISIBILITY_MILLIS
+            }
+            persistCurrentLaundry()
+        }.onFailure { problem ->
+            if (problem is ApiException && problem.status in setOf(401, 403)) {
+                _state.update { it.copy(tasks = emptyList(), tasksUpdatedAt = null, savedLaundryTasks = emptyList(), savedLaundrySyncedAt = null) }
+                persistLaundry(null)
+            }
+            _state.update { it.copy(tasksRefreshFailed = true) }
+        }
+        return result
+    }
+
+    private var laundryTimingCatchUp: Triple<Int, String, Long>? = null
+    private suspend fun catchUpLaundryTiming(version: Int) {
+        val state = _state.value
+        if (version != generation.get() || !state.authReady || state.profile == null) return
+        val permissions = state.access.optJSONObject("permissions") ?: return
+        if (permissions.optJSONObject("tasks")?.optBoolean("view", true) == false) return
+        val observedAt = state.laundryTimingCatchUpAt(System.currentTimeMillis()) ?: return
+        val observation = Triple(version, state.building, observedAt)
+        if (laundryTimingCatchUp == observation) return
+        laundryTimingCatchUp = observation
+        // These endpoints may straddle the same platform sync. Re-read only
+        // private tasks once when the newer room actually disagrees.
+        if (refreshTasks(version, taskRevision, mayReadTasks = true).isSuccess && version == generation.get())
+            platform.synchronize(_state.value)
+    }
+
     private suspend fun refreshAnnouncements(version: Int, settings: JSONObject?) {
         val building = _state.value.building
         if (building.isBlank() || !_state.value.announcementsOn) return
@@ -561,11 +581,13 @@ class AppViewModel @JvmOverloads constructor(app: Application, client: OkHttpCli
             if (_state.value.access.optJSONObject("permissions")?.optJSONObject("tasks")?.optBoolean("operate", true) == false) {
                 throw failure(403, "forbidden", "当前账号没有取衣操作权限")
             }
-            val task = _state.value.tasks.find { it.id == taskId }
+            val state = _state.value
+            val now = System.currentTimeMillis()
+            val task = state.tasks.find { it.id == taskId }?.let { state.laundryDisplayTask(it, now) }
                 ?: throw failure(409, "task_changed", "登记状态已变化，请刷新后重试")
             if (!task.done) {
-                if (requireElapsed && !task.completionConfirmed &&
-                    task.endAt?.let { it <= System.currentTimeMillis() + task.clockOffsetMs } != true) {
+                if (task.deviceStillRunning(now) || requireElapsed && !task.completionConfirmed &&
+                    task.endAt?.let { it <= now + task.clockOffsetMs } != true) {
                     throw failure(409, "task_changed", "登记计时已变化，请先核对机器")
                 }
                 val response = api.call("/api/tasks/${api.encoded(taskId)}/take", "POST")

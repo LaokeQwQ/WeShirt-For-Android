@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -64,12 +65,16 @@ class SessionRecoveryIntegrationTest {
     private val replacementIdentityStarted = CountDownLatch(1)
     private val firstTakeReply = CountDownLatch(1)
     private val takeAttempts = AtomicInteger()
+    private val timingBoardRelease = CountDownLatch(1)
+    private val timingTaskReads = AtomicInteger()
+    private val timingNow = java.time.Instant.now()
     private var previous = emptyMap<String, Any?>()
     @Volatile private var profileStatus = 503
     @Volatile private var blockReplacementBoard = false
     @Volatile private var blockReplacementIdentity = false
     @Volatile private var withLaundryTask = false
     @Volatile private var mayViewLaundry = true
+    @Volatile private var runningHotWash = false
     private val requests = CopyOnWriteArrayList<Pair<String, String>>()
     private lateinit var client: OkHttpClient
     private val origin = "https://recovery.invalid"
@@ -102,11 +107,23 @@ class SessionRecoveryIntegrationTest {
                 "/api/site" -> """{"buildings":[{"code":"test","name":"测试楼"}]}"""
                 "/api/machines" -> {
                     if (blockReplacementBoard) { replacementBoardStarted.countDown(); check(replacementBoardRelease.await(20, TimeUnit.SECONDS)) }
-                    """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
+                    if (runningHotWash) {
+                        check(timingBoardRelease.await(20, TimeUnit.SECONDS))
+                        """{"freshness":{"serverNow":"$timingNow"},"board":{"dormBuilding":"test","updatedAt":"$timingNow","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"occupied","finishAt":"${timingNow.plusSeconds(1559)}","timeSource":"upstream","timeObservedAt":"$timingNow"}]}]}}"""
+                    } else """{"board":{"dormBuilding":"test","updatedAt":"2030-01-01T00:00:00Z","floors":[{"code":"1","machines":[{"id":"public-machine","name":"测试洗衣机","slot":"1","state":"idle"}]}]}}"""
                 }
                 "/api/user/permissions" -> """{"permissions":{"assistant":{"view":true},"tasks":{"view":$mayViewLaundry}}}"""
                 "/api/user/announcements" -> """{"enabled":false}"""
-                "/api/tasks" -> if (withLaundryTask) """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}""" else """{"tasks":[]}"""
+                "/api/tasks" -> when {
+                    runningHotWash -> {
+                        val old = timingTaskReads.incrementAndGet() == 1
+                        val observedAt = if (old) timingNow.minusSeconds(60) else timingNow
+                        val endAt = if (old) timingNow.minusSeconds(60) else timingNow.plusSeconds(1559)
+                        """{"serverNow":"$timingNow","tasks":[{"id":"hot-wash","machineId":"public-machine","machineName":"热水洗","currentTask":true,"machineState":"occupied","timingObservedAt":"$observedAt","endAt":"$endAt","timingSource":"upstream","takeState":"waiting","startAt":"${timingNow.minusSeconds(1200)}"}]}"""
+                    }
+                    withLaundryTask -> """{"tasks":[{"id":"washer-task","machineId":"public-machine","machineName":"测试洗衣机","done":false,"completionConfirmed":true}]}"""
+                    else -> """{"tasks":[]}"""
+                }
                 "/api/tasks/washer-task/take" -> {
                     check(request.method == "POST" && withLaundryTask)
                     if (takeAttempts.incrementAndGet() == 1) {
@@ -126,7 +143,7 @@ class SessionRecoveryIntegrationTest {
     }
 
     @After fun cleanup() {
-        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); firstTakeReply.countDown(); onMain { models.clear() }
+        release.countDown(); replacementBoardRelease.countDown(); replacementIdentityRelease.countDown(); firstTakeReply.countDown(); timingBoardRelease.countDown(); onMain { models.clear() }
         SecureSession(app).clear(); PushRuntime.clearLocalSession(app)
         client.dispatcher.cancelAll(); client.connectionPool.evictAll(); client.dispatcher.executorService.shutdownNow()
         prefs.edit().clear().apply { previous.forEach { (key, value) -> when (value) {
@@ -145,6 +162,26 @@ class SessionRecoveryIntegrationTest {
     private fun render(vm: AppViewModel) = compose.setContent {
         val state by vm.state.collectAsState()
         WeShirtTheme("light", "blue") { SettingsScreen(state, vm, {}, {}, {}) }
+    }
+
+    @Test fun newerRoomTimingRefreshesPrivateHotWashWithoutTouchingRefresh() {
+        runningHotWash = true
+        profileStatus = 200
+        saved(true)
+        val vm = model()
+        release.countDown()
+        compose.waitUntil(10_000) { vm.state.value.tasks.singleOrNull()?.id == "hot-wash" }
+        compose.setContent {
+            val state by vm.state.collectAsState()
+            WeShirtTheme("light", "blue") { com.laoke.weshirt.ui.LaundryScreen(state, vm, {}) }
+        }
+        compose.onNodeWithTag("laundry-page").performScrollToNode(hasTestTag("laundry-task:hot-wash"))
+        compose.onNodeWithTag("laundry-task-time:hot-wash").assertTextContains("机器仍在运行", substring = true)
+        timingBoardRelease.countDown()
+        compose.waitUntil(10_000) { timingTaskReads.get() >= 2 && vm.state.value.tasks.singleOrNull()?.timingObservedAt == timingNow.toEpochMilli() }
+        compose.onNodeWithTag("laundry-task-time:hot-wash").assertTextContains("平台剩余 26 分钟")
+        compose.onNodeWithTag("laundry-take:hot-wash").assertDoesNotExist()
+        assertEquals(2, timingTaskReads.get())
     }
 
     @Test fun takeShowsPendingAndInDialogErrorThenKeepsAcknowledgedCompletionWhenReadLags() {

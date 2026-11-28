@@ -41,6 +41,7 @@ class LaundryWidgetRegistrationTest {
             if (Build.VERSION.SDK_INT >= 31) {
                 assertEquals(provider.widgetSize.columns, info.targetCellWidth)
                 assertEquals(provider.widgetSize.rows, info.targetCellHeight)
+                if (provider.widgetSize == WidgetSize.COMPACT) assertEquals(R.layout.laundry_widget_square_preview, info.previewLayout)
             }
             assertMetadata(component, provider.widgetSize)
         }
@@ -62,8 +63,8 @@ class LaundryWidgetRegistrationTest {
             assertEquals(AppWidgetProviderInfo.RESIZE_NONE, parser.getAttributeIntValue(namespace, "resizeMode", -1))
             val width = parser.getAttributeValue(namespace, "minWidth").removeSuffix("dip").removeSuffix("dp").toFloat()
             val height = parser.getAttributeValue(namespace, "minHeight").removeSuffix("dip").removeSuffix("dp").toFloat()
-            assertEquals(when (size) { WidgetSize.MINI -> 128f; WidgetSize.COMPACT -> 150f; WidgetSize.WIDE -> 250f }, width, 0f)
-            assertEquals(when (size) { WidgetSize.MINI -> 50f; WidgetSize.COMPACT -> 150f; WidgetSize.WIDE -> 120f }, height, 0f)
+            assertEquals(when (size) { WidgetSize.MINI -> 128f; WidgetSize.COMPACT -> 120f; WidgetSize.WIDE -> 250f }, width, 0f)
+            assertEquals(when (size) { WidgetSize.MINI -> 50f; WidgetSize.COMPACT -> 120f; WidgetSize.WIDE -> 120f }, height, 0f)
         }
     }
 

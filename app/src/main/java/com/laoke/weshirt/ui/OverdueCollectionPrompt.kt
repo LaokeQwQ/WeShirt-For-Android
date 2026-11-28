@@ -4,12 +4,15 @@ import androidx.compose.runtime.*
 import com.laoke.weshirt.AppViewModel
 import com.laoke.weshirt.data.AppState
 import com.laoke.weshirt.data.LaundryTask
+import com.laoke.weshirt.data.deviceStillRunning
 import com.laoke.weshirt.data.isArchived
 import com.laoke.weshirt.data.isExpired
+import com.laoke.weshirt.data.laundryDisplayTask
 
 /** Match the Web opening prompt: the latest expired registration within three hours. */
 internal fun overdueCollectionCandidate(tasks: List<LaundryTask>, now: Long): LaundryTask? = tasks
-    .filter { !it.done && !it.isArchived(now) && !it.isExpired(now) && it.endAt?.let { end -> (now + it.clockOffsetMs - end) / 60_000 in 1L..180L } == true }
+    .filter { !it.done && !it.deviceStillRunning(now) && !it.isArchived(now) && !it.isExpired(now) &&
+        it.endAt?.let { end -> (now + it.clockOffsetMs - end) / 60_000 in 1L..180L } == true }
     .maxByOrNull { it.endAt ?: Long.MIN_VALUE }
 
 @Composable
@@ -20,12 +23,17 @@ fun OverdueCollectionPrompt(state: AppState, vm: AppViewModel, enabled: Boolean 
     val allowed = state.profile != null && permissions?.optBoolean("view", true) != false && permissions?.optBoolean("operate", true) != false
     val mayPrompt = enabled && allowed && state.authReady && !state.loading && state.tab != 1 && state.announcements.isEmpty()
 
-    LaunchedEffect(vm, state.endpoint, state.profile?.id, mayPrompt, state.tasks) {
+    LaunchedEffect(vm, state.endpoint, state.profile?.id, mayPrompt, state.tasks, state.machines, state.boardFromCache) {
+        val now = System.currentTimeMillis()
         if (!checked && mayPrompt) {
             checked = true
-            selected = overdueCollectionCandidate(state.tasks, System.currentTimeMillis())
+            selected = overdueCollectionCandidate(state.tasks.map { state.laundryDisplayTask(it, now) }, now)
         }
-        if (!allowed || selected?.let { task -> state.tasks.none { it.id == task.id && !it.done } } == true) selected = null
+        selected?.let { task ->
+            val updated = state.tasks.find { it.id == task.id }?.let { state.laundryDisplayTask(it, now) }
+            if (!allowed || updated == null || overdueCollectionCandidate(listOf(updated), now) == null) selected = null
+            else selected = updated
+        }
     }
     selected?.takeIf { enabled && allowed && state.announcements.isEmpty() }?.let { task -> key(state.endpoint, state.profile?.id, task.id) {
         val overdue = ((System.currentTimeMillis() + task.clockOffsetMs - (task.endAt ?: 0)) / 60_000).coerceAtLeast(1)
